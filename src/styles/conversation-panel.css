@@ -1,0 +1,992 @@
+/* Cellix conversation panel — Shortcut-style layout, indigo brand theme */
+
+.cellix-panel {
+  --cx-brand-900: #312e81;
+  --cx-brand-800: #3730a3;
+  --cx-brand-700: #4338ca;
+  --cx-brand-500: #6366f1;
+  --cx-brand-400: #818cf8;
+  --cx-brand-100: #e0e7ff;
+  --cx-brand-50: #eef2ff;
+  --cx-gray-900: #111827;
+  --cx-gray-700: #374151;
+  --cx-gray-500: #6b7280;
+  --cx-gray-300: #d1d5db;
+  --cx-gray-200: #e5e7eb;
+  --cx-gray-100: #f3f4f6;
+  --cx-gray-50: #f9fafb;
+  --cx-white: #ffffff;
+  --cx-border: #e5e7eb;
+  --cx-radius-sm: 6px;
+  --cx-radius-md: 8px;
+  --cx-radius-lg: 12px;
+  --cx-font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: var(--cx-font);
+  font-size: 13px;
+  background: var(--cx-gray-50);
+  color: var(--cx-gray-900);
+}
+
+.cellix-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--cx-border);
+  background: var(--cx-white);
+}
+
+.cellix-topbar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cx-gray-700);
+}
+
+.cellix-topbar-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.cellix-icon-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--cx-radius-sm);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--cx-gray-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.cellix-icon-btn:hover {
+  background: var(--cx-gray-100);
+}
+
+.cellix-tabbar-wrap {
+  padding: 6px 10px 0;
+  background: var(--cx-white);
+  border-bottom: 1px solid var(--cx-border);
+}
+
+.cellix-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 6px;
+  border-radius: var(--cx-radius-sm) var(--cx-radius-sm) 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--cx-border);
+  border-bottom: none;
+  color: var(--cx-gray-700);
+  background: var(--cx-gray-50);
+  margin-bottom: -1px;
+  max-width: 100%;
+}
+
+.cellix-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.cellix-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 16px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cellix-turn + .cellix-turn {
+  padding-top: 6px;
+  border-top: 1px solid var(--cx-gray-200);
+  margin-top: 4px;
+}
+
+.cellix-msg-meta {
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--cx-gray-500);
+  margin-bottom: 4px;
+}
+
+.cellix-user-msg {
+  background: var(--cx-white);
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--cx-gray-900);
+  line-height: 1.5;
+  align-self: stretch;
+}
+
+/* Assistant replies: inset from Excel chrome + vertical guide */
+.cellix-assistant-thread {
+  padding-left: 6px;
+  margin-left: 4px;
+  border-left: 3px solid var(--cx-brand-100);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cellix-response-output {
+  margin-top: 4px;
+  padding-right: 2px;
+}
+
+.cellix-response-shell {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 2px 0 4px 4px;
+  box-shadow: none;
+}
+
+.cellix-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--cx-gray-700);
+  line-height: 1.4;
+}
+
+.cellix-step-label {
+  flex: 1;
+}
+
+.cellix-step-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.cellix-step-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--cx-gray-400);
+  animation: cx-dot-bounce 1.2s ease-in-out infinite;
+}
+
+.cellix-step-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.cellix-step-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.cellix-step-revealed {
+  color: var(--cx-gray-600);
+}
+
+.cellix-step-done {
+  color: var(--cx-gray-500);
+}
+
+.cellix-step-done .cellix-step-icon {
+  color: var(--cx-gray-500);
+}
+
+.cellix-step-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--cx-brand-100);
+  border-top-color: var(--cx-brand-700);
+  animation: cx-spin 0.7s linear infinite;
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.cellix-step-check {
+  font-size: 11px;
+  color: var(--cx-brand-600, #4f46e5);
+  font-weight: 700;
+  margin-top: 1px;
+}
+
+.cellix-spinner-inline {
+  width: 8px;
+  height: 8px;
+}
+
+.cellix-step-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+  padding: 0;
+  background: transparent;
+  color: var(--cx-gray-500);
+}
+
+.cellix-step-icon svg {
+  display: block;
+}
+
+.cellix-step-icon-spin {
+  animation: cx-spin 1.6s linear infinite;
+}
+
+.cellix-step-active {
+  color: var(--cx-brand-700);
+  font-weight: 500;
+}
+
+.cellix-step-active .cellix-step-icon {
+  color: var(--cx-brand-800);
+}
+
+.cellix-thinking-block {
+  margin-top: 14px;
+}
+
+.cellix-step + .cellix-thinking-block {
+  margin-top: 18px;
+}
+
+.cellix-thinking-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--cx-gray-500);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.cellix-thinking-body {
+  margin-left: 18px;
+  font-size: 11.5px;
+  color: var(--cx-gray-500);
+  line-height: 1.5;
+  border-left: 2px solid var(--cx-gray-200);
+  padding-left: 8px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.cellix-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--cx-brand-700);
+  margin-top: 2px;
+}
+
+.cellix-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cx-brand-500);
+  flex-shrink: 0;
+}
+
+.cellix-status-pulse {
+  animation: cx-pulse 1.4s ease-in-out infinite;
+}
+
+.cellix-response-text {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--cx-gray-900);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+/* Cursor-style prose: paragraphs + soft highlight on **bold** */
+.cellix-response-text.cellix-response-md {
+  white-space: normal;
+}
+
+.cellix-response-md-p {
+  margin: 0 0 0.85em;
+  font-size: 13.5px;
+  line-height: 1.68;
+  color: var(--cx-gray-800);
+  letter-spacing: -0.01em;
+}
+
+.cellix-response-md-p:last-child {
+  margin-bottom: 0;
+}
+
+.cellix-md-strong {
+  font-weight: 600;
+  color: var(--cx-gray-950, #0f172a);
+  background: linear-gradient(
+    180deg,
+    rgba(67, 56, 202, 0.11) 0%,
+    rgba(67, 56, 202, 0.05) 100%
+  );
+  border-radius: 4px;
+  padding: 0.06em 0.32em 0.1em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.cellix-response-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.cellix-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-sm);
+  background: var(--cx-white);
+  color: var(--cx-gray-700);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.cellix-toolbar-btn:hover {
+  background: var(--cx-gray-50);
+  border-color: var(--cx-gray-300);
+}
+
+.cellix-toolbar-btn.active {
+  background: var(--cx-brand-50);
+  border-color: var(--cx-brand-400);
+  color: var(--cx-brand-800);
+}
+
+.cellix-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-sm);
+  overflow: hidden;
+  background: var(--cx-white);
+}
+
+.cellix-toolbar-group .cellix-toolbar-btn {
+  border: none;
+  border-radius: 0;
+  min-width: 32px;
+}
+
+.cellix-toolbar-group .cellix-toolbar-btn + .cellix-toolbar-btn {
+  border-left: 1px solid var(--cx-border);
+}
+
+.cellix-toolbar-btn-text span {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cellix-response-divider {
+  height: 1px;
+  background: var(--cx-gray-200);
+  margin: 14px 0 10px;
+}
+
+.cellix-followups-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cellix-followups-chevron {
+  color: var(--cx-gray-500);
+}
+
+.cellix-followups-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.cellix-followups-item {
+  position: relative;
+  padding-left: 18px;
+  margin-bottom: 8px;
+}
+
+.cellix-followups-item::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 0;
+  bottom: -8px;
+  width: 1px;
+  background: var(--cx-gray-300);
+}
+
+.cellix-followups-item::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 11px;
+  width: 10px;
+  height: 1px;
+  background: var(--cx-gray-300);
+}
+
+.cellix-followups-item.is-last::before {
+  bottom: auto;
+  height: 11px;
+}
+
+.cellix-followups-link {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #334155;
+  font-weight: 400;
+}
+
+.cellix-followups-link:hover:not(:disabled) {
+  color: var(--cx-brand-700);
+}
+
+.cellix-followups-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cellix-answer {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cx-gray-900);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.cellix-response-card {
+  background: var(--cx-white);
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.cellix-response-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cellix-response-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--cx-brand-700), var(--cx-brand-500));
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cellix-response-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cx-brand-800);
+}
+
+.cellix-thinking-skeleton {
+  margin-left: 18px;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cellix-skeleton-line {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--cx-gray-200) 0%,
+    var(--cx-brand-100) 50%,
+    var(--cx-gray-200) 100%
+  );
+  background-size: 200% 100%;
+  animation: cx-shimmer 1.4s ease-in-out infinite;
+}
+
+.cellix-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--cx-gray-500) 0%,
+    var(--cx-brand-600, #4f46e5) 45%,
+    var(--cx-gray-500) 90%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: cx-text-shimmer 2.2s linear infinite;
+}
+
+.cellix-thinking-preview {
+  margin: 4px 0 0 18px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--cx-gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellix-thinking-body p {
+  margin: 0 0 8px;
+}
+
+.cellix-thinking-body p:last-child {
+  margin-bottom: 0;
+}
+
+.cellix-thinking-body-loading p {
+  color: var(--cx-gray-500);
+}
+
+.cellix-question-input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--cx-border);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.cellix-question-input:focus {
+  border-color: var(--cx-brand-400);
+  box-shadow: 0 0 0 2px rgba(67, 56, 202, 0.1);
+}
+
+.cellix-block-enter {
+  animation: cx-block-enter 0.35s ease-out both;
+}
+
+.cellix-answer-streaming::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--cx-brand-400);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: cx-pulse 1s ease-in-out infinite;
+}
+
+.cellix-action-card,
+.cellix-changes-card,
+.cellix-question-card {
+  background: var(--cx-white);
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--cx-gray-700);
+}
+
+.cellix-action-card-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--cx-gray-900);
+  font-size: 12px;
+}
+
+.cellix-action-card ul {
+  padding-left: 14px;
+  margin: 0;
+}
+
+.cellix-action-card li {
+  margin-bottom: 3px;
+  line-height: 1.4;
+}
+
+.cellix-action-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.cellix-btn-accept {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: var(--cx-radius-sm);
+  background: var(--cx-brand-700);
+  color: white;
+  border: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.cellix-btn-accept:hover {
+  background: var(--cx-brand-800);
+}
+
+.cellix-btn-secondary {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: var(--cx-radius-sm);
+  background: white;
+  color: var(--cx-gray-700);
+  border: 1px solid var(--cx-border);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cellix-btn-secondary:hover {
+  background: var(--cx-gray-100);
+}
+
+.cellix-btn-reject {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: var(--cx-radius-sm);
+  background: white;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cellix-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--cx-brand-100);
+  color: var(--cx-brand-800);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cellix-changes-link {
+  color: var(--cx-brand-700);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  margin-top: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cellix-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cellix-question-option {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--cx-radius-sm);
+  border: 1px solid var(--cx-border);
+  background: var(--cx-gray-50);
+  font-size: 12.5px;
+  color: var(--cx-gray-700);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.cellix-question-option:hover:not(:disabled) {
+  border-color: var(--cx-brand-400);
+  background: var(--cx-brand-50);
+}
+
+.cellix-question-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cellix-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--cx-radius-md);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: #b91c1c;
+}
+
+.cellix-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 0 20px;
+}
+
+.cellix-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.cellix-logo-icon {
+  width: 30px;
+  height: 30px;
+  background: linear-gradient(135deg, var(--cx-brand-700) 0%, var(--cx-brand-500) 100%);
+  border-radius: var(--cx-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.cellix-brand-text {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--cx-brand-800);
+}
+
+.cellix-version {
+  font-size: 11px;
+  color: var(--cx-gray-500);
+  margin-bottom: 6px;
+}
+
+.cellix-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: var(--cx-white);
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  font-size: 12.5px;
+  color: var(--cx-gray-700);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  text-align: left;
+}
+
+.cellix-suggestion:hover {
+  border-color: var(--cx-brand-400);
+  background: var(--cx-brand-50);
+}
+
+.cellix-suggestion span {
+  font-size: 13px;
+  color: var(--cx-brand-700);
+}
+
+.cellix-input-area {
+  border-top: 1px solid var(--cx-border);
+  background: var(--cx-white);
+  padding: 10px 12px;
+}
+
+.cellix-input-shell {
+  background: var(--cx-gray-50);
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  padding: 9px 10px;
+  transition: border-color 0.15s;
+}
+
+.cellix-input-shell:focus-within {
+  border-color: var(--cx-brand-400);
+  box-shadow: 0 0 0 3px rgba(67, 56, 202, 0.08);
+}
+
+.cellix-input-shell.processing {
+  border-color: var(--cx-brand-400);
+}
+
+.cellix-input-shell textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  min-height: 36px;
+  max-height: 120px;
+  resize: none;
+  font-size: 13px;
+  font-family: var(--cx-font);
+  color: var(--cx-gray-900);
+  outline: none;
+}
+
+.cellix-input-shell textarea::placeholder {
+  color: var(--cx-gray-500);
+}
+
+.cellix-input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  gap: 6px;
+}
+
+.cellix-send-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--cx-brand-700);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  color: white;
+}
+
+.cellix-send-btn:hover:not(:disabled) {
+  background: var(--cx-brand-800);
+}
+
+.cellix-send-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cellix-stop-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--cx-gray-900);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cellix-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--cx-brand-100);
+  border-top-color: var(--cx-brand-700);
+  animation: cx-spin 0.7s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.cellix-sep {
+  height: 1px;
+  background: var(--cx-gray-200);
+  margin: 4px 0;
+}
+
+@keyframes cx-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes cx-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes cx-block-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cx-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes cx-text-shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
+@keyframes cx-dot-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
