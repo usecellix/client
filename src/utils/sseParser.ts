@@ -1,4 +1,9 @@
 import { SheetAction } from '@/hooks/useSseStream';
+import { ClarificationPayload } from '@/types/cellix.types';
+
+export interface SseClarificationData extends ClarificationPayload {
+  conversationId?: string;
+}
 
 export interface SseAnswerData {
   answer: string;
@@ -22,10 +27,67 @@ export type ParsedSseEvent =
   | { type: 'chunk'; data: { text: string } }
   | { type: 'answer'; data: SseAnswerData }
   | { type: 'question'; data: SseQuestionData }
+  | { type: 'clarification'; data: SseClarificationData }
   | { type: 'actions'; data: SseActionsData }
   | { type: 'error'; data: { message: string } }
   | { type: 'conversation_end'; data: { summary?: string; conversationId?: string } }
   | { type: 'done'; data: { message: string } };
+
+function normalizeClarificationPayload(
+  payload: Record<string, unknown>,
+): SseClarificationData | null {
+  const question = String(payload.question ?? '');
+  if (!question) return null;
+
+  return {
+    question,
+    suggestions: Array.isArray(payload.suggestions)
+      ? (payload.suggestions as string[])
+      : undefined,
+    ambiguityScore: Number(payload.ambiguityScore ?? 0),
+    conversationId: payload.conversationId as string | undefined,
+  };
+}
+
+function parseMasterEnvelope(parsed: Record<string, unknown>): ParsedSseEvent | null {
+  const innerType = String(parsed.type ?? '');
+  const payload = parsed.payload;
+  if (!innerType || !payload || typeof payload !== 'object') return null;
+
+  const p = payload as Record<string, unknown>;
+
+  switch (innerType) {
+    case 'clarification': {
+      const data = normalizeClarificationPayload(p);
+      return data ? { type: 'clarification', data } : null;
+    }
+    case 'thinking':
+      return {
+        type: 'status',
+        data: { message: String(p.message ?? 'Thinking…') },
+      };
+    case 'actions':
+      return Array.isArray(p.actions)
+        ? {
+            type: 'actions',
+            data: {
+              actions: p.actions as SheetAction[],
+              explanation: String(p.summary ?? p.explanation ?? ''),
+              conversationId: p.conversationId as string | undefined,
+            },
+          }
+        : null;
+    case 'error':
+      return {
+        type: 'error',
+        data: { message: String(p.message ?? 'Unknown error') },
+      };
+    case 'done':
+      return { type: 'done', data: { message: 'done' } };
+    default:
+      return null;
+  }
+}
 
 export function parseSseEventBlock(block: string): ParsedSseEvent | null {
   const lines = block.split(/\r?\n/);
@@ -50,12 +112,19 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
     parsed = null;
   }
 
+  if (parsed && typeof parsed.type === 'string' && parsed.payload) {
+    const envelope = parseMasterEnvelope(parsed);
+    if (envelope) return envelope;
+  }
+
   const normalizedType = (eventType || '').trim();
   const inferredType =
     normalizedType === ''
-      ? parsed && Array.isArray(parsed.actions)
-        ? 'actions'
-        : 'chunk'
+      ? parsed && typeof parsed.type === 'string' && parsed.type === 'clarification'
+        ? 'clarification'
+        : parsed && Array.isArray(parsed.actions)
+          ? 'actions'
+          : 'chunk'
       : normalizedType;
 
   switch (inferredType) {
@@ -79,7 +148,18 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
             },
           }
         : { type: 'question', data: { question: rawData } };
+    case 'clarification':
+      if (parsed) {
+        const data = normalizeClarificationPayload(parsed);
+        if (data) return { type: 'clarification', data };
+      }
+      return null;
     case 'status':
+      return {
+        type: 'status',
+        data: parsed ? { message: String(parsed.message ?? rawData) } : { message: rawData },
+      };
+    case 'thinking':
       return {
         type: 'status',
         data: parsed ? { message: String(parsed.message ?? rawData) } : { message: rawData },

@@ -15,6 +15,7 @@ interface TurnRendererProps {
   turn: ConversationTurn;
   isActive: boolean;
   isWaiting: boolean;
+  previewEnabled?: boolean;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
@@ -48,6 +49,7 @@ function describeAction(action: SheetAction): string {
 function BlockRenderer({
   block,
   turn,
+  previewEnabled = false,
   isWaiting,
   onAcceptActions,
   onRejectActions,
@@ -58,6 +60,7 @@ function BlockRenderer({
 }: {
   block: TurnBlock;
   turn: ConversationTurn;
+  previewEnabled?: boolean;
   isWaiting: boolean;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
@@ -157,9 +160,24 @@ function BlockRenderer({
       );
     }
 
+    if (isPending && previewEnabled) {
+      return (
+        <div className="cellix-changes-card cellix-block-enter">
+          <div className="cellix-changes-summary">{actionBlock.explanation}</div>
+          <div className="cellix-changes-link">
+            <span className="cellix-badge">
+              {actionBlock.actions.length} Direct Change
+              {actionBlock.actions.length === 1 ? '' : 's'}
+            </span>
+            <span>Review below</span>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="cellix-action-card cellix-block-enter">
-        <div className="cellix-action-card-title">Preview highlighted. Cellix will make these changes:</div>
+        <div className="cellix-action-card-title">Cellix will make these changes:</div>
         <ul>
           <li>{actionBlock.explanation}</li>
           {actionBlock.actions.slice(0, 4).map((action, i) => (
@@ -173,9 +191,6 @@ function BlockRenderer({
           <div className="cellix-action-btns">
             <button type="button" className="cellix-btn-accept" onClick={() => onAcceptActions(turn.id, block.id)}>
               Accept
-            </button>
-            <button type="button" className="cellix-btn-secondary" onClick={() => onAcceptActions(turn.id, block.id)}>
-              Accept All
             </button>
             <button type="button" className="cellix-btn-reject" onClick={() => onRejectActions(turn.id, block.id)}>
               Reject
@@ -193,6 +208,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   turn,
   isActive,
   isWaiting,
+  previewEnabled = false,
   onAcceptActions,
   onRejectActions,
   onAnswerQuestion,
@@ -233,6 +249,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                   <BlockRenderer
                     block={block}
                     turn={turn}
+                    previewEnabled={previewEnabled}
                     isWaiting={isWaiting && isActive}
                     onAcceptActions={onAcceptActions}
                     onRejectActions={onRejectActions}

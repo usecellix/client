@@ -1,5 +1,11 @@
 import React, { useRef, useEffect, KeyboardEvent } from 'react';
 import { ArrowRight, Square } from 'lucide-react';
+import { ClarificationPanel } from '@/components/ClarificationPanel/ClarificationPanel';
+import { SheetSelector } from '@/components/SheetSelector/SheetSelector';
+import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
+import { ClarificationPayload } from '@/types/cellix.types';
+import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
+import { DiffItem } from '@/services/previewManager';
 import TurnRenderer from './TurnRenderer';
 
 interface PanelInputProps {
@@ -7,6 +13,7 @@ interface PanelInputProps {
   onStop?: () => void;
   disabled?: boolean;
   isProcessing?: boolean;
+  isWaitingClarification?: boolean;
   placeholder?: string;
 }
 
@@ -46,6 +53,7 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   onStop,
   disabled = false,
   isProcessing = false,
+  isWaitingClarification = false,
   placeholder = 'Ask anything about your spreadsheet…',
 }) => {
   const [message, setMessage] = React.useState('');
@@ -66,9 +74,20 @@ export const PanelInput: React.FC<PanelInputProps> = ({
     }
   };
 
+  const inputDisabled = disabled || isWaitingClarification;
+  const resolvedPlaceholder = isWaitingClarification
+    ? '⏸ Answer the question above first…'
+    : isProcessing
+      ? 'Processing your request…'
+      : placeholder;
+
   return (
     <div className="cellix-input-area">
-      <div className={`cellix-input-shell ${isProcessing ? 'processing' : ''}`}>
+      <div
+        className={`cellix-input-shell ${isProcessing ? 'processing' : ''} ${
+          isWaitingClarification ? 'clarifying' : ''
+        }`}
+      >
         <textarea
           ref={textareaRef}
           value={message}
@@ -78,13 +97,17 @@ export const PanelInput: React.FC<PanelInputProps> = ({
             e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
           }}
           onKeyDown={handleKeyDown}
-          placeholder={isProcessing ? 'Processing your request…' : placeholder}
-          disabled={disabled}
+          placeholder={resolvedPlaceholder}
+          disabled={inputDisabled}
           rows={1}
         />
         <div className="cellix-input-toolbar">
           <div style={{ fontSize: 11, color: 'var(--cx-gray-500)' }}>
-            {isProcessing ? 'Action mode' : 'Enter to send'}
+            {isWaitingClarification
+              ? 'Clarification required'
+              : isProcessing
+                ? 'Action mode'
+                : 'Enter to send'}
           </div>
           {isProcessing ? (
             <button type="button" className="cellix-stop-btn" onClick={onStop} aria-label="Stop">
@@ -95,7 +118,7 @@ export const PanelInput: React.FC<PanelInputProps> = ({
               type="button"
               className="cellix-send-btn"
               onClick={handleSend}
-              disabled={!message.trim() || disabled}
+              disabled={!message.trim() || inputDisabled}
               aria-label="Send"
             >
               <ArrowRight size={14} />
@@ -111,43 +134,82 @@ interface ConversationPanelProps {
   turns: import('@/types/conversationTurn').ConversationTurn[];
   activeTurnId: string | null;
   isWaitingForResponse: boolean;
+  isWaitingClarification: boolean;
+  activeClarification: ClarificationPayload | null;
+  previewEnabled: boolean;
+  onTogglePreview: () => void;
+  onSheetSelectionChange: (sheets: string[]) => void;
+  onCompareSheets: (sheetA: string, sheetB: string) => void;
+  compareResult: CompareResult | null;
+  isComparing: boolean;
+  onCloseCompare: () => void;
   onSend: (message: string) => void;
   onStop: () => void;
   onClear: () => void;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
+  onClarificationAnswer: (answer: string) => void;
+  onClarificationDismiss: () => void;
   onToggleThinking: (turnId: string, blockId: string) => void;
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onFollowUp: (text: string) => void;
+  pendingPreview?: {
+    items: DiffItem[];
+    summary: string;
+    isApplying: boolean;
+    onAccept: () => void;
+    onReject: () => void;
+  } | null;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
   turns,
   activeTurnId,
   isWaitingForResponse,
+  isWaitingClarification,
+  activeClarification,
+  previewEnabled,
+  onTogglePreview,
+  onSheetSelectionChange,
+  onCompareSheets,
+  compareResult,
+  isComparing,
+  onCloseCompare,
   onSend,
   onStop,
   onClear,
   onAcceptActions,
   onRejectActions,
   onAnswerQuestion,
+  onClarificationAnswer,
+  onClarificationDismiss,
   onToggleThinking,
   onAnswerComplete,
   onFollowUp,
+  pendingPreview = null,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const activeTurn = turns.find((t) => t.id === activeTurnId);
 
   useEffect(() => {
     contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight, behavior: 'smooth' });
-  }, [turns, isWaitingForResponse]);
+  }, [turns, isWaitingForResponse, activeClarification]);
 
   return (
     <div className="cellix-panel">
       <div className="cellix-topbar">
         <span className="cellix-topbar-title">Cellix</span>
         <div className="cellix-topbar-actions">
+          <button
+            type="button"
+            onClick={onTogglePreview}
+            className={`cellix-preview-toggle ${previewEnabled ? 'on' : 'off'}`}
+            title="Toggle preview before applying changes"
+          >
+            <span>{previewEnabled ? '👁' : '👁‍🗨'}</span>
+            Preview {previewEnabled ? 'ON' : 'OFF'}
+          </button>
           {turns.length > 0 && (
             <button type="button" className="cellix-icon-btn" onClick={onClear} title="New chat">
               +
@@ -182,6 +244,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               turn={turn}
               isActive={turn.id === activeTurnId}
               isWaiting={isWaitingForResponse}
+              previewEnabled={previewEnabled}
               onAcceptActions={onAcceptActions}
               onRejectActions={onRejectActions}
               onAnswerQuestion={onAnswerQuestion}
@@ -193,11 +256,43 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         )}
       </div>
 
+      <div className="cellix-bottom-tools">
+        <SheetSelector
+          onSelectionChange={onSheetSelectionChange}
+          onCompare={onCompareSheets}
+        />
+        {(isComparing || compareResult) && (
+          <SheetCompareView
+            result={compareResult}
+            isLoading={isComparing}
+            onClose={onCloseCompare}
+          />
+        )}
+        {activeClarification && (
+          <ClarificationPanel
+            payload={activeClarification}
+            onAnswer={onClarificationAnswer}
+            onDismiss={onClarificationDismiss}
+          />
+        )}
+      </div>
+
+      {pendingPreview && (
+        <PreviewSummaryBar
+          items={pendingPreview.items}
+          summary={pendingPreview.summary}
+          onAccept={pendingPreview.onAccept}
+          onReject={pendingPreview.onReject}
+          isApplying={pendingPreview.isApplying}
+        />
+      )}
+
       <PanelInput
         onSend={onSend}
         onStop={onStop}
         disabled={isWaitingForResponse}
         isProcessing={isWaitingForResponse}
+        isWaitingClarification={isWaitingClarification}
       />
     </div>
   );

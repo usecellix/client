@@ -4,7 +4,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Primary Colors (Purple Theme) */
+  /* Primary Colors (Cellix purple brand) */
   --primary-purple: #4338CA;
   --primary-purple-hover: #3730A3;
   --primary-purple-light: #5B4FCF;

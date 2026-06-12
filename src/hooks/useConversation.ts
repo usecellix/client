@@ -6,8 +6,8 @@ import {
   ConversationHistoryMessage,
   computeSheetLayout,
   SheetLayoutPayload,
-  WorkbookContextPayload,
 } from '@/utils/payloadCompressor';
+import { WorkbookContext } from '@/types/cellix.types';
 import {
   sanitizeActions,
   CLARIFY_ROW_PLACEMENT,
@@ -16,6 +16,7 @@ import { parseSseEventBlock } from '@/utils/sseParser';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import { buildThoughtSummary } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isSimpleCreateTask } from '@/utils/statusMessage';
+import { ClarificationPayload } from '@/types/cellix.types';
 import {
   ActionBlock,
   AnswerBlock,
@@ -30,9 +31,25 @@ interface UseConversationReturn {
   turns: ConversationTurn[];
   activeTurnId: string | null;
   isWaitingForResponse: boolean;
+  isWaitingClarification: boolean;
+  activeClarification: ClarificationPayload | null;
   conversationId: string | null;
-  sendMessage: (message: string, sheetData: unknown[][], workbookContext?: WorkbookContextPayload) => Promise<void>;
-  answerQuestion: (answer: string, sheetData: unknown[][], workbookContext?: WorkbookContextPayload) => Promise<void>;
+  sendMessage: (
+    message: string,
+    sheetData: unknown[][],
+    workbookContext?: import('@/types/cellix.types').WorkbookContext,
+  ) => Promise<void>;
+  answerQuestion: (
+    answer: string,
+    sheetData: unknown[][],
+    workbookContext?: import('@/types/cellix.types').WorkbookContext,
+  ) => Promise<void>;
+  answerClarification: (
+    answer: string,
+    sheetData: unknown[][],
+    workbookContext?: import('@/types/cellix.types').WorkbookContext,
+  ) => Promise<void>;
+  dismissClarification: () => void;
   acceptActions: (turnId: string, blockId: string) => Promise<void>;
   rejectActions: (turnId: string, blockId: string) => void;
   endConversation: () => void;
@@ -43,13 +60,14 @@ interface UseConversationReturn {
 
 interface UseConversationOptions {
   onActions?: (actions: SheetAction[], explanation: string) => void | Promise<void>;
-  onPreviewActions?: (actions: SheetAction[]) => void | Promise<void>;
+  onPreviewActions?: (actions: SheetAction[], explanation: string) => void | Promise<void>;
   onClearPreview?: () => void | Promise<void>;
   autoApplyActions?: boolean;
+  previewEnabled?: boolean;
 }
 
 interface PendingResponse {
-  type: 'answer' | 'question';
+  type: 'answer' | 'question' | 'clarification';
   answer?: string;
   question?: string;
   options?: string[];
@@ -186,11 +204,18 @@ function createActionBlock(pending: PendingActions): ActionBlock {
 }
 
 export const useConversation = (options: UseConversationOptions = {}): UseConversationReturn => {
-  const { onActions, onPreviewActions, onClearPreview, autoApplyActions = false } = options;
+  const {
+    onActions,
+    onPreviewActions,
+    onClearPreview,
+    autoApplyActions = false,
+    previewEnabled = true,
+  } = options;
 
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
+  const [activeClarification, setActiveClarification] = useState<ClarificationPayload | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -253,7 +278,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       updateTurn(turnId, (turn) => ({
         ...turn,
-        phase: response.type === 'question' ? 'awaiting_input' : 'complete',
+        phase:
+          response.type === 'question' || response.type === 'clarification'
+            ? 'awaiting_input'
+            : 'complete',
         blocks: finalizeSteps(
           upsertThinking(turn.blocks, buildThoughtSummary(turn.userMessage, 'final'), {
             loading: false,
@@ -271,15 +299,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                   revealState: 'typing',
                 } satisfies AnswerBlock,
               ]
-            : [
-                {
-                  id: `question_${Date.now()}`,
-                  type: 'question',
-                  question: response.question ?? '',
-                  options: response.options,
-                  revealState: 'visible',
-                },
-              ],
+            : response.type === 'question'
+              ? [
+                  {
+                    id: `question_${Date.now()}`,
+                    type: 'question',
+                    question: response.question ?? '',
+                    options: response.options,
+                    revealState: 'visible',
+                  },
+                ]
+              : [],
         ).concat(pendingActions ? [createActionBlock(pendingActions)] : []),
       }));
 
@@ -525,6 +555,22 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             continue;
           }
 
+          if (event.type === 'clarification') {
+            pushHistory({
+              role: 'assistant',
+              content: `[Clarification needed]: ${event.data.question}`,
+              timestamp: new Date().toISOString(),
+              type: 'clarification',
+            });
+            setActiveClarification(event.data);
+            signalResponse(turnId, {
+              type: 'clarification',
+              question: event.data.question,
+              options: event.data.suggestions,
+            });
+            continue;
+          }
+
           if (event.type === 'actions') {
             const sanitized = sanitizeActions(
               event.data.actions,
@@ -562,7 +608,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             }
 
             if (!autoApplyActions) {
-              await onPreviewActions?.(sanitized.actions);
+              await onPreviewActions?.(sanitized.actions, explanation);
             }
 
             if (revealScheduledRef.current.has(turnId)) {
@@ -580,6 +626,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             if (autoApplyActions && onActions) {
               await onClearPreview?.();
               await onActions(sanitized.actions, explanation);
+              historyRef.current = [];
+              setActiveClarification(null);
               updateTurn(turnId, (turn) => ({
                 ...turn,
                 blocks: turn.blocks.map((b) =>
@@ -629,9 +677,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const sendMessage = useCallback(
-    async (message: string, sheetData: unknown[][], workbookContext?: WorkbookContextPayload) => {
+    async (message: string, sheetData: unknown[][], workbookContext?: WorkbookContext) => {
       const trimmed = message.trim();
       if (!trimmed) return;
+
+      await onClearPreview?.();
 
       const turnId = `turn_${Date.now()}`;
       const timestamp = new Date();
@@ -674,6 +724,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         conversationId: conversationIdRef.current,
         previousMessages: historyRef.current.slice(0, -1),
         workbookContext,
+        previewEnabled,
       });
 
       try {
@@ -732,6 +783,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     },
     [
       getUserFacingErrorMessage,
+      onClearPreview,
+      previewEnabled,
       processStream,
       pushHistory,
       runVisualTimeline,
@@ -741,11 +794,31 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const answerQuestion = useCallback(
-    async (answer: string, sheetData: unknown[][], workbookContext?: WorkbookContextPayload) => {
+    async (answer: string, sheetData: unknown[][], workbookContext?: WorkbookContext) => {
       await sendMessage(answer, sheetData, workbookContext);
     },
     [sendMessage],
   );
+
+  const answerClarification = useCallback(
+    async (answer: string, sheetData: unknown[][], workbookContext?: WorkbookContext) => {
+      const trimmed = answer.trim();
+      if (!trimmed) return;
+      setActiveClarification(null);
+      await sendMessage(trimmed, sheetData, workbookContext);
+    },
+    [sendMessage],
+  );
+
+  const dismissClarification = useCallback(() => {
+    setActiveClarification(null);
+    if (activeTurnId) {
+      updateTurn(activeTurnId, (turn) => ({
+        ...turn,
+        phase: 'complete',
+      }));
+    }
+  }, [activeTurnId, updateTurn]);
 
   const acceptActions = useCallback(
     async (turnId: string, blockId: string) => {
@@ -758,6 +831,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       if (onActions) {
         await onActions(block.actions, block.explanation);
       }
+
+      historyRef.current = [];
+      setActiveClarification(null);
 
       updateTurn(turnId, (t) => ({
         ...t,
@@ -817,6 +893,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const endConversation = useCallback(() => {
     abortControllerRef.current?.abort();
     void onClearPreview?.();
+    setActiveClarification(null);
     if (activeTurnId) {
       const runtime = runtimeRef.current.get(activeTurnId);
       if (runtime) runtime.aborted = true;
@@ -844,15 +921,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     setActiveTurnId(null);
     setConversationId(null);
     setIsWaitingForResponse(false);
+    setActiveClarification(null);
   }, [onClearPreview]);
 
   return {
     turns,
     activeTurnId,
     isWaitingForResponse,
+    isWaitingClarification: activeClarification !== null,
+    activeClarification,
     conversationId,
     sendMessage,
     answerQuestion,
+    answerClarification,
+    dismissClarification,
     acceptActions,
     rejectActions,
     endConversation,

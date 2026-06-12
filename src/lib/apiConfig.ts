@@ -1,6 +1,7 @@
 const DEFAULT_API_BASE_URL = '/api';
 const STREAM_PATH = '/excel-ai/process';
 const CONVERSATION_PATH = '/excel-ai/conversation';
+const COMPARE_PATH = '/sheets/compare';
 
 function normalizeBaseUrl(raw: string): string {
   const trimmed = raw.trim();
@@ -34,5 +35,9 @@ export function getStreamEndpoint(): string {
 
 export function getConversationEndpoint(): string {
   return `${getApiBaseUrl()}${CONVERSATION_PATH}`;
+}
+
+export function getCompareEndpoint(): string {
+  return `${getApiBaseUrl()}${COMPARE_PATH}`;
 }
 

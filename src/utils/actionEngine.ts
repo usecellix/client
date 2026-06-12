@@ -1,4 +1,5 @@
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
+import { applyFormatGuard, coerceRowDataToReferenceFormats } from '../services/formatGuard';
 import { sanitizeActions } from './actionGuard';
 
 /* global Excel */
@@ -34,6 +35,16 @@ function guardActions(actions: SheetAction[], sheetIsEmpty = false): SheetAction
 export class ActionEngine {
   private static previewRanges: PreviewRange[] = [];
 
+  private static resolveWorksheet(
+    context: Excel.RequestContext,
+    action: SheetAction,
+  ): Excel.Worksheet {
+    if (action.sheetName) {
+      return context.workbook.worksheets.getItem(action.sheetName);
+    }
+    return context.workbook.worksheets.getActiveWorksheet();
+  }
+
   static async applyActions(actions: SheetAction[]): Promise<void> {
     try {
       const safeActions = guardActions(actions);
@@ -52,9 +63,8 @@ export class ActionEngine {
       }
 
       await Excel.run(async (context) => {
-        const worksheet = context.workbook.worksheets.getActiveWorksheet();
-
         for (const action of actionsToApply) {
+          const worksheet = this.resolveWorksheet(context, action);
           try {
             await this.applySingleAction(context, worksheet, action);
             if (action.type === 'ADD_ROW') {
@@ -180,7 +190,7 @@ export class ActionEngine {
   ): Promise<void> {
     switch (action.type) {
       case 'SET_CELL':
-        this.setCell(worksheet, action);
+        await this.setCell(worksheet, action, context);
         break;
       case 'CLEAR_CELL':
         this.clearCell(worksheet, action);
@@ -189,7 +199,7 @@ export class ActionEngine {
         this.highlightCell(worksheet, action);
         break;
       case 'SET_FORMULA':
-        this.setFormula(worksheet, action);
+        await this.setFormula(worksheet, action, context);
         break;
       case 'ADD_ROW':
         await this.addRow(worksheet, action, context);
@@ -297,11 +307,17 @@ export class ActionEngine {
     return worksheet.getRangeByIndexes(row, col, rowCount, colCount);
   }
 
-  private static setCell(worksheet: Excel.Worksheet, action: SheetAction): void {
+  private static async setCell(
+    worksheet: Excel.Worksheet,
+    action: SheetAction,
+    context: Excel.RequestContext,
+  ): Promise<void> {
     if (action.row === undefined || action.col === undefined || action.value === undefined) {
       throw new Error('SET_CELL action requires row, col, and value');
     }
-    this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 }).values = [[action.value]];
+    const range = this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 });
+    range.values = [[action.value]];
+    await applyFormatGuard(context, worksheet, action, action.row, action.col, 1, 1);
   }
 
   private static clearCell(worksheet: Excel.Worksheet, action: SheetAction): void {
@@ -321,11 +337,17 @@ export class ActionEngine {
     );
   }
 
-  private static setFormula(worksheet: Excel.Worksheet, action: SheetAction): void {
+  private static async setFormula(
+    worksheet: Excel.Worksheet,
+    action: SheetAction,
+    context: Excel.RequestContext,
+  ): Promise<void> {
     if (action.row === undefined || action.col === undefined || action.formula === undefined) {
       throw new Error('SET_FORMULA action requires row, col, and formula');
     }
-    this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 }).formulas = [[action.formula]];
+    const range = this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 });
+    range.formulas = [[action.formula]];
+    await applyFormatGuard(context, worksheet, action, action.row, action.col, 1, 1);
   }
 
   private static writeTable(worksheet: Excel.Worksheet, action: SheetAction): void {
@@ -363,8 +385,19 @@ export class ActionEngine {
     const targetRow = await this.getAppendRowIndex(worksheet, context);
     const colCount = Math.max(action.data.length, await this.getUsedColumnCount(worksheet, context));
     const rowRange = worksheet.getRangeByIndexes(targetRow, 0, 1, colCount);
-    rowRange.getEntireRow().insert('Down');
-    rowRange.values = [Array.from({ length: colCount }, (_, index) => action.data![index] ?? '')];
+    // Append only: targetRow is already the first empty row after data — do not insert,
+    // or Excel shifts the range down and values land one row too low with a blank row above.
+    const coercedData = await coerceRowDataToReferenceFormats(
+      context,
+      worksheet,
+      targetRow,
+      'above',
+      action.data!,
+      0,
+      colCount,
+    );
+    rowRange.values = [coercedData];
+    await applyFormatGuard(context, worksheet, action, targetRow, 0, 1, colCount);
   }
 
   private static async insertRow(
@@ -377,6 +410,8 @@ export class ActionEngine {
     const colCount = await this.getUsedColumnCount(worksheet, context);
     const range = worksheet.getRangeByIndexes(row, 0, count, colCount);
     range.getEntireRow().insert(action.position === 'above' ? 'Up' : 'Down');
+
+    await applyFormatGuard(context, worksheet, action, row, 0, count, colCount);
   }
 
   private static async deleteRow(

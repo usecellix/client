@@ -148,6 +148,7 @@ declare namespace Excel {
   }
 
   interface RangeFont {
+    name: string;
     bold: boolean;
     italic: boolean;
     underline: string;

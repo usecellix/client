@@ -1,3 +1,5 @@
+import { WorkbookContext } from '@/types/cellix.types';
+
 const MAX_ROWS = 50;
 
 export interface CompressedSheetPayload {
@@ -145,6 +147,7 @@ export function computeSheetLayout(sheetData: unknown[][]): SheetLayoutPayload {
   };
 }
 
+/** @deprecated Use WorkbookContext from cellix.types */
 export interface WorkbookContextPayload {
   activeSheet: string;
   sheets: string[];
@@ -156,13 +159,16 @@ export function prepareConversationRequestPayload(
   options?: {
     conversationId?: string | null;
     previousMessages?: ConversationHistoryMessage[];
-    workbookContext?: WorkbookContextPayload;
+    workbookContext?: WorkbookContext | WorkbookContextPayload;
+    previewEnabled?: boolean;
   },
 ): {
   conversationId?: string;
   message: string;
   sheetData: any[][];
-  workbookContext?: WorkbookContextPayload;
+  workbookContext?: WorkbookContext | WorkbookContextPayload;
+  previewEnabled?: boolean;
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
   context: {
     previousMessages: ConversationHistoryMessage[];
   };
@@ -181,13 +187,21 @@ export function prepareConversationRequestPayload(
     });
   }
 
+  const previousMessages = options?.previousMessages ?? [];
+  const conversationHistory = previousMessages.map((entry) => ({
+    role: entry.role,
+    content: entry.content,
+  }));
+
   return {
     ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
     message,
     sheetData: compressed.sheetData,
     ...(options?.workbookContext ? { workbookContext: options.workbookContext } : {}),
+    ...(options?.previewEnabled !== undefined ? { previewEnabled: options.previewEnabled } : {}),
+    conversationHistory,
     context: {
-      previousMessages: options?.previousMessages ?? [],
+      previousMessages,
     },
   };
 }
