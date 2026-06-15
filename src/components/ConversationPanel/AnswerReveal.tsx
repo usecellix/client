@@ -1,5 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { generateSuggestedFollowUps } from '@/utils/suggestedFollowUps';
+import React, { useEffect, useState } from 'react';
 import { renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
 import ResponseOutput from './ResponseOutput';
 
@@ -8,7 +7,6 @@ interface AnswerRevealProps {
   revealState: 'hidden' | 'typing' | 'complete';
   userPrompt?: string;
   onComplete?: () => void;
-  onFollowUp?: (text: string) => void;
   disabled?: boolean;
 }
 
@@ -17,18 +15,11 @@ const TYPING_INTERVAL_MS = 24;
 const AnswerReveal: React.FC<AnswerRevealProps> = ({
   content,
   revealState,
-  userPrompt,
   onComplete,
-  onFollowUp,
   disabled = false,
 }) => {
   const [displayed, setDisplayed] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-
-  const followUps = useMemo(
-    () => generateSuggestedFollowUps(content, userPrompt),
-    [content, userPrompt],
-  );
 
   const showChrome = revealState === 'complete' || (!isTyping && displayed.length > 0);
 
@@ -79,8 +70,6 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
   return (
     <ResponseOutput
       content={displayed}
-      followUps={followUps}
-      onFollowUp={onFollowUp}
       disabled={disabled}
       showTypingCursor={isTyping}
     />

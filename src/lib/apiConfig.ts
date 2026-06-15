@@ -37,7 +37,38 @@ export function getConversationEndpoint(): string {
   return `${getApiBaseUrl()}${CONVERSATION_PATH}`;
 }
 
+export function getToolResultEndpoint(): string {
+  return `${getApiBaseUrl()}${CONVERSATION_PATH}/tool-result`;
+}
+
 export function getCompareEndpoint(): string {
   return `${getApiBaseUrl()}${COMPARE_PATH}`;
+}
+
+export function getAuditApplyEndpoint(changeSetId: string): string {
+  return `${getApiBaseUrl()}/audit/apply/${encodeURIComponent(changeSetId)}`;
+}
+
+export function getAuditRevertEndpoint(changeSetId: string): string {
+  return `${getApiBaseUrl()}/audit/revert/${encodeURIComponent(changeSetId)}`;
+}
+
+export function getAuditHistoryEndpoint(conversationId: string): string {
+  return `${getApiBaseUrl()}/audit/history/${encodeURIComponent(conversationId)}`;
+}
+
+export function getAuditStatsEndpoint(from?: string, to?: string): string {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const query = params.toString();
+  return `${getApiBaseUrl()}/audit/stats${query ? `?${query}` : ''}`;
+}
+
+export function getAuditExportEndpoint(format: 'json' | 'csv', from?: string, to?: string): string {
+  const params = new URLSearchParams({ format });
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  return `${getApiBaseUrl()}/audit/export?${params.toString()}`;
 }
 

@@ -1,13 +1,12 @@
-import { ColumnMeta, SheetSnapshot, WorkbookContext } from '@/types/cellix.types';
 import { CompareResult } from '@/types/cellix.types';
-import { detectDateFormat } from '@/services/formatGuard';
+import { deepToApiWorkbookContext } from '@/context/contextAdapter';
+import {
+  buildWorkbookContext as buildDeepWorkbookContext,
+  readActiveSheetMinimal,
+} from '@/context/workbookReader';
 import { getCompareEndpoint } from '@/lib/apiConfig';
 
 /* global Excel */
-
-function isBlankCell(value: unknown): boolean {
-  return value === null || value === undefined || String(value).trim() === '';
-}
 
 function colIndexToLetter(col: number): string {
   let index = col + 1;
@@ -20,117 +19,70 @@ function colIndexToLetter(col: number): string {
   return letter;
 }
 
-function formatUsedRange(rowCount: number, colCount: number): string {
-  if (rowCount <= 0 || colCount <= 0) return 'A1';
-  const end = `${colIndexToLetter(colCount - 1)}${rowCount}`;
-  return rowCount === 1 && colCount === 1 ? 'A1' : `A1:${end}`;
-}
-
-function detectColumnType(
-  nonEmpty: unknown[],
-  fmt: string,
-): ColumnMeta['detectedType'] {
-  const dateFormat = detectDateFormat(fmt);
-  if (dateFormat) return 'date';
-  if (nonEmpty.every((v) => typeof v === 'number')) return 'number';
-  if (nonEmpty.every((v) => typeof v === 'boolean')) return 'boolean';
-  if (fmt.includes('$') || fmt.includes('₹') || fmt.includes('€')) return 'currency';
-  if (nonEmpty.length > 0) return 'text';
-  return 'unknown';
-}
-
-function buildSnapshotFromValues(
-  sheetName: string,
-  values: unknown[][],
-  numberFormats: unknown[][],
-): SheetSnapshot {
-  const rowCount = values.length;
-  const colCount = values.reduce((max, row) => Math.max(max, row.length), 0);
-  const headers = (values[0] ?? []).map((v) => String(v ?? ''));
-  const sampleData = values.slice(1, 11).map((row) =>
-    row.map((v) => (v === '' || v == null ? null : (v as string | number))),
-  );
-
-  const columnMeta: ColumnMeta[] = Array.from({ length: Math.max(colCount, 1) }, (_, colIdx) => {
-    const header = headers[colIdx] ?? '';
-    const colValues = values.slice(1).map((row) => row[colIdx] ?? null);
-    const nonEmpty = colValues.filter((v) => !isBlankCell(v));
-    const fmt = String(numberFormats[0]?.[colIdx] ?? '');
-
-    return {
-      index: colIdx,
-      header,
-      sampleValues: nonEmpty.slice(0, 5) as (string | number | null)[],
-      detectedType: detectColumnType(nonEmpty, fmt),
-      numberFormat:
-        detectDateFormat(fmt) ??
-        (fmt && fmt !== 'General' && fmt !== '@' ? fmt : undefined),
-    };
-  });
-
-  return {
-    sheetName,
-    usedRange: formatUsedRange(rowCount, colCount),
-    rowCount,
-    colCount: Math.max(colCount, 1),
-    headers,
-    sampleData,
-    columnMeta,
-  };
-}
-
-async function readSheetValues(
-  worksheet: Excel.Worksheet,
-  context: Excel.RequestContext,
-): Promise<{ values: unknown[][]; numberFormats: unknown[][] }> {
-  const usedRange = worksheet.getUsedRange();
-  if (!usedRange) {
-    return { values: [], numberFormats: [[]] };
-  }
-
-  usedRange.load(['values', 'numberFormat', 'rowCount', 'columnCount']);
-  await context.sync();
-
-  return {
-    values: usedRange.values ?? [],
-    numberFormats: usedRange.numberFormat ?? [[]],
-  };
-}
-
 export async function buildWorkbookContext(
   selectedSheetNames: string[],
-): Promise<{ context: WorkbookContext; activeSheetData: unknown[][] }> {
-  const names = selectedSheetNames.length ? selectedSheetNames : [];
-  let activeSheetName = '';
-  let activeSheetData: unknown[][] = [];
-  const snapshots: SheetSnapshot[] = [];
+): Promise<{
+  context: ReturnType<typeof deepToApiWorkbookContext>;
+  activeSheetData: unknown[][];
+  promptContext: string;
+}> {
+  try {
+    const deep = await buildDeepWorkbookContext(selectedSheetNames);
+    const context = deepToApiWorkbookContext(deep);
+    const activeSheet = deep.sheets.find((s) => s.name === deep.activeSheetName);
 
-  await Excel.run(async (ctx) => {
-    const activeWs = ctx.workbook.worksheets.getActiveWorksheet();
-    activeWs.load('name');
-    await ctx.sync();
-    activeSheetName = activeWs.name;
+    return {
+      context,
+      activeSheetData: activeSheet?.values ?? [],
+      promptContext: deep.prompt_context,
+    };
+  } catch (err) {
+    console.warn('[Cellix] Full workbook read failed, trying minimal active-sheet read:', err);
+    return buildMinimalWorkbookContext();
+  }
+}
 
-    const targetNames = names.length ? names : [activeSheetName];
+async function buildMinimalWorkbookContext(): Promise<{
+  context: ReturnType<typeof deepToApiWorkbookContext>;
+  activeSheetData: unknown[][];
+  promptContext: string;
+}> {
+  const minimal = await readActiveSheetMinimal();
+  const headers = (minimal.values[0] ?? []).map((cell) => String(cell ?? '').trim());
 
-    for (const sheetName of targetNames) {
-      const ws = ctx.workbook.worksheets.getItem(sheetName);
-      const { values, numberFormats } = await readSheetValues(ws, ctx);
-      snapshots.push(buildSnapshotFromValues(sheetName, values, numberFormats));
-
-      if (sheetName === activeSheetName) {
-        activeSheetData = values;
-      }
-    }
-  });
-
-  return {
-    context: {
-      sheets: snapshots,
-      activeSheet: activeSheetName,
-    },
-    activeSheetData,
+  const deep = {
+    activeSheetName: minimal.name,
+    selectedRange: minimal.usedRange,
+    sheets: [
+      {
+        name: minimal.name,
+        usedRange: minimal.usedRange,
+        rowCount: minimal.rowCount,
+        columnCount: minimal.columnCount,
+        values: minimal.values,
+        formulas: [],
+        numberFormats: [],
+        structure: 'unknown' as const,
+        headers,
+        formulaSummary: '',
+        isHidden: false,
+      },
+    ],
+    namedRanges: [],
+    tables: [],
+    prompt_context: `Active sheet: ${minimal.name}\nRows: ${minimal.rowCount}\nHeaders: ${headers.join(' | ')}`,
   };
+
+  const context = deepToApiWorkbookContext(deep);
+  return {
+    context,
+    activeSheetData: minimal.values,
+    promptContext: deep.prompt_context,
+  };
+}
+
+function isBlankCell(value: unknown): boolean {
+  return value === null || value === undefined || String(value).trim() === '';
 }
 
 function normalizeCell(value: unknown): string {
@@ -194,18 +146,16 @@ export function compareSheetValuesLocally(
 }
 
 async function readFullSheetValues(sheetName: string): Promise<unknown[][]> {
-  return Excel.run(async (ctx) => {
-    const ws = ctx.workbook.worksheets.getItem(sheetName);
-    const { values } = await readSheetValues(ws, ctx);
-    return values;
-  });
+  const deep = await buildDeepWorkbookContext([sheetName]);
+  const sheet = deep.sheets.find((s) => s.name === sheetName);
+  return sheet?.values ?? [];
 }
 
 export async function compareSheets(
   sheetA: string,
   sheetB: string,
 ): Promise<CompareResult> {
-  const context = await buildWorkbookContext([sheetA, sheetB]);
+  const { context } = await buildWorkbookContext([sheetA, sheetB]);
 
   try {
     const endpoint = getCompareEndpoint();
@@ -217,7 +167,7 @@ export async function compareSheets(
     const response = await fetch(endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ sheetA, sheetB, context: context.context }),
+      body: JSON.stringify({ sheetA, sheetB, context }),
     });
 
     if (response.ok) {

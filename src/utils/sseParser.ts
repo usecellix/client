@@ -1,4 +1,5 @@
 import { SheetAction } from '@/hooks/useSseStream';
+import { CellChange } from '@/types/changeSet';
 import { ClarificationPayload } from '@/types/cellix.types';
 
 export interface SseClarificationData extends ClarificationPayload {
@@ -20,6 +21,54 @@ export interface SseActionsData {
   actions: SheetAction[];
   explanation: string;
   conversationId?: string;
+  changeSetId?: string;
+  changes?: CellChange[];
+}
+
+export interface SseToolRequestData {
+  requestId: string;
+  conversationId: string;
+  tool: string;
+  sheet: string;
+  range: string;
+}
+
+export interface SsePlanStepData {
+  title: string;
+  detail?: string;
+}
+
+export interface SsePlanData {
+  prompt: string;
+  summary?: string;
+  steps: SsePlanStepData[];
+  affectedSheets: string[];
+  estimatedRows?: number;
+  safestApproach?: string;
+  conversationId?: string;
+}
+
+export interface SseMatchData {
+  label: string;
+  detail?: string;
+  sheetName: string;
+  row: number;
+  col: number;
+  colLetter?: string;
+  rowNum?: number;
+}
+
+export interface SseMatchesData {
+  matches: SseMatchData[];
+  summary?: string;
+  conversationId?: string;
+}
+
+export interface SseSelectCellData {
+  sheetName: string;
+  row: number;
+  col: number;
+  conversationId?: string;
 }
 
 export type ParsedSseEvent =
@@ -29,6 +78,10 @@ export type ParsedSseEvent =
   | { type: 'question'; data: SseQuestionData }
   | { type: 'clarification'; data: SseClarificationData }
   | { type: 'actions'; data: SseActionsData }
+  | { type: 'tool_request'; data: SseToolRequestData }
+  | { type: 'plan'; data: SsePlanData }
+  | { type: 'matches'; data: SseMatchesData }
+  | { type: 'select_cell'; data: SseSelectCellData }
   | { type: 'error'; data: { message: string } }
   | { type: 'conversation_end'; data: { summary?: string; conversationId?: string } }
   | { type: 'done'; data: { message: string } };
@@ -74,6 +127,8 @@ function parseMasterEnvelope(parsed: Record<string, unknown>): ParsedSseEvent | 
               actions: p.actions as SheetAction[],
               explanation: String(p.summary ?? p.explanation ?? ''),
               conversationId: p.conversationId as string | undefined,
+              changeSetId: p.changeSetId as string | undefined,
+              changes: Array.isArray(p.changes) ? (p.changes as CellChange[]) : undefined,
             },
           }
         : null;
@@ -171,6 +226,80 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
             data: {
               actions: parsed.actions as SheetAction[],
               explanation: String(parsed.explanation ?? ''),
+              conversationId: parsed.conversationId as string | undefined,
+              changeSetId: parsed.changeSetId as string | undefined,
+              changes: Array.isArray(parsed.changes)
+                ? (parsed.changes as CellChange[])
+                : undefined,
+            },
+          }
+        : null;
+    case 'tool_request':
+      return parsed &&
+        typeof parsed.requestId === 'string' &&
+        typeof parsed.sheet === 'string' &&
+        typeof parsed.range === 'string'
+        ? {
+            type: 'tool_request',
+            data: {
+              requestId: String(parsed.requestId),
+              conversationId: String(parsed.conversationId ?? ''),
+              tool: String(parsed.tool ?? 'get_range_data'),
+              sheet: String(parsed.sheet),
+              range: String(parsed.range),
+            },
+          }
+        : null;
+    case 'plan':
+      return parsed && Array.isArray(parsed.steps)
+        ? {
+            type: 'plan',
+            data: {
+              prompt: String(parsed.prompt ?? ''),
+              summary: parsed.summary ? String(parsed.summary) : undefined,
+              steps: (parsed.steps as SsePlanStepData[]).map((s) => ({
+                title: String(s.title ?? ''),
+                detail: s.detail ? String(s.detail) : undefined,
+              })),
+              affectedSheets: Array.isArray(parsed.affectedSheets)
+                ? (parsed.affectedSheets as string[]).map(String)
+                : [],
+              estimatedRows:
+                typeof parsed.estimatedRows === 'number' ? parsed.estimatedRows : undefined,
+              safestApproach: parsed.safestApproach
+                ? String(parsed.safestApproach)
+                : undefined,
+              conversationId: parsed.conversationId as string | undefined,
+            },
+          }
+        : null;
+    case 'matches':
+      return parsed && Array.isArray(parsed.matches)
+        ? {
+            type: 'matches',
+            data: {
+              matches: (parsed.matches as SseMatchData[]).map((m) => ({
+                label: String(m.label ?? ''),
+                detail: m.detail ? String(m.detail) : undefined,
+                sheetName: String(m.sheetName ?? ''),
+                row: Number(m.row ?? 0),
+                col: Number(m.col ?? 0),
+                colLetter: m.colLetter ? String(m.colLetter) : undefined,
+                rowNum: typeof m.rowNum === 'number' ? m.rowNum : undefined,
+              })),
+              summary: parsed.summary ? String(parsed.summary) : undefined,
+              conversationId: parsed.conversationId as string | undefined,
+            },
+          }
+        : null;
+    case 'select_cell':
+      return parsed
+        ? {
+            type: 'select_cell',
+            data: {
+              sheetName: String(parsed.sheetName ?? ''),
+              row: Number(parsed.row ?? 0),
+              col: Number(parsed.col ?? 0),
               conversationId: parsed.conversationId as string | undefined,
             },
           }

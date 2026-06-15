@@ -1,17 +1,12 @@
 import { SheetAction, SheetActionType } from '@/types/sheet-actions';
+import { CellChange } from '@/types/changeSet';
 import { ActionEngine } from '@/utils/actionEngine';
+import {
+  buildPreviewRejectActions,
+  partitionPreviewActions,
+} from '@/utils/previewRevert';
 
 /* global Excel */
-
-interface SavedCellFormat {
-  sheetName: string;
-  row: number;
-  col: number;
-  rowCount: number;
-  colCount: number;
-  fill: string | null;
-  fillPattern: Excel.FillPattern;
-}
 
 export interface ActionsPayload {
   actions: SheetAction[];
@@ -28,8 +23,6 @@ export interface DiffItem {
   description: string;
 }
 
-const PREVIEW_HIGHLIGHT_COLOR = '#FFF9C4';
-
 const CELL_ACTION_TYPES: SheetActionType[] = [
   'SET_CELL',
   'CLEAR_CELL',
@@ -39,9 +32,12 @@ const CELL_ACTION_TYPES: SheetActionType[] = [
 ];
 
 export class PreviewManager {
-  private savedFormats: SavedCellFormat[] = [];
   private pendingActions: SheetAction[] = [];
+  private pendingChanges: CellChange[] = [];
+  private structuralApplied = false;
+  private deferredApplied = false;
   private isActive = false;
+  private applying = false;
 
   async render(payload: ActionsPayload): Promise<DiffItem[]> {
     if (this.isActive) {
@@ -49,8 +45,12 @@ export class PreviewManager {
     }
 
     this.pendingActions = payload.actions;
-    this.savedFormats = [];
+    this.pendingChanges = [];
+    this.structuralApplied = false;
+    this.deferredApplied = false;
     const diffItems: DiffItem[] = [];
+
+    await this.applyStructuralPreview(payload.actions);
 
     await Excel.run(async (ctx) => {
       const activeSheet = ctx.workbook.worksheets.getActiveWorksheet();
@@ -66,21 +66,8 @@ export class PreviewManager {
         const { range, row, col, rowCount, colCount } = target;
         const resolvedAddress = formatAddress(row, col, rowCount, colCount);
 
-        range.load(['values', 'format/fill/color', 'format/fill/pattern']);
+        range.load(['values']);
         await ctx.sync();
-
-        this.savedFormats.push({
-          sheetName,
-          row,
-          col,
-          rowCount,
-          colCount,
-          fill: range.format.fill.color ?? null,
-          fillPattern: range.format.fill.pattern ?? 'None',
-        });
-
-        range.format.fill.pattern = 'Solid';
-        range.format.fill.color = PREVIEW_HIGHLIGHT_COLOR;
 
         diffItems.push({
           sheetName,
@@ -100,90 +87,89 @@ export class PreviewManager {
   }
 
   async accept(): Promise<void> {
-    if (!this.isActive) return;
+    if (!this.isActive || this.applying) return;
+    this.applying = true;
+
     const actions = [...this.pendingActions];
-    const saved = [...this.savedFormats];
+    const { deferred } = partitionPreviewActions(actions);
+
     this.pendingActions = [];
-    this.savedFormats = [];
+    this.pendingChanges = [];
     this.isActive = false;
 
     try {
-      if (saved.length) {
-        try {
-          await Excel.run(async (ctx) => {
-            for (const item of saved) {
-              try {
-                const ws = ctx.workbook.worksheets.getItem(item.sheetName);
-                const rowCount = Math.max(1, item.rowCount);
-                const colCount = Math.max(1, item.colCount);
-                const range = ws.getRangeByIndexes(item.row, item.col, rowCount, colCount);
-                this.restoreSavedFill(range, item);
-              } catch (error) {
-                console.warn('[Cellix] Failed to restore cell format before apply:', item, error);
-              }
-            }
-            await ctx.sync();
-          });
-        } catch (error) {
-          console.warn('[Cellix] Preview highlight cleanup failed; applying changes anyway:', error);
-        }
+      if (deferred.length > 0) {
+        await ActionEngine.applyActions(deferred);
+        this.deferredApplied = true;
       }
-      await ActionEngine.applyActions(actions);
     } catch (error) {
       this.pendingActions = actions;
-      this.savedFormats = saved;
       this.isActive = true;
       throw error;
+    } finally {
+      this.structuralApplied = false;
+      this.deferredApplied = false;
+      this.applying = false;
     }
   }
 
   async reject(): Promise<void> {
-    if (!this.isActive) return;
-    await this.clearHighlights();
-    this.reset();
+    if (!this.isActive || this.applying) return;
+    this.applying = true;
+
+    const actions = [...this.pendingActions];
+    const changes = [...this.pendingChanges];
+    const hadStructural = this.structuralApplied;
+    const hadDeferred = this.deferredApplied;
+
+    try {
+      const revertActions = buildPreviewRejectActions(actions, changes, {
+        structuralApplied: hadStructural,
+        deferredApplied: hadDeferred,
+      });
+
+      if (revertActions.length > 0) {
+        await ActionEngine.applyActions(revertActions);
+      }
+    } finally {
+      this.reset();
+      this.applying = false;
+    }
+  }
+
+  async highlightChanges(changes: CellChange[], actions: SheetAction[] = []): Promise<void> {
+    if (this.isActive) {
+      await this.reject();
+    }
+
+    this.pendingActions = actions;
+    this.pendingChanges = changes;
+    this.structuralApplied = false;
+    this.deferredApplied = false;
+
+    await this.applyStructuralPreview(actions);
+    this.isActive = true;
   }
 
   get active(): boolean {
     return this.isActive;
   }
 
-  private restoreSavedFill(range: Excel.Range, item: SavedCellFormat): void {
-    const pattern = item.fillPattern ?? 'None';
-    const hasFill = pattern !== 'None' && item.fill;
-
-    if (!hasFill) {
-      range.format.fill.pattern = 'None';
-      return;
-    }
-
-    range.format.fill.pattern = pattern as Excel.FillPattern;
-    range.format.fill.color = item.fill as string;
-  }
-
-  private async clearHighlights(): Promise<void> {
-    const saved = [...this.savedFormats];
-    if (!saved.length) return;
-
-    await Excel.run(async (ctx) => {
-      for (const item of saved) {
-        try {
-          const ws = ctx.workbook.worksheets.getItem(item.sheetName);
-          const rowCount = Math.max(1, item.rowCount);
-          const colCount = Math.max(1, item.colCount);
-          const range = ws.getRangeByIndexes(item.row, item.col, rowCount, colCount);
-          this.restoreSavedFill(range, item);
-        } catch (error) {
-          console.warn('[Cellix] Failed to clear preview highlight:', item, error);
-        }
-      }
-      await ctx.sync();
-    });
-  }
-
   private reset(): void {
-    this.savedFormats = [];
     this.pendingActions = [];
+    this.pendingChanges = [];
+    this.structuralApplied = false;
+    this.deferredApplied = false;
     this.isActive = false;
+  }
+
+  /** Apply sheet/structural mutations immediately so reject can undo them. */
+  private async applyStructuralPreview(actions: SheetAction[]): Promise<void> {
+    const { structural } = partitionPreviewActions(actions);
+    if (structural.length === 0) return;
+
+    await ActionEngine.applyActions(structural);
+    this.structuralApplied = true;
   }
 
   private async resolveTarget(

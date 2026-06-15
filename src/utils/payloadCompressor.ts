@@ -1,12 +1,24 @@
 import { WorkbookContext } from '@/types/cellix.types';
+import { AssistantMode } from '@/types/mode';
 
-const MAX_ROWS = 50;
+/** Header row + first/last data rows sent to the API (metadata-first compression). */
+export const HEADER_ROWS = 1;
+export const FIRST_DATA_ROWS = 5;
+export const LAST_DATA_ROWS = 5;
+
+export function isFindLookupQuery(message: string): boolean {
+  return /\b(find|search|locate|look up|lookup|show me|where is|get me|fetch|pull up|bring up)\b/i.test(
+    message,
+  );
+}
 
 export interface CompressedSheetPayload {
   sheetData: any[][];
   originalRowCount: number;
   compressedRowCount: number;
   truncated: boolean;
+  onDemandFetchEnabled: boolean;
+  includedRowIndices: number[];
 }
 
 function isBlankCell(value: unknown): boolean {
@@ -17,7 +29,8 @@ function normalizeNumericString(value: string): string | number {
   const trimmed = value.trim();
   if (!trimmed) return '';
 
-  const withoutCurrency = trimmed.replace(/[\u20B9\u0024\u20AC\u00A3,\s]/g, '');
+  const withoutDrCr = trimmed.replace(/\s*(Dr|Cr)\s*$/i, '');
+  const withoutCurrency = withoutDrCr.replace(/[\u20B9\u0024\u20AC\u00A3,\s]/g, '');
   const isWrappedNegative = /^\(.+\)$/.test(withoutCurrency);
   const numericCandidate = isWrappedNegative
     ? `-${withoutCurrency.slice(1, -1)}`
@@ -64,18 +77,57 @@ function compactRows(rows: any[][]): any[][] {
   );
 }
 
-export function compressSheetData(sheetData: any[][], maxRows = MAX_ROWS): CompressedSheetPayload {
+function pickSparseRowIndices(
+  totalRows: number,
+  firstDataRows = FIRST_DATA_ROWS,
+  lastDataRows = LAST_DATA_ROWS,
+): number[] {
+  if (totalRows <= 0) return [];
+  if (totalRows <= HEADER_ROWS + firstDataRows + lastDataRows) {
+    return Array.from({ length: totalRows }, (_, index) => index);
+  }
+
+  const indices = new Set<number>([0]);
+  for (let row = 1; row <= firstDataRows; row += 1) {
+    indices.add(row);
+  }
+  for (let offset = 0; offset < lastDataRows; offset += 1) {
+    indices.add(totalRows - 1 - offset);
+  }
+  return Array.from(indices).sort((a, b) => a - b);
+}
+
+export function compressSheetData(
+  sheetData: any[][],
+  options?: {
+    firstDataRows?: number;
+    lastDataRows?: number;
+  },
+): CompressedSheetPayload {
+  const firstDataRows = options?.firstDataRows ?? FIRST_DATA_ROWS;
+  const lastDataRows = options?.lastDataRows ?? LAST_DATA_ROWS;
+
   const normalizedRows = sheetData
     .map(normalizeRow)
     .filter((row) => row.some((cell) => !isBlankCell(cell)));
 
-  const sheetDataSlice = compactRows(normalizedRows.slice(0, maxRows));
+  const originalRowCount = sheetData.length;
+  const includedRowIndices = pickSparseRowIndices(
+    normalizedRows.length,
+    firstDataRows,
+    lastDataRows,
+  );
+  const sparseRows = includedRowIndices.map((index) => normalizedRows[index] ?? []);
+  const sheetDataSlice = compactRows(sparseRows);
+  const truncated = normalizedRows.length > sheetDataSlice.length;
 
   return {
     sheetData: sheetDataSlice,
-    originalRowCount: sheetData.length,
+    originalRowCount,
     compressedRowCount: sheetDataSlice.length,
-    truncated: normalizedRows.length > maxRows,
+    truncated,
+    onDemandFetchEnabled: truncated,
+    includedRowIndices,
   };
 }
 
@@ -91,6 +143,7 @@ export function prepareStreamRequestPayload(prompt: string, sheetData: any[][]):
       originalRowCount: compressed.originalRowCount,
       compressedRowCount: compressed.compressedRowCount,
       truncated: compressed.truncated,
+      onDemandFetchEnabled: compressed.onDemandFetchEnabled,
     });
   }
 
@@ -153,6 +206,48 @@ export interface WorkbookContextPayload {
   sheets: string[];
 }
 
+function attachCompressionMeta(
+  workbookContext: WorkbookContext | WorkbookContextPayload | undefined,
+  compressed: CompressedSheetPayload,
+  activeSheetName?: string,
+): WorkbookContext | WorkbookContextPayload | undefined {
+  if (!workbookContext || !('sheets' in workbookContext)) {
+    return workbookContext;
+  }
+
+  if (!Array.isArray(workbookContext.sheets) || workbookContext.sheets.length === 0) {
+    return workbookContext;
+  }
+
+  const firstSheet = workbookContext.sheets[0];
+  if (typeof firstSheet === 'string') {
+    return workbookContext;
+  }
+
+  const activeSheet = activeSheetName ?? workbookContext.activeSheet;
+  const sheets = workbookContext.sheets.map((sheet) => {
+    if (typeof sheet === 'string') return sheet;
+    if (sheet.sheetName !== activeSheet) return sheet;
+
+    return {
+      ...sheet,
+      rowCount: Math.max(sheet.rowCount, compressed.originalRowCount),
+      compressionMeta: {
+        originalRowCount: compressed.originalRowCount,
+        compressedRowCount: compressed.compressedRowCount,
+        truncated: compressed.truncated,
+        onDemandFetchEnabled: compressed.onDemandFetchEnabled,
+        includedRowIndices: compressed.includedRowIndices,
+      },
+    };
+  });
+
+  return {
+    ...workbookContext,
+    sheets,
+  } as WorkbookContext;
+}
+
 export function prepareConversationRequestPayload(
   message: string,
   sheetData: any[][],
@@ -160,20 +255,48 @@ export function prepareConversationRequestPayload(
     conversationId?: string | null;
     previousMessages?: ConversationHistoryMessage[];
     workbookContext?: WorkbookContext | WorkbookContextPayload;
+    promptContext?: string;
     previewEnabled?: boolean;
+    refinementChangeSetId?: string | null;
+    mode?: AssistantMode;
   },
 ): {
   conversationId?: string;
   message: string;
   sheetData: any[][];
+  sheetCompression?: Omit<CompressedSheetPayload, 'sheetData'>;
   workbookContext?: WorkbookContext | WorkbookContextPayload;
+  promptContext?: string;
   previewEnabled?: boolean;
+  refinementChangeSetId?: string;
+  mode?: AssistantMode;
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
   context: {
     previousMessages: ConversationHistoryMessage[];
   };
 } {
-  const compressed = compressSheetData(sheetData);
+  const isQuickEdit = Boolean(options?.refinementChangeSetId);
+  // Ask mode and find/lookup queries need the full sheet (no aggressive
+  // truncation) so cross-sheet search can scan everything via on-demand fetch.
+  const skipCompression = isFindLookupQuery(message) || options?.mode === 'ask';
+  const compressed =
+    isQuickEdit || skipCompression
+      ? {
+          sheetData,
+          originalRowCount: sheetData.length,
+          compressedRowCount: sheetData.length,
+          truncated: false,
+          onDemandFetchEnabled: true,
+          includedRowIndices: sheetData.map((_, index) => index),
+        }
+      : compressSheetData(sheetData);
+  const workbookContext = attachCompressionMeta(
+    options?.workbookContext,
+    compressed,
+    options?.workbookContext && 'activeSheet' in options.workbookContext
+      ? options.workbookContext.activeSheet
+      : undefined,
+  );
 
   if ((import.meta as any)?.env?.DEV) {
     // eslint-disable-next-line no-console
@@ -181,9 +304,10 @@ export function prepareConversationRequestPayload(
       originalRowCount: compressed.originalRowCount,
       compressedRowCount: compressed.compressedRowCount,
       truncated: compressed.truncated,
+      onDemandFetchEnabled: compressed.onDemandFetchEnabled,
       conversationId: options?.conversationId,
       previousMessages: options?.previousMessages?.length ?? 0,
-      workbookContext: options?.workbookContext,
+      workbookContext,
     });
   }
 
@@ -193,12 +317,30 @@ export function prepareConversationRequestPayload(
     content: entry.content,
   }));
 
+  const promptContext =
+    options?.promptContext ??
+    (workbookContext && 'prompt_context' in workbookContext
+      ? workbookContext.prompt_context
+      : undefined);
+
   return {
     ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
     message,
     sheetData: compressed.sheetData,
-    ...(options?.workbookContext ? { workbookContext: options.workbookContext } : {}),
+    sheetCompression: {
+      originalRowCount: compressed.originalRowCount,
+      compressedRowCount: compressed.compressedRowCount,
+      truncated: compressed.truncated,
+      onDemandFetchEnabled: compressed.onDemandFetchEnabled,
+      includedRowIndices: compressed.includedRowIndices,
+    },
+    ...(workbookContext ? { workbookContext } : {}),
+    ...(promptContext ? { promptContext } : {}),
     ...(options?.previewEnabled !== undefined ? { previewEnabled: options.previewEnabled } : {}),
+    ...(options?.refinementChangeSetId
+      ? { refinementChangeSetId: options.refinementChangeSetId }
+      : {}),
+    ...(options?.mode ? { mode: options.mode } : {}),
     conversationHistory,
     context: {
       previousMessages,

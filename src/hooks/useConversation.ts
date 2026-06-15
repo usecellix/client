@@ -13,14 +13,22 @@ import {
   CLARIFY_ROW_PLACEMENT,
 } from '@/utils/actionGuard';
 import { parseSseEventBlock } from '@/utils/sseParser';
+import { navigateToCell } from '@/services/rangeFetchService';
+import { handleToolRequest } from '@/services/toolRequestHandler';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import { buildThoughtSummary } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isSimpleCreateTask } from '@/utils/statusMessage';
+import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
+import { shouldPreviewActions } from '@/utils/previewPolicy';
 import { ClarificationPayload } from '@/types/cellix.types';
+import { CellChange } from '@/types/changeSet';
+import { AssistantMode, DEFAULT_ASSISTANT_MODE } from '@/types/mode';
 import {
   ActionBlock,
   AnswerBlock,
   ConversationTurn,
+  MatchesBlock,
+  PlanBlock,
   StepPhase,
   ThinkingBlock,
   TurnBlock,
@@ -38,16 +46,22 @@ interface UseConversationReturn {
     message: string,
     sheetData: unknown[][],
     workbookContext?: import('@/types/cellix.types').WorkbookContext,
+    promptContext?: string,
+    options?: SendMessageOptions,
   ) => Promise<void>;
   answerQuestion: (
     answer: string,
     sheetData: unknown[][],
     workbookContext?: import('@/types/cellix.types').WorkbookContext,
+    promptContext?: string,
+    options?: SendMessageOptions,
   ) => Promise<void>;
   answerClarification: (
     answer: string,
     sheetData: unknown[][],
     workbookContext?: import('@/types/cellix.types').WorkbookContext,
+    promptContext?: string,
+    options?: SendMessageOptions,
   ) => Promise<void>;
   dismissClarification: () => void;
   acceptActions: (turnId: string, blockId: string) => Promise<void>;
@@ -59,11 +73,26 @@ interface UseConversationReturn {
 }
 
 interface UseConversationOptions {
-  onActions?: (actions: SheetAction[], explanation: string) => void | Promise<void>;
-  onPreviewActions?: (actions: SheetAction[], explanation: string) => void | Promise<void>;
+  onActions?: (
+    actions: SheetAction[],
+    explanation: string,
+    meta?: PreviewActionsMeta,
+  ) => void | Promise<void>;
+  onPreviewActions?: (
+    actions: SheetAction[],
+    explanation: string,
+    meta?: PreviewActionsMeta,
+  ) => void | Promise<void>;
   onClearPreview?: () => void | Promise<void>;
+  onChangeSetApplied?: (changeSetId: string) => void;
   autoApplyActions?: boolean;
   previewEnabled?: boolean;
+  isChangeSetApplied?: (changeSetId?: string) => boolean;
+}
+
+export interface SendMessageOptions {
+  refinementChangeSetId?: string;
+  mode?: AssistantMode;
 }
 
 interface PendingResponse {
@@ -77,6 +106,13 @@ interface PendingActions {
   id: string;
   actions: SheetAction[];
   explanation: string;
+  changeSetId?: string;
+  changes?: CellChange[];
+}
+
+export interface PreviewActionsMeta {
+  changeSetId?: string;
+  changes?: CellChange[];
 }
 
 interface TurnRuntime {
@@ -84,7 +120,10 @@ interface TurnRuntime {
   responseGate: ReturnType<typeof createGate>;
   pendingResponse: PendingResponse | null;
   pendingActions: PendingActions | null;
+  pendingPlan: PlanBlock | null;
+  pendingMatches: MatchesBlock | null;
   aborted: boolean;
+  mode: AssistantMode;
 }
 
 const THINKING_ID = 'thinking_main';
@@ -183,23 +222,32 @@ function upsertStatus(
   return [...rest, { id: STATUS_ID, type: 'status', label, pulsing, visible }];
 }
 
-function createRuntime(): TurnRuntime {
+function createRuntime(mode: AssistantMode = DEFAULT_ASSISTANT_MODE): TurnRuntime {
   return {
     analyzingGate: createGate(),
     responseGate: createGate(),
     pendingResponse: null,
     pendingActions: null,
+    pendingPlan: null,
+    pendingMatches: null,
     aborted: false,
+    mode,
   };
 }
 
-function createActionBlock(pending: PendingActions): ActionBlock {
+function createActionBlock(
+  pending: PendingActions,
+  isChangeSetApplied?: (changeSetId?: string) => boolean,
+): ActionBlock {
+  const alreadyApplied = isChangeSetApplied?.(pending.changeSetId) ?? false;
   return {
     id: pending.id,
     type: 'actions',
     actions: pending.actions,
     explanation: pending.explanation,
-    proposalStatus: 'pending',
+    proposalStatus: alreadyApplied ? 'accepted' : 'pending',
+    changeSetId: pending.changeSetId,
+    changes: pending.changes,
   };
 }
 
@@ -208,8 +256,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     onActions,
     onPreviewActions,
     onClearPreview,
+    onChangeSetApplied,
     autoApplyActions = false,
     previewEnabled = true,
+    isChangeSetApplied,
   } = options;
 
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
@@ -274,7 +324,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     (turnId: string, response: PendingResponse) => {
       if (revealScheduledRef.current.has(turnId)) return;
       revealScheduledRef.current.add(turnId);
-      const pendingActions = runtimeRef.current.get(turnId)?.pendingActions;
+      const runtimeForReveal = runtimeRef.current.get(turnId);
+      const pendingActions = runtimeForReveal?.pendingActions;
+      const pendingPlan = runtimeForReveal?.pendingPlan;
+      const pendingMatches = runtimeForReveal?.pendingMatches;
 
       updateTurn(turnId, (turn) => ({
         ...turn,
@@ -310,12 +363,84 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                   },
                 ]
               : [],
-        ).concat(pendingActions ? [createActionBlock(pendingActions)] : []),
+        )
+          .concat(
+            pendingActions &&
+            !turn.blocks.some((b) => b.type === 'actions' && b.id === pendingActions.id)
+              ? [createActionBlock(pendingActions, isChangeSetApplied)]
+              : [],
+          )
+          .concat(pendingPlan ? [pendingPlan] : [])
+          .concat(pendingMatches ? [pendingMatches] : []),
       }));
 
       setIsWaitingForResponse(false);
     },
-    [updateTurn],
+    [updateTurn, isChangeSetApplied],
+  );
+
+  const dispatchLocalSheetActions = useCallback(
+    async (turnId: string, plan: LocalSheetActionPlan, mode: AssistantMode) => {
+      const runtime = runtimeRef.current.get(turnId);
+      if (!runtime) return;
+
+      const pendingActions: PendingActions = {
+        id: `actions_${Date.now()}`,
+        actions: plan.actions,
+        explanation: plan.explanation,
+      };
+      runtime.pendingActions = pendingActions;
+
+      pushHistory({
+        role: 'assistant',
+        content: plan.explanation,
+        timestamp: new Date().toISOString(),
+        type: 'answer',
+      });
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Preparing changes for review…', true, true),
+      }));
+
+      await delay(250);
+
+      if (runtime.aborted) return;
+
+      revealFinalResponse(turnId, { type: 'answer', answer: plan.explanation });
+
+      const isActionMode = mode === 'action';
+
+      if (isActionMode) {
+        if (shouldPreviewActions(plan.actions, autoApplyActions)) {
+          await onPreviewActions?.(plan.actions, plan.explanation, {});
+        }
+        updateTurn(turnId, (turn) => {
+          const withoutOldPending = turn.blocks.filter(
+            (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
+          );
+          const alreadyHasBlock = withoutOldPending.some(
+            (b) => b.type === 'actions' && b.id === pendingActions.id,
+          );
+          if (alreadyHasBlock) return turn;
+          return {
+            ...turn,
+            phase: 'complete',
+            blocks: [...withoutOldPending, createActionBlock(pendingActions, isChangeSetApplied)],
+          };
+        });
+      }
+    },
+    [
+      autoApplyActions,
+      isChangeSetApplied,
+      onActions,
+      onClearPreview,
+      onPreviewActions,
+      pushHistory,
+      revealFinalResponse,
+      updateTurn,
+    ],
   );
 
   const runVisualTimeline = useCallback(
@@ -540,6 +665,59 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             continue;
           }
 
+          if (event.type === 'select_cell') {
+            try {
+              await navigateToCell(
+                String(event.data.sheetName ?? ''),
+                Number(event.data.row),
+                Number(event.data.col),
+              );
+            } catch (error) {
+              console.warn('[Cellix] Failed to select cell:', error);
+            }
+            continue;
+          }
+
+          if (event.type === 'plan') {
+            const planBlock: PlanBlock = {
+              id: `plan_${Date.now()}`,
+              type: 'plan',
+              summary: event.data.summary,
+              steps: event.data.steps,
+              affectedSheets: event.data.affectedSheets,
+              estimatedRows: event.data.estimatedRows,
+              safestApproach: event.data.safestApproach,
+              prompt: event.data.prompt,
+            };
+            const runtime = runtimeRef.current.get(turnId);
+            if (runtime) runtime.pendingPlan = planBlock;
+            if (revealScheduledRef.current.has(turnId)) {
+              updateTurn(turnId, (turn) => ({
+                ...turn,
+                blocks: [...turn.blocks.filter((b) => b.type !== 'plan'), planBlock],
+              }));
+            }
+            continue;
+          }
+
+          if (event.type === 'matches') {
+            const matchesBlock: MatchesBlock = {
+              id: `matches_${Date.now()}`,
+              type: 'matches',
+              summary: event.data.summary,
+              matches: event.data.matches,
+            };
+            const runtime = runtimeRef.current.get(turnId);
+            if (runtime) runtime.pendingMatches = matchesBlock;
+            if (revealScheduledRef.current.has(turnId)) {
+              updateTurn(turnId, (turn) => ({
+                ...turn,
+                blocks: [...turn.blocks.filter((b) => b.type !== 'matches'), matchesBlock],
+              }));
+            }
+            continue;
+          }
+
           if (event.type === 'question') {
             pushHistory({
               role: 'assistant',
@@ -597,35 +775,55 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 ? `${event.data.explanation} (${sanitized.warnings.join(' ')})`
                 : event.data.explanation;
 
-            const pendingActions = {
+            const pendingActions: PendingActions = {
               id: `actions_${Date.now()}`,
               actions: sanitized.actions,
               explanation,
+              changeSetId: event.data.changeSetId,
+              changes: event.data.changes,
             };
             const runtime = runtimeRef.current.get(turnId);
             if (runtime) {
               runtime.pendingActions = pendingActions;
             }
 
-            if (!autoApplyActions) {
-              await onPreviewActions?.(sanitized.actions, explanation);
+            // Ask / Plan modes are read-only: never preview, apply, or audit
+            // write actions even if the backend emits them.
+            const isActionMode = (runtime?.mode ?? DEFAULT_ASSISTANT_MODE) === 'action';
+            const usePreview = shouldPreviewActions(sanitized.actions, autoApplyActions);
+
+            if (isActionMode && usePreview) {
+              await onPreviewActions?.(sanitized.actions, explanation, {
+                changeSetId: event.data.changeSetId,
+                changes: event.data.changes,
+              });
             }
 
-            if (revealScheduledRef.current.has(turnId)) {
+            if (isActionMode && usePreview) {
               updateTurn(turnId, (turn) => {
                 const withoutOldPending = turn.blocks.filter(
                   (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
                 );
+                const alreadyHasBlock = withoutOldPending.some(
+                  (b) => b.type === 'actions' && b.id === pendingActions.id,
+                );
+                if (alreadyHasBlock) return turn;
                 return {
                   ...turn,
-                  blocks: [...withoutOldPending, createActionBlock(pendingActions)],
+                  blocks: [
+                    ...withoutOldPending,
+                    createActionBlock(pendingActions, isChangeSetApplied),
+                  ],
                 };
               });
             }
 
-            if (autoApplyActions && onActions) {
+            if (isActionMode && !usePreview && onActions) {
               await onClearPreview?.();
-              await onActions(sanitized.actions, explanation);
+              await onActions(sanitized.actions, explanation, {
+                changeSetId: event.data.changeSetId,
+                changes: event.data.changes,
+              });
               historyRef.current = [];
               setActiveClarification(null);
               updateTurn(turnId, (turn) => ({
@@ -637,6 +835,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 ),
               }));
             }
+            continue;
+          }
+
+          if (event.type === 'tool_request') {
+            runtimeRef.current.get(turnId)?.analyzingGate.open();
+            updateTurn(turnId, (turn) => ({
+              ...turn,
+              blocks: upsertThinking(
+                turn.blocks,
+                `Reading ${event.data.range} from ${event.data.sheet}…`,
+                { loading: true },
+              ),
+            }));
+            await handleToolRequest(event.data);
             continue;
           }
 
@@ -666,6 +878,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     },
     [
       autoApplyActions,
+      isChangeSetApplied,
       onActions,
       onClearPreview,
       onPreviewActions,
@@ -677,7 +890,13 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const sendMessage = useCallback(
-    async (message: string, sheetData: unknown[][], workbookContext?: WorkbookContext) => {
+    async (
+      message: string,
+      sheetData: unknown[][],
+      workbookContext?: WorkbookContext,
+      promptContext?: string,
+      sendOptions?: SendMessageOptions,
+    ) => {
       const trimmed = message.trim();
       if (!trimmed) return;
 
@@ -685,9 +904,13 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       const turnId = `turn_${Date.now()}`;
       const timestamp = new Date();
-      const runtime = createRuntime();
+      const mode = sendOptions?.mode ?? DEFAULT_ASSISTANT_MODE;
+      const runtime = createRuntime(mode);
       runtimeRef.current.set(turnId, runtime);
       revealScheduledRef.current.delete(turnId);
+
+      const localSheetPlan =
+        mode === 'action' ? tryLocalSheetActions(trimmed, workbookContext, mode) : null;
 
       const newTurn: ConversationTurn = {
         id: turnId,
@@ -715,6 +938,26 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       const sheetLayout = computeSheetLayout(sheetData);
       sheetLayoutRef.current = sheetLayout;
 
+      if (localSheetPlan) {
+        try {
+          await dispatchLocalSheetActions(turnId, localSheetPlan, mode);
+        } catch (error: unknown) {
+          const messageText =
+            error instanceof Error ? error.message : 'Failed to prepare sheet deletion';
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            phase: 'error',
+            error: messageText,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        } finally {
+          setIsWaitingForResponse(false);
+          abortControllerRef.current = null;
+          runtimeRef.current.delete(turnId);
+        }
+        return;
+      }
+
       const timelinePromise = runVisualTimeline(turnId, runtime, {
         sheetIsEmpty: sheetLayout.isEmpty,
         userMessage: trimmed,
@@ -724,7 +967,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         conversationId: conversationIdRef.current,
         previousMessages: historyRef.current.slice(0, -1),
         workbookContext,
+        promptContext,
         previewEnabled,
+        refinementChangeSetId: sendOptions?.refinementChangeSetId,
+        mode,
       });
 
       try {
@@ -782,6 +1028,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
     },
     [
+      dispatchLocalSheetActions,
       getUserFacingErrorMessage,
       onClearPreview,
       previewEnabled,
@@ -794,18 +1041,30 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const answerQuestion = useCallback(
-    async (answer: string, sheetData: unknown[][], workbookContext?: WorkbookContext) => {
-      await sendMessage(answer, sheetData, workbookContext);
+    async (
+      answer: string,
+      sheetData: unknown[][],
+      workbookContext?: WorkbookContext,
+      promptContext?: string,
+      options?: SendMessageOptions,
+    ) => {
+      await sendMessage(answer, sheetData, workbookContext, promptContext, options);
     },
     [sendMessage],
   );
 
   const answerClarification = useCallback(
-    async (answer: string, sheetData: unknown[][], workbookContext?: WorkbookContext) => {
+    async (
+      answer: string,
+      sheetData: unknown[][],
+      workbookContext?: WorkbookContext,
+      promptContext?: string,
+      options?: SendMessageOptions,
+    ) => {
       const trimmed = answer.trim();
       if (!trimmed) return;
       setActiveClarification(null);
-      await sendMessage(trimmed, sheetData, workbookContext);
+      await sendMessage(trimmed, sheetData, workbookContext, promptContext, options);
     },
     [sendMessage],
   );
@@ -820,21 +1079,21 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     }
   }, [activeTurnId, updateTurn]);
 
+  const applyingActionsRef = useRef(false);
+
   const acceptActions = useCallback(
     async (turnId: string, blockId: string) => {
+      if (applyingActionsRef.current) return;
+
       const turn = turnsRef.current.find((t) => t.id === turnId);
       const block = turn?.blocks.find(
         (b): b is ActionBlock => b.id === blockId && b.type === 'actions',
       );
       if (!block || block.proposalStatus !== 'pending') return;
 
-      if (onActions) {
-        await onActions(block.actions, block.explanation);
-      }
+      applyingActionsRef.current = true;
 
-      historyRef.current = [];
-      setActiveClarification(null);
-
+      // Mark accepted immediately so Accept / preview controls disappear.
       updateTurn(turnId, (t) => ({
         ...t,
         blocks: t.blocks.map((b) =>
@@ -843,8 +1102,36 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             : b,
         ),
       }));
+
+      try {
+        if (onActions) {
+          await onActions(block.actions, block.explanation, {
+            changeSetId: block.changeSetId,
+            changes: block.changes,
+          });
+        }
+
+        if (block.changeSetId) {
+          onChangeSetApplied?.(block.changeSetId);
+        }
+
+        historyRef.current = [];
+        setActiveClarification(null);
+      } catch (error) {
+        updateTurn(turnId, (t) => ({
+          ...t,
+          blocks: t.blocks.map((b) =>
+            b.id === blockId && b.type === 'actions'
+              ? { ...b, proposalStatus: 'pending' }
+              : b,
+          ),
+        }));
+        throw error;
+      } finally {
+        applyingActionsRef.current = false;
+      }
     },
-    [onActions, updateTurn],
+    [onActions, onChangeSetApplied, updateTurn],
   );
 
   const rejectActions = useCallback(

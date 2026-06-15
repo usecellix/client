@@ -1,3 +1,5 @@
+import { partitionActions, USE_LEGACY_ACTION_ENGINE } from '../engine/actionNormalizer';
+import { richActionEngine } from '../engine/actionEngine';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '../services/formatGuard';
 import { sanitizeActions } from './actionGuard';
@@ -46,41 +48,83 @@ export class ActionEngine {
   }
 
   static async applyActions(actions: SheetAction[]): Promise<void> {
+    const result = await this.applyActionsWithReport(actions);
+    if (result.errors.length > 0 && result.applied === 0) {
+      throw new Error(result.errors.join('; '));
+    }
+  }
+
+  static async applyActionsWithReport(actions: SheetAction[]): Promise<{
+    applied: number;
+    errors: string[];
+  }> {
+    const errors: string[] = [];
+    let applied = 0;
+
     try {
-      const safeActions = guardActions(actions);
-      if (!safeActions.length) {
+      const { rich, legacy } = partitionActions(actions);
+      const safeActions = USE_LEGACY_ACTION_ENGINE ? guardActions(legacy) : [];
+      if (!safeActions.length && !rich.length) {
+        const unconverted = legacy.length
+          ? legacy.map((a) => a.type).join(', ')
+          : actions.length > 0
+            ? actions.map((a) => a.type).join(', ')
+            : 'none';
         throw new Error(
-          'No safe actions to apply. Header row is protected — use ADD_ROW to append data.',
+          `No actions to apply. Unconverted types: ${unconverted}. Set localStorage CELLIX_USE_LEGACY_ENGINE=true for legacy fallback.`,
+        );
+      }
+
+      if (legacy.length > 0 && !USE_LEGACY_ACTION_ENGINE) {
+        errors.push(
+          `Skipped ${legacy.length} unconverted action(s): ${legacy.map((a) => a.type).join(', ')}`,
         );
       }
 
       const actionsToApply = this.previewRanges.length
-        ? safeActions.filter((action) => action.type === 'DELETE_ROW' || action.type === 'HIGHLIGHT_CELL')
+        ? safeActions.filter(
+            (action) => action.type === 'DELETE_ROW' || action.type === 'HIGHLIGHT_CELL',
+          )
         : safeActions;
 
       if (this.previewRanges.length) {
         await this.commitPreview();
       }
 
-      await Excel.run(async (context) => {
-        for (const action of actionsToApply) {
-          const worksheet = this.resolveWorksheet(context, action);
-          try {
-            await this.applySingleAction(context, worksheet, action);
-            if (action.type === 'ADD_ROW') {
-              await context.sync();
-            }
-          } catch (error) {
-            console.warn('Action failed, skipping:', action, error);
-          }
-        }
+      if (rich.length > 0) {
+        const richResult = await richActionEngine.applyActions(rich);
+        applied += richResult.applied;
+        errors.push(...richResult.errors);
+      }
 
-        await context.sync();
-      });
+      if (actionsToApply.length > 0) {
+        await Excel.run(async (context) => {
+          for (const action of actionsToApply) {
+            const worksheet = this.resolveWorksheet(context, action);
+            try {
+              await this.applySingleAction(context, worksheet, action);
+              if (action.type === 'ADD_ROW') {
+                await context.sync();
+              }
+              applied += 1;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              errors.push(`${action.type}: ${message}`);
+              console.warn('Action failed, skipping:', action, error);
+            }
+          }
+
+          await context.sync();
+        });
+      }
     } catch (error) {
       console.error('Failed to apply actions to spreadsheet:', error);
-      throw new Error(`Spreadsheet update failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Spreadsheet update failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
     }
+
+    return { applied, errors };
   }
 
   static async previewActions(actions: SheetAction[]): Promise<void> {
@@ -293,6 +337,19 @@ export class ActionEngine {
         break;
       case 'WRITE_TABLE':
         this.writeTable(worksheet, action);
+        break;
+      case 'CLARIFY':
+      case 'CHECKPOINT':
+        break;
+      case 'BATCH_SET':
+      case 'CREATE_TABLE':
+      case 'DEFINE_NAMED_RANGE':
+      case 'AUTOFIT_COLUMNS':
+      case 'ADD_SHEET':
+        await this.createSheet(context, {
+          ...action,
+          sheetName: action.name ?? action.sheetName ?? 'New Sheet',
+        });
         break;
       default:
         console.warn(`Unknown action type: ${(action as SheetAction).type}`);
@@ -676,34 +733,28 @@ export class ActionEngine {
     switch (action.type) {
       case 'SET_CELL':
         range.values = [[action.value ?? '']];
-        this.applyFillColor(range, PREVIEW_FILL);
         return;
       case 'CLEAR_CELL':
         range.values = [['']];
-        this.applyFillColor(range, PREVIEW_FILL);
         return;
       case 'SET_FORMULA':
         range.formulas = [[action.formula ?? '']];
-        this.applyFillColor(range, PREVIEW_FILL);
         return;
       case 'ADD_ROW': {
         const data = action.data ?? [];
         range.values = [Array.from({ length: colCount }, (_, index) => data[index] ?? '')];
-        this.applyFillColor(range, PREVIEW_FILL);
         return;
       }
       case 'HIGHLIGHT_CELL':
-        this.applyFillColor(range, action.color || PREVIEW_FILL);
+        if (action.color) this.applyFillColor(range, action.color);
         return;
       case 'FORMAT_RANGE':
         if (action.format?.fillColor) this.applyFillColor(range, action.format.fillColor);
-        else this.applyFillColor(range, PREVIEW_FILL);
         return;
       case 'DELETE_ROW':
-        this.applyFillColor(range, PREVIEW_FILL);
         return;
       default:
-        this.applyFillColor(range, PREVIEW_FILL);
+        return;
     }
   }
 
@@ -835,6 +886,20 @@ export class ActionEngine {
         return true;
       case 'WRITE_TABLE':
         return Array.isArray(action.headers) && action.headers.length > 0 && Array.isArray(action.rows);
+      case 'BATCH_SET':
+        return Boolean(action.sheetName) && Array.isArray(action.operations);
+      case 'CREATE_TABLE':
+        return Boolean(action.sheetName && action.range && action.tableName);
+      case 'DEFINE_NAMED_RANGE':
+        return Boolean(action.name && action.formula);
+      case 'AUTOFIT_COLUMNS':
+        return Boolean(action.sheetName);
+      case 'CLARIFY':
+        return Boolean(action.question);
+      case 'CHECKPOINT':
+        return Boolean(action.message);
+      case 'ADD_SHEET':
+        return Boolean(action.name ?? action.sheetName);
       default:
         return false;
     }

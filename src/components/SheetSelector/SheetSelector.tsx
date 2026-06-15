@@ -13,18 +13,21 @@ export interface SheetInfo {
 interface SheetSelectorProps {
   onSelectionChange: (selectedSheets: string[]) => void;
   onCompare: (sheetA: string, sheetB: string) => void;
+  /** When true, render the body directly (no internal toggle) for header popovers. */
+  embedded?: boolean;
 }
 
 export const SheetSelector: React.FC<SheetSelectorProps> = ({
   onSelectionChange,
   onCompare,
+  embedded = false,
 }) => {
   const [sheets, setSheets] = useState<SheetInfo[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [compareMode, setCompareMode] = useState(false);
   const [compareA, setCompareA] = useState<string | null>(null);
   const [compareB, setCompareB] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(embedded);
 
   const loadSheets = useCallback(async () => {
     await Excel.run(async (ctx) => {
@@ -109,17 +112,19 @@ export const SheetSelector: React.FC<SheetSelectorProps> = ({
 
   return (
     <div className="cellix-sheet-selector">
-      <button
-        type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="cellix-sheet-selector-header"
-      >
-        <div className="cellix-sheet-selector-title">
-          <span>📋</span>
-          <span>Sheets ({selected.size} selected)</span>
-        </div>
-        <span className="cellix-sheet-selector-chevron">{isExpanded ? '▲' : '▼'}</span>
-      </button>
+      {!embedded && (
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="cellix-sheet-selector-header"
+        >
+          <div className="cellix-sheet-selector-title">
+            <span>📋</span>
+            <span>Sheets ({selected.size} selected)</span>
+          </div>
+          <span className="cellix-sheet-selector-chevron">{isExpanded ? '▲' : '▼'}</span>
+        </button>
+      )}
 
       {isExpanded && (
         <div className="cellix-sheet-selector-body">

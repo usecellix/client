@@ -2,8 +2,6 @@ import React, { useState } from 'react';
 import {
   BarChart3,
   BellOff,
-  ChevronDown,
-  ChevronRight,
   Copy,
   Share2,
   ThumbsDown,
@@ -13,22 +11,24 @@ import { renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
 
 interface ResponseOutputProps {
   content: string;
-  followUps: string[];
+  followUps?: string[];
   onFollowUp?: (text: string) => void;
   disabled?: boolean;
   showTypingCursor?: boolean;
+  /** When false, follow-ups are omitted (render at turn level via FollowUpsSection). */
+  includeFollowUps?: boolean;
 }
 
 const ResponseOutput: React.FC<ResponseOutputProps> = ({
   content,
-  followUps,
+  followUps = [],
   onFollowUp,
   disabled = false,
   showTypingCursor = false,
+  includeFollowUps = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
-  const [followUpsOpen, setFollowUpsOpen] = useState(true);
 
   const handleCopy = async () => {
     try {
@@ -82,41 +82,30 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
         </button>
       </div>
 
-      {followUps.length > 0 && (
+      {includeFollowUps && followUps.length > 0 && (
         <>
           <div className="cellix-response-divider" />
           <div className="cellix-followups">
-            <button
-              type="button"
-              className="cellix-followups-toggle"
-              onClick={() => setFollowUpsOpen((open) => !open)}
-            >
-              {followUpsOpen ? (
-                <ChevronDown size={14} className="cellix-followups-chevron" />
-              ) : (
-                <ChevronRight size={14} className="cellix-followups-chevron" />
-              )}
+            <span className="cellix-followups-toggle" style={{ cursor: 'default' }}>
               <span>Suggested follow-ups</span>
-            </button>
-            {followUpsOpen && (
-              <ul className="cellix-followups-list">
-                {followUps.map((item, index) => (
-                  <li
-                    key={item}
-                    className={`cellix-followups-item ${index === followUps.length - 1 ? 'is-last' : ''}`}
+            </span>
+            <ul className="cellix-followups-list">
+              {followUps.map((item, index) => (
+                <li
+                  key={item}
+                  className={`cellix-followups-item ${index === followUps.length - 1 ? 'is-last' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="cellix-followups-link"
+                    disabled={disabled}
+                    onClick={() => onFollowUp?.(item)}
                   >
-                    <button
-                      type="button"
-                      className="cellix-followups-link"
-                      disabled={disabled}
-                      onClick={() => onFollowUp?.(item)}
-                    >
-                      {item}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+                    {item}
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         </>
       )}

@@ -47,7 +47,22 @@ export type SheetActionType =
   | 'SET_SHEET_COLOR'
   | 'ADD_COMMENT'
   | 'DELETE_COMMENT'
-  | 'WRITE_TABLE';
+  | 'WRITE_TABLE'
+  | 'BATCH_SET'
+  | 'CREATE_TABLE'
+  | 'DEFINE_NAMED_RANGE'
+  | 'AUTOFIT_COLUMNS'
+  | 'CLARIFY'
+  | 'CHECKPOINT'
+  | 'ADD_SHEET'
+  | 'SORT_RANGE';
+
+export interface BatchSetOperation {
+  address: string;
+  value?: unknown;
+  formula?: string;
+  format?: FormatSpec;
+}
 
 export interface SheetAction {
   type: SheetActionType;
@@ -75,6 +90,32 @@ export interface SheetAction {
   comment?: string;
   headers?: string[];
   rows?: unknown[][];
+  /** Rich action: Excel 1-based row after which to insert */
+  afterRow?: number;
+  values?: unknown[];
+  copyFormatFromRow?: number;
+  address?: string;
+  range?: string;
+  sourceRange?: string;
+  targetRange?: string;
+  operations?: BatchSetOperation[];
+  /** Rich DELETE_ROW: 1-based row numbers (when type is DELETE_ROW) */
+  rowNumbers?: number[];
+  beforeColumn?: string;
+  columns?: string[];
+  oldName?: string;
+  sourceName?: string;
+  name?: string;
+  tableName?: string;
+  hasHeaders?: boolean;
+  style?: string;
+  question?: string;
+  options?: string[];
+  message?: string;
+  copyFrom?: string;
+  key?: number;
+  ascending?: boolean;
+  columnName?: string;
 }
 
 export interface WorkbookContextPayload {

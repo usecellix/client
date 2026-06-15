@@ -1,24 +1,34 @@
 import React, { useState } from 'react';
 import { ChevronRight } from 'lucide-react';
-import { DiffItem } from '@/services/previewManager';
+import { CellChange, formatCellValue } from '@/types/changeSet';
 
-interface PreviewSummaryBarProps {
-  items: DiffItem[];
+interface DiffPreviewPanelProps {
+  changes: CellChange[];
   summary: string;
+  changeSetId?: string;
   onAccept: () => void;
   onReject: () => void;
   isApplying: boolean;
 }
 
-export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
-  items,
+export const DiffPreviewPanel: React.FC<DiffPreviewPanelProps> = ({
+  changes,
   summary,
+  changeSetId,
   onAccept,
   onReject,
   isApplying,
 }) => {
-  const [expanded, setExpanded] = useState(false);
-  const changeCount = items.length || 1;
+  const [expanded, setExpanded] = useState(true);
+  const [localApplying, setLocalApplying] = useState(false);
+  const changeCount = changes.length || 1;
+  const applying = isApplying || localApplying;
+
+  const handleAccept = () => {
+    if (applying) return;
+    setLocalApplying(true);
+    void Promise.resolve(onAccept()).finally(() => setLocalApplying(false));
+  };
 
   return (
     <div className="cellix-preview-summary">
@@ -34,10 +44,10 @@ export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
             className={`cellix-preview-chevron${expanded ? ' expanded' : ''}`}
           />
           <span className="cellix-preview-count">
-            {changeCount} change{changeCount === 1 ? '' : 's'}
+            {changeCount} cell change{changeCount === 1 ? '' : 's'}
           </span>
           <span className="cellix-badge cellix-preview-badge">
-            Preview
+            {changeSetId ? 'Audited diff' : 'Preview'}
           </span>
         </button>
         <div className="cellix-preview-summary-actions">
@@ -45,17 +55,17 @@ export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
             type="button"
             className="cellix-preview-reject-btn"
             onClick={onReject}
-            disabled={isApplying}
+            disabled={applying}
           >
             Reject
           </button>
           <button
             type="button"
             className="cellix-preview-accept-btn"
-            onClick={onAccept}
-            disabled={isApplying}
+            onClick={handleAccept}
+            disabled={applying}
           >
-            {isApplying ? 'Applying…' : 'Accept'}
+            {applying ? 'Applying…' : 'Apply'}
           </button>
         </div>
       </div>
@@ -63,35 +73,37 @@ export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
       {expanded && (
         <div className="cellix-preview-summary-body">
           {summary && <p className="cellix-preview-summary-text">{summary}</p>}
-          {items.length > 0 ? (
+          {changes.length > 0 ? (
             <div className="cellix-review-table-wrap">
               <table className="cellix-review-table">
                 <thead>
                   <tr>
                     <th>Cell</th>
-                    <th>Action</th>
-                    <th>Change</th>
+                    <th>Before</th>
+                    <th>After</th>
+                    <th>Formula</th>
+                    <th>Hardcoded</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item, index) => (
-                    <tr key={`${item.sheetName}-${item.address}-${index}`}>
+                  {changes.map((item, index) => (
+                    <tr key={`${item.sheet}-${item.cell}-${index}`}>
                       <td>
                         <span className="cellix-cell-ref">
-                          {item.sheetName}!{item.address}
+                          {item.sheet}!{item.cell}
                         </span>
                       </td>
-                      <td>{item.actionType}</td>
-                      <td>
-                        <span className="cellix-after-pill">{item.description}</span>
-                      </td>
+                      <td className="cellix-diff-before">{formatCellValue(item.before)}</td>
+                      <td className="cellix-diff-after">{formatCellValue(item.after)}</td>
+                      <td>{item.formula ?? '—'}</td>
+                      <td>{item.isHardcoded ? 'Yes' : 'No'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
-            <p className="cellix-preview-summary-text">Review the changes below before accepting.</p>
+            <p className="cellix-preview-summary-text">Review the changes below before applying.</p>
           )}
         </div>
       )}
@@ -99,4 +111,4 @@ export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
   );
 };
 
-export default PreviewSummaryBar;
+export default DiffPreviewPanel;

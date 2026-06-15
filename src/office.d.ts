@@ -36,12 +36,58 @@ declare namespace Excel {
 
   interface Workbook {
     worksheets: WorksheetCollection;
+    names: NamedItemCollection;
+    tables: TableCollection;
+    getSelectedRange(): Range;
+  }
+
+  interface NamedItemCollection {
+    items: NamedItem[];
+    load(propertyNames?: string | string[]): NamedItemCollection;
+    add(name: string, formula: string, comment?: string): NamedItem;
+    getItem(name: string): NamedItem;
+  }
+
+  interface NamedItem {
+    name: string;
+    formula: string;
+    type: string;
+    comment?: string;
+    load(propertyNames?: string | string[]): NamedItem;
+  }
+
+  interface TableCollection {
+    items: Table[];
+    load(propertyNames?: string | string[]): TableCollection;
+  }
+
+  interface Table {
+    name: string;
+    showHeaders: boolean;
+    style: string;
+    worksheet: Worksheet;
+    getHeaderRowRange(): Range;
+    getRange(): Range;
+    load(propertyNames?: string | string[]): Table;
+  }
+
+  interface TableScopedCollection {
+    add(address: string, hasHeaders: boolean): Table;
+  }
+
+  enum RangeCopyType {
+    all = 'All',
+    formulas = 'Formulas',
+    values = 'Values',
+    formats = 'Formats',
   }
 
   interface WorksheetCollection {
     items: Worksheet[];
+    count: number;
     getActiveWorksheet(): Worksheet;
     getItem(name: string): Worksheet;
+    getItemAt(index: number): Worksheet;
     add(name?: string): Worksheet;
     load(propertyNames?: string | string[]): WorksheetCollection;
   }
@@ -53,6 +99,7 @@ declare namespace Excel {
   }
 
   interface Worksheet {
+    tables: TableScopedCollection;
     getUsedRange(): Range | null;
     getRange(address: string): Range;
     getCell(row: number, column: number): Range;
@@ -65,6 +112,7 @@ declare namespace Excel {
     load(propertyNames?: string | string[]): Worksheet;
     delete(): void;
     copy(): Worksheet;
+    activate(): void;
   }
 
   interface WorksheetFreezePanes {
@@ -79,6 +127,33 @@ declare namespace Excel {
     contents = 'Contents',
     hyperlinks = 'Hyperlinks',
     removeHyperlinks = 'RemoveHyperlinks',
+  }
+
+  enum SortOrientation {
+    rows = 'Rows',
+    columns = 'Columns',
+  }
+
+  interface SortField {
+    key: number;
+    ascending?: boolean;
+    sortOn?: SortOn;
+  }
+
+  enum SortOn {
+    value = 'Value',
+    cellColor = 'CellColor',
+    fontColor = 'FontColor',
+    icon = 'Icon',
+  }
+
+  interface RangeSort {
+    apply(
+      fields: SortField[],
+      matchCase?: boolean,
+      hasHeaders?: boolean,
+      orientation?: SortOrientation | 'Rows' | 'Columns',
+    ): void;
   }
 
   enum AutoFillType {
@@ -124,11 +199,21 @@ declare namespace Excel {
     unmerge(): void;
     clear(applyTo?: ClearApplyTo): void;
     autoFill(destinationRange: Range, autoFillType: AutoFillType): void;
+    copyFrom(
+      sourceRange: Range,
+      copyType: RangeCopyType,
+      skipBlanks?: boolean,
+      transpose?: boolean,
+    ): void;
+    getResizedRange(deltaRows: number, deltaColumns: number): Range;
     getComment(): Comment;
     rowCount: number;
     columnCount: number;
     row: number;
     column: number;
+    address: string;
+    sort: RangeSort;
+    select(): void;
   }
 
   interface Comment {
@@ -145,6 +230,7 @@ declare namespace Excel {
     horizontalAlignment: HorizontalAlignment;
     verticalAlignment: VerticalAlignment;
     wrapText: boolean;
+    autofitColumns(): void;
   }
 
   interface RangeFont {
