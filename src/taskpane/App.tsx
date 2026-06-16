@@ -6,7 +6,7 @@ import { ActionEngine } from '@/utils/actionEngine';
 import { CellChange } from '@/types/changeSet';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
-import { buildWorkbookContext, compareSheets } from '@/services/sheetContextBuilder';
+import { buildWorkbookContext } from '@/services/sheetContextBuilder';
 import { SheetAction } from '@/types/sheet-actions';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE, isAssistantMode } from '@/types/mode';
 import '@/styles/conversation-panel.css';
@@ -14,13 +14,7 @@ import './taskpane.css';
 
 /* global Excel */
 
-const PREVIEW_KEY = 'cellix.previewEnabled';
-const MODE_KEY = 'cellix.assistantMode';
-
-function readPreviewEnabled(): boolean {
-  const stored = localStorage.getItem(PREVIEW_KEY);
-  return stored === null ? true : stored === 'true';
-}
+const MODE_KEY = 'cellix.assistantMode.v2';
 
 function readMode(): AssistantMode {
   const stored = localStorage.getItem(MODE_KEY);
@@ -28,7 +22,7 @@ function readMode(): AssistantMode {
 }
 
 const App: React.FC = () => {
-  const [previewEnabled, setPreviewEnabled] = useState(readPreviewEnabled);
+  const previewEnabled = true;
   const [mode, setMode] = useState<AssistantMode>(readMode);
   const [serverChanges, setServerChanges] = useState<CellChange[]>([]);
   const [pendingChangeSetId, setPendingChangeSetId] = useState<string | undefined>();
@@ -36,7 +30,7 @@ const App: React.FC = () => {
   const [hasPendingPreview, setHasPendingPreview] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
-  const [isComparing, setIsComparing] = useState(false);
+  const [isComparing] = useState(false);
   const [isReadingWorkbook, setIsReadingWorkbook] = useState(false);
   const [refinementChangeSetId, setRefinementChangeSetId] = useState<string | null>(null);
   const [quickEditMode, setQuickEditMode] = useState(false);
@@ -45,14 +39,6 @@ const App: React.FC = () => {
 
   const isChangeSetApplied = useCallback((changeSetId?: string) => {
     return Boolean(changeSetId && appliedChangeSetIdsRef.current.has(changeSetId));
-  }, []);
-
-  const togglePreview = useCallback(() => {
-    setPreviewEnabled((prev) => {
-      const next = !prev;
-      localStorage.setItem(PREVIEW_KEY, String(next));
-      return next;
-    });
   }, []);
 
   const handleModeChange = useCallback((next: AssistantMode) => {
@@ -123,7 +109,6 @@ const App: React.FC = () => {
   const {
     turns,
     activeTurnId,
-    conversationId,
     isWaitingForResponse,
     isWaitingClarification,
     activeClarification,
@@ -135,6 +120,8 @@ const App: React.FC = () => {
     rejectActions,
     endConversation,
     clearConversation,
+    selectTurn,
+    closeTurn,
     toggleThinking,
     markAnswerComplete,
   } = useConversation({
@@ -234,14 +221,6 @@ const App: React.FC = () => {
     }
   }, [clearActionPreview, clearPreviewState, findPendingActionBlock, isApplying, rejectActions]);
 
-  const handleRevertChangeSet = useCallback(
-    async (_changeSetId: string, inverseActions: SheetAction[]) => {
-      if (!inverseActions.length) return;
-      await ActionEngine.applyActions(inverseActions);
-    },
-    [],
-  );
-
   const pendingPreview = useMemo(() => {
     if (!previewEnabled || !hasPendingPreview) return null;
     return {
@@ -287,23 +266,6 @@ const App: React.FC = () => {
       };
     } finally {
       setIsReadingWorkbook(false);
-    }
-  }, []);
-
-  // Sheet selection is display/compare-only; search & operations always use
-  // the full workbook context, so no scope state is tracked here.
-  const handleSheetSelectionChange = useCallback(() => {}, []);
-
-  const handleCompare = useCallback(async (sheetA: string, sheetB: string) => {
-    setIsComparing(true);
-    setCompareResult(null);
-    try {
-      const result = await compareSheets(sheetA, sheetB);
-      setCompareResult(result);
-    } catch (error) {
-      console.error('[Cellix] Sheet compare failed:', error);
-    } finally {
-      setIsComparing(false);
     }
   }, []);
 
@@ -355,23 +317,21 @@ const App: React.FC = () => {
     <ConversationPanel
       turns={turns}
       activeTurnId={activeTurnId}
-      conversationId={conversationId}
       isWaitingForResponse={isWaitingForResponse || isReadingWorkbook}
       isWaitingClarification={isWaitingClarification}
       activeClarification={activeClarification}
       previewEnabled={previewEnabled}
-      onTogglePreview={togglePreview}
       mode={mode}
       onModeChange={handleModeChange}
       onRunAsAction={handleRunAsAction}
-      onSheetSelectionChange={handleSheetSelectionChange}
-      onCompareSheets={handleCompare}
       compareResult={compareResult}
       isComparing={isComparing}
       onCloseCompare={() => setCompareResult(null)}
       onSend={handleSend}
       onStop={endConversation}
       onClear={clearConversation}
+      onSelectTurn={selectTurn}
+      onCloseTurn={closeTurn}
       onAcceptActions={handleAcceptActions}
       onRejectActions={rejectActions}
       onAnswerQuestion={handleAnswerQuestion}
@@ -382,7 +342,6 @@ const App: React.FC = () => {
       onFollowUp={handleSend}
       isApplyingActions={isApplying}
       pendingPreview={pendingPreview}
-      onRevertChangeSet={handleRevertChangeSet}
       refinementChangeSetId={refinementChangeSetId}
       quickEditMode={quickEditMode}
       onStartQuickEdit={() => setQuickEditMode(true)}

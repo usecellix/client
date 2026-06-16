@@ -1,14 +1,29 @@
-import React, { useRef, useEffect, KeyboardEvent } from 'react';
-import { ArrowRight, Square } from 'lucide-react';
+import React, { useRef, useEffect, useState, KeyboardEvent } from 'react';
+import {
+  ArrowRight,
+  AtSign,
+  Check,
+  ChevronDown,
+  FileText,
+  Folder,
+  Grid3X3,
+  HelpCircle,
+  ListChecks,
+  Paperclip,
+  PencilLine,
+  Square,
+  X,
+} from 'lucide-react';
 import { AssistantMode, ASSISTANT_MODES, ASSISTANT_MODE_META } from '@/types/mode';
 import { ClarificationPanel } from '@/components/ClarificationPanel/ClarificationPanel';
 import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { DiffPreviewPanel } from '@/components/DiffPreviewPanel/DiffPreviewPanel';
 import { CellChange } from '@/types/changeSet';
-import { SheetAction } from '@/types/sheet-actions';
 import PanelHeader from './PanelHeader';
 import TurnRenderer from './TurnRenderer';
+
+/* global Excel */
 
 interface PanelInputProps {
   onSend: (message: string) => void;
@@ -27,28 +42,100 @@ interface ModeSwitchProps {
   disabled?: boolean;
 }
 
-const ModeSwitch: React.FC<ModeSwitchProps> = ({ mode, onModeChange, disabled = false }) => (
-  <div className="cellix-mode-switch" role="tablist" aria-label="Assistant mode">
-    {ASSISTANT_MODES.map((m) => {
-      const meta = ASSISTANT_MODE_META[m];
-      const active = m === mode;
-      return (
-        <button
-          key={m}
-          type="button"
-          role="tab"
-          aria-selected={active}
-          title={meta.hint}
-          className={`cellix-mode-pill ${active ? 'active' : ''}`}
-          onClick={() => !disabled && onModeChange(m)}
-          disabled={disabled}
-        >
-          {meta.label}
-        </button>
-      );
-    })}
-  </div>
-);
+interface ReferenceOption {
+  id: string;
+  label: string;
+  detail: string;
+  insertText: string;
+  type: 'sheet' | 'range' | 'group';
+}
+
+type ComposerSegment =
+  | {
+      id: string;
+      type: 'text';
+      text: string;
+    }
+  | {
+      id: string;
+      type: 'reference';
+      reference: ReferenceOption;
+    };
+
+const modeIcon = {
+  ask: HelpCircle,
+  action: PencilLine,
+  plan: ListChecks,
+} satisfies Record<AssistantMode, typeof HelpCircle>;
+
+const ModeSwitch: React.FC<ModeSwitchProps> = ({ mode, onModeChange, disabled = false }) => {
+  const [open, setOpen] = React.useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const activeMeta = ASSISTANT_MODE_META[mode];
+  const ActiveIcon = modeIcon[mode];
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [open]);
+
+  return (
+    <div className="cellix-mode-dropdown-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`cellix-mode-trigger ${open ? 'open' : ''}`}
+        onClick={() => !disabled && setOpen((prev) => !prev)}
+        disabled={disabled}
+        title={activeMeta.hint}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <ActiveIcon size={13} />
+        <span>{activeMeta.label}</span>
+        <ChevronDown size={12} className="cellix-mode-chevron" />
+      </button>
+
+      {open && (
+        <div className="cellix-mode-menu" role="menu" aria-label="Assistant mode">
+          {ASSISTANT_MODES.map((m) => {
+            const meta = ASSISTANT_MODE_META[m];
+            const active = m === mode;
+            const OptionIcon = modeIcon[m];
+
+            return (
+              <button
+                key={m}
+                type="button"
+                role="menuitemradio"
+                aria-checked={active}
+                className={`cellix-mode-menu-item ${active ? 'active' : ''}`}
+                onClick={() => {
+                  onModeChange(m);
+                  setOpen(false);
+                }}
+              >
+                <OptionIcon size={13} />
+                <span className="cellix-mode-menu-copy">
+                  <span className="cellix-mode-menu-label">{meta.label}</span>
+                  <span className="cellix-mode-menu-hint">{meta.hint}</span>
+                </span>
+                {active && <Check size={13} className="cellix-mode-check" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const SUGGESTIONS = [
   "What's in cell A1?",
@@ -56,17 +143,31 @@ const SUGGESTIONS = [
   'Explain this sheet to me',
 ];
 
+const cellixWorkflowIllustration = new URL(
+  '../../assets/cellix-workflow-illustration.png',
+  import.meta.url,
+).href;
+
 interface EmptyStateProps {
   onSuggestion: (text: string) => void;
+  children?: React.ReactNode;
 }
 
-export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion }) => (
+export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }) => (
   <div className="cellix-empty">
-    <div className="cellix-brand">
-      <div className="cellix-logo-icon">C</div>
-      <span className="cellix-brand-text">CELLIX</span>
+    <img
+      className="cellix-empty-illustration"
+      src={cellixWorkflowIllustration}
+      alt="Cellix workbook automation illustration"
+    />
+    <div className="cellix-empty-intro" aria-label="Cellix starter prompt">
+      <div className="cellix-empty-intro-mark">C</div>
+      <div>
+        <h2>How can Cellix help today?</h2>
+        <p>Ask about your workbook, automate Excel tasks, or compare sheets.</p>
+      </div>
     </div>
-    <div className="cellix-version">AI assistant for your active worksheet</div>
+    {children}
     {SUGGESTIONS.map((suggestion) => (
       <button
         key={suggestion}
@@ -92,17 +193,285 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   onModeChange,
 }) => {
   const [message, setMessage] = React.useState('');
+  const [attachedFiles, setAttachedFiles] = React.useState<File[]>([]);
+  const [composerSegments, setComposerSegments] = React.useState<ComposerSegment[]>([]);
+  const [referenceOptions, setReferenceOptions] = React.useState<ReferenceOption[]>([]);
+  const [referenceMenuOpen, setReferenceMenuOpen] = React.useState(false);
+  const [referenceQuery, setReferenceQuery] = React.useState('');
+  const [referenceStart, setReferenceStart] = React.useState<number | null>(null);
+  const [activeReferenceIndex, setActiveReferenceIndex] = React.useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const referenceMenuRef = useRef<HTMLDivElement>(null);
+  const nextSegmentIdRef = useRef(0);
+
+  const createSegmentId = () => {
+    nextSegmentIdRef.current += 1;
+    return `segment-${nextSegmentIdRef.current}`;
+  };
+
+  const loadReferenceOptions = React.useCallback(async () => {
+    if (typeof Excel === 'undefined') {
+      setReferenceOptions([]);
+      return;
+    }
+
+    try {
+      await Excel.run(async (ctx) => {
+        const worksheets = ctx.workbook.worksheets;
+        worksheets.load('items/name,items/visibility');
+
+        const activeWorksheet = ctx.workbook.worksheets.getActiveWorksheet();
+        activeWorksheet.load('name');
+
+        const selectedRange = ctx.workbook.getSelectedRange();
+        selectedRange.load('address');
+
+        await ctx.sync();
+
+        const visibleSheets = worksheets.items
+          .filter((sheet) => sheet.visibility === Excel.SheetVisibility.visible)
+          .map((sheet) => sheet.name);
+
+        const options: ReferenceOption[] = [];
+        options.push({
+          id: 'group:workbook',
+          label: 'Workbook',
+          detail: `${visibleSheets.length} sheets`,
+          insertText: '@workbook',
+          type: 'group',
+        });
+
+        const selectedAddress = selectedRange.address;
+        if (selectedAddress) {
+          options.push({
+            id: `range:${selectedAddress}`,
+            label: 'Selected range',
+            detail: selectedAddress,
+            insertText: `@${selectedAddress}`,
+            type: 'range',
+          });
+        }
+
+        if (activeWorksheet.name) {
+          options.push({
+            id: `active:${activeWorksheet.name}`,
+            label: 'Active sheet',
+            detail: activeWorksheet.name,
+            insertText: `@[${activeWorksheet.name}]`,
+            type: 'sheet',
+          });
+        }
+
+        visibleSheets.forEach((sheetName) => {
+          options.push({
+            id: `sheet:${sheetName}`,
+            label: sheetName,
+            detail: 'Sheet',
+            insertText: `@[${sheetName}]`,
+            type: 'sheet',
+          });
+        });
+
+        setReferenceOptions(options);
+      });
+    } catch (error) {
+      console.warn('[Cellix] Failed to load reference options:', error);
+      setReferenceOptions([]);
+    }
+  }, []);
+
+  const updateReferenceState = React.useCallback(
+    (value: string, cursorPosition: number) => {
+      const beforeCursor = value.slice(0, cursorPosition);
+      const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
+
+      if (!match) {
+        setReferenceMenuOpen(false);
+        setReferenceQuery('');
+        setReferenceStart(null);
+        return;
+      }
+
+      const atIndex = beforeCursor.lastIndexOf('@');
+      setReferenceStart(atIndex);
+      setReferenceQuery(match[2] ?? '');
+      setReferenceMenuOpen(true);
+      setActiveReferenceIndex(0);
+      void loadReferenceOptions();
+    },
+    [loadReferenceOptions],
+  );
+
+  const filteredReferenceOptions = React.useMemo(() => {
+    const query = referenceQuery.trim().toLowerCase();
+    if (!query) return referenceOptions;
+
+    return referenceOptions.filter((option) => {
+      return (
+        option.label.toLowerCase().includes(query) ||
+        option.detail.toLowerCase().includes(query) ||
+        option.insertText.toLowerCase().includes(query)
+      );
+    });
+  }, [referenceOptions, referenceQuery]);
+
+  useEffect(() => {
+    if (activeReferenceIndex >= filteredReferenceOptions.length) {
+      setActiveReferenceIndex(0);
+    }
+  }, [activeReferenceIndex, filteredReferenceOptions.length]);
+
+  useEffect(() => {
+    if (!referenceMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        referenceMenuRef.current?.contains(target) ||
+        textareaRef.current?.contains(target)
+      ) {
+        return;
+      }
+
+      setReferenceMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [referenceMenuOpen]);
 
   const handleSend = () => {
-    if (message.trim() && !disabled) {
-      onSend(message.trim());
+    const segmentText = composerSegments
+      .map((segment) => (segment.type === 'reference' ? segment.reference.insertText : segment.text))
+      .join(' ');
+    const composedMessage = [segmentText, message.trim()].filter(Boolean).join(' ');
+
+    if (composedMessage && !disabled) {
+      onSend(composedMessage);
       setMessage('');
+      setAttachedFiles([]);
+      setComposerSegments([]);
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }
   };
 
+  const handleFileSelect = (files: FileList | null) => {
+    if (!files?.length) return;
+
+    setAttachedFiles((current) => {
+      const existingKeys = new Set(
+        current.map((file) => `${file.name}:${file.size}:${file.lastModified}`),
+      );
+      const nextFiles = Array.from(files).filter((file) => {
+        const key = `${file.name}:${file.size}:${file.lastModified}`;
+        return !existingKeys.has(key);
+      });
+
+      return [...current, ...nextFiles];
+    });
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const removeAttachedFile = (fileToRemove: File) => {
+    setAttachedFiles((current) => current.filter((file) => file !== fileToRemove));
+  };
+
+  const removeComposerSegment = (segmentId: string) => {
+    setComposerSegments((current) => current.filter((segment) => segment.id !== segmentId));
+  };
+
+  const insertReference = (option: ReferenceOption) => {
+    const textarea = textareaRef.current;
+    const cursorPosition = textarea?.selectionStart ?? message.length;
+    const start = referenceStart ?? cursorPosition;
+    const beforeReference = message.slice(0, start).replace(/\s+$/, '');
+    const afterReference = message.slice(cursorPosition).replace(/^\s+/, '');
+
+    setMessage(afterReference);
+    setComposerSegments((current) => {
+      const next = [...current];
+      if (beforeReference) {
+        next.push({
+          id: createSegmentId(),
+          type: 'text',
+          text: beforeReference,
+        });
+      }
+
+      next.push({
+        id: createSegmentId(),
+        type: 'reference',
+        reference: option,
+      });
+
+      return next;
+    });
+    setReferenceMenuOpen(false);
+    setReferenceQuery('');
+    setReferenceStart(null);
+
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(0, 0);
+    }, 0);
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Backspace' && !message && composerSegments.length > 0) {
+      e.preventDefault();
+      setComposerSegments((current) => {
+        const last = current[current.length - 1];
+        const next = current.slice(0, -1);
+
+        if (last?.type === 'text') {
+          setMessage(last.text);
+          window.setTimeout(() => {
+            const end = last.text.length;
+            textareaRef.current?.setSelectionRange(end, end);
+          }, 0);
+        }
+
+        return next;
+      });
+      return;
+    }
+
+    if (referenceMenuOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveReferenceIndex((index) =>
+          filteredReferenceOptions.length === 0 ? 0 : (index + 1) % filteredReferenceOptions.length,
+        );
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveReferenceIndex((index) =>
+          filteredReferenceOptions.length === 0
+            ? 0
+            : (index - 1 + filteredReferenceOptions.length) % filteredReferenceOptions.length,
+        );
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setReferenceMenuOpen(false);
+        return;
+      }
+
+      if (e.key === 'Enter' && filteredReferenceOptions[activeReferenceIndex]) {
+        e.preventDefault();
+        insertReference(filteredReferenceOptions[activeReferenceIndex]);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -115,8 +484,12 @@ export const PanelInput: React.FC<PanelInputProps> = ({
     : isProcessing
       ? 'Processing your request…'
       : placeholder;
-
-  const modeLabel = ASSISTANT_MODE_META[mode].label;
+  const visibleMessageLength = Math.max(message.trimEnd().length + 1, 4);
+  const textareaInlineSize = message
+    ? composerSegments.length === 0
+      ? '100%'
+      : `${Math.min(visibleMessageLength, 80)}ch`
+    : undefined;
 
   return (
     <div className="cellix-input-area">
@@ -125,27 +498,144 @@ export const PanelInput: React.FC<PanelInputProps> = ({
           isWaitingClarification ? 'clarifying' : ''
         }`}
       >
-        <ModeSwitch mode={mode} onModeChange={onModeChange} disabled={isProcessing} />
-        <textarea
-          ref={textareaRef}
-          value={message}
-          onChange={(e) => {
-            setMessage(e.target.value);
-            e.target.style.height = 'auto';
-            e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={resolvedPlaceholder}
-          disabled={inputDisabled}
-          rows={1}
-        />
+        <div className="cellix-reference-editor" onClick={() => textareaRef.current?.focus()}>
+          {composerSegments.map((segment) => {
+            if (segment.type === 'text') {
+              return (
+                <span key={segment.id} className="cellix-composer-text-segment">
+                  {segment.text}
+                </span>
+              );
+            }
+
+            const reference = segment.reference;
+            const Icon =
+              reference.type === 'range' ? AtSign : reference.type === 'group' ? Folder : Grid3X3;
+
+            return (
+              <div
+                key={segment.id}
+                className="cellix-reference-chip"
+                title={`${reference.label} ${reference.detail}`}
+              >
+                <Icon size={12} />
+                <span>{reference.label}</span>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeComposerSegment(segment.id);
+                  }}
+                  aria-label={`Remove ${reference.label}`}
+                  disabled={inputDisabled}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
+          <textarea
+            ref={textareaRef}
+            className={message ? 'has-text' : ''}
+            style={{
+              flexBasis: textareaInlineSize,
+              width: textareaInlineSize,
+            }}
+            value={message}
+            onChange={(e) => {
+              setMessage(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+              updateReferenceState(e.target.value, e.target.selectionStart);
+            }}
+            onClick={(e) => updateReferenceState(message, e.currentTarget.selectionStart)}
+            onSelect={(e) => updateReferenceState(message, e.currentTarget.selectionStart)}
+            onKeyDown={handleKeyDown}
+            placeholder={composerSegments.length > 0 ? '' : resolvedPlaceholder}
+            disabled={inputDisabled}
+            rows={1}
+          />
+        </div>
+        {referenceMenuOpen && (
+          <div
+            className="cellix-reference-menu"
+            ref={referenceMenuRef}
+            role="listbox"
+            aria-label="Workbook references"
+          >
+            {filteredReferenceOptions.length > 0 ? (
+              filteredReferenceOptions.map((option, index) => {
+                const Icon =
+                  option.type === 'range' ? AtSign : option.type === 'group' ? Folder : Grid3X3;
+
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeReferenceIndex}
+                    className={`cellix-reference-option ${
+                      index === activeReferenceIndex ? 'active' : ''
+                    }`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertReference(option)}
+                  >
+                    <Icon size={13} />
+                    <span className="cellix-reference-copy">
+                      <span className="cellix-reference-label">{option.label}</span>
+                      <span className="cellix-reference-detail">{option.detail}</span>
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="cellix-reference-empty">No references found</div>
+            )}
+          </div>
+        )}
+        {attachedFiles.length > 0 && (
+          <div className="cellix-attachment-list" aria-label="Attached documents">
+            {attachedFiles.map((file) => (
+              <div
+                key={`${file.name}:${file.size}:${file.lastModified}`}
+                className="cellix-attachment-chip"
+                title={file.name}
+              >
+                <FileText size={13} />
+                <span>{file.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeAttachedFile(file)}
+                  aria-label={`Remove ${file.name}`}
+                  disabled={inputDisabled}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="cellix-input-toolbar">
-          <div className="cellix-input-hint">
-            {isWaitingClarification
-              ? 'Clarification required'
-              : isProcessing
-                ? `${modeLabel} mode — working…`
-                : `${modeLabel} mode · Enter to send`}
+          <div className="cellix-input-toolbar-left">
+            <ModeSwitch mode={mode} onModeChange={onModeChange} disabled={isProcessing} />
+            <button
+              type="button"
+              className="cellix-upload-doc-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={inputDisabled || isProcessing}
+              aria-label="Upload documents"
+              title="Upload documents"
+            >
+              <Paperclip size={14} />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="cellix-upload-doc-input"
+              accept=".csv,.doc,.docx,.pdf,.txt,.xls,.xlsx"
+              multiple
+              onChange={(event) => handleFileSelect(event.target.files)}
+            />
           </div>
           {isProcessing ? (
             <button type="button" className="cellix-stop-btn" onClick={onStop} aria-label="Stop">
@@ -156,7 +646,7 @@ export const PanelInput: React.FC<PanelInputProps> = ({
               type="button"
               className="cellix-send-btn"
               onClick={handleSend}
-              disabled={!message.trim() || inputDisabled}
+              disabled={(!message.trim() && composerSegments.length === 0) || inputDisabled}
               aria-label="Send"
             >
               <ArrowRight size={14} />
@@ -171,23 +661,21 @@ export const PanelInput: React.FC<PanelInputProps> = ({
 interface ConversationPanelProps {
   turns: import('@/types/conversationTurn').ConversationTurn[];
   activeTurnId: string | null;
-  conversationId?: string | null;
   isWaitingForResponse: boolean;
   isWaitingClarification: boolean;
   activeClarification: ClarificationPayload | null;
   previewEnabled: boolean;
-  onTogglePreview: () => void;
   mode: AssistantMode;
   onModeChange: (mode: AssistantMode) => void;
   onRunAsAction: (message: string) => void;
-  onSheetSelectionChange: (sheets: string[]) => void;
-  onCompareSheets: (sheetA: string, sheetB: string) => void;
   compareResult: CompareResult | null;
   isComparing: boolean;
   onCloseCompare: () => void;
   onSend: (message: string) => void;
   onStop: () => void;
   onClear: () => void;
+  onSelectTurn: (turnId: string) => void;
+  onCloseTurn: (turnId: string) => void;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
@@ -205,7 +693,6 @@ interface ConversationPanelProps {
     onAccept: () => void;
     onReject: () => void;
   } | null;
-  onRevertChangeSet?: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
   refinementChangeSetId?: string | null;
   quickEditMode?: boolean;
   onStartQuickEdit?: () => void;
@@ -215,23 +702,21 @@ interface ConversationPanelProps {
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
   turns,
   activeTurnId,
-  conversationId = null,
   isWaitingForResponse,
   isWaitingClarification,
   activeClarification,
   previewEnabled,
-  onTogglePreview,
   mode,
   onModeChange,
   onRunAsAction,
-  onSheetSelectionChange,
-  onCompareSheets,
   compareResult,
   isComparing,
   onCloseCompare,
   onSend,
   onStop,
   onClear,
+  onSelectTurn,
+  onCloseTurn,
   onAcceptActions,
   onRejectActions,
   onAnswerQuestion,
@@ -242,53 +727,76 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onFollowUp,
   isApplyingActions = false,
   pendingPreview = null,
-  onRevertChangeSet,
   refinementChangeSetId = null,
   quickEditMode = false,
   onStartQuickEdit,
   onCancelQuickEdit,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
-  const activeTurn = turns.find((t) => t.id === activeTurnId);
+  const [draftChatOpen, setDraftChatOpen] = useState(false);
+  const visibleTurns = activeTurnId ? turns.filter((turn) => turn.id === activeTurnId) : [];
+  const showStartScreen = visibleTurns.length === 0;
+
+  const openDraftChat = () => {
+    setDraftChatOpen(true);
+    onClear();
+  };
+
+  const closeDraftChat = () => {
+    setDraftChatOpen(false);
+    if (activeTurnId === null && turns.length > 0) {
+      onSelectTurn(turns[turns.length - 1].id);
+    }
+  };
+
+  const sendMessage = (message: string) => {
+    if (activeTurnId === null) {
+      setDraftChatOpen(false);
+    }
+    onSend(message);
+  };
 
   useEffect(() => {
     contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight, behavior: 'smooth' });
-  }, [turns, isWaitingForResponse, activeClarification]);
+  }, [turns, activeTurnId, isWaitingForResponse, activeClarification]);
 
   return (
     <div className="cellix-panel">
       <PanelHeader
-        previewEnabled={previewEnabled}
-        onTogglePreview={onTogglePreview}
-        onClear={onClear}
-        hasTurns={turns.length > 0}
-        conversationId={conversationId ?? null}
-        onRevertChangeSet={onRevertChangeSet}
-        onSheetSelectionChange={onSheetSelectionChange}
-        onCompareSheets={onCompareSheets}
+        turns={turns}
+        activeTurnId={activeTurnId}
+        draftChatOpen={draftChatOpen}
+        isWaitingForResponse={isWaitingForResponse}
+        onSelectTurn={onSelectTurn}
+        onCloseTurn={onCloseTurn}
+        onNewChat={openDraftChat}
+        onCloseDraftChat={closeDraftChat}
       />
 
-      {activeTurn && (
-        <div className="cellix-tabbar-wrap">
-          <div className="cellix-tab">
-            {isWaitingForResponse && activeTurn.id === activeTurnId ? (
-              <span className="cellix-spinner" />
-            ) : (
-              <span
-                className="cellix-status-dot"
-                style={{ width: 7, height: 7 }}
-              />
-            )}
-            <span className="cellix-tab-label">{activeTurn.tabLabel}</span>
-          </div>
-        </div>
-      )}
-
       <div className="cellix-content" ref={contentRef}>
-        {turns.length === 0 ? (
-          <EmptyState onSuggestion={onSend} />
+        {showStartScreen ? (
+          <EmptyState onSuggestion={sendMessage}>
+            <PanelInput
+              onSend={sendMessage}
+              onStop={onStop}
+              disabled={isWaitingForResponse}
+              isProcessing={isWaitingForResponse}
+              isWaitingClarification={isWaitingClarification}
+              mode={mode}
+              onModeChange={onModeChange}
+              placeholder={
+                quickEditMode
+                  ? 'Describe how to adjust the last change…'
+                  : mode === 'ask'
+                    ? 'Ask anything about your workbook - use @ for references'
+                    : mode === 'plan'
+                      ? 'Describe what you want to plan - use @ for references'
+                      : 'Describe the change you want to make - use @ for references'
+              }
+            />
+          </EmptyState>
         ) : (
-          turns.map((turn) => (
+          visibleTurns.map((turn) => (
             <TurnRenderer
               key={turn.id}
               turn={turn}
@@ -356,24 +864,26 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         </div>
       )}
 
-      <PanelInput
-        onSend={onSend}
-        onStop={onStop}
-        disabled={isWaitingForResponse}
-        isProcessing={isWaitingForResponse}
-        isWaitingClarification={isWaitingClarification}
-        mode={mode}
-        onModeChange={onModeChange}
-        placeholder={
-          quickEditMode
-            ? 'Describe how to adjust the last change…'
-            : mode === 'ask'
-              ? 'Ask anything about your workbook…'
-              : mode === 'plan'
-                ? 'Describe what you want to plan…'
-                : 'Describe the change you want to make…'
-        }
-      />
+      {!showStartScreen && (
+        <PanelInput
+          onSend={sendMessage}
+          onStop={onStop}
+          disabled={isWaitingForResponse}
+          isProcessing={isWaitingForResponse}
+          isWaitingClarification={isWaitingClarification}
+          mode={mode}
+          onModeChange={onModeChange}
+          placeholder={
+            quickEditMode
+              ? 'Describe how to adjust the last change…'
+              : mode === 'ask'
+                ? 'Ask anything about your workbook - use @ for references'
+                : mode === 'plan'
+                  ? 'Describe what you want to plan - use @ for references'
+                  : 'Describe the change you want to make - use @ for references'
+          }
+        />
+      )}
     </div>
   );
 };

@@ -68,6 +68,8 @@ interface UseConversationReturn {
   rejectActions: (turnId: string, blockId: string) => void;
   endConversation: () => void;
   clearConversation: () => void;
+  selectTurn: (turnId: string) => void;
+  closeTurn: (turnId: string) => void;
   toggleThinking: (turnId: string, blockId: string) => void;
   markAnswerComplete: (turnId: string, blockId: string) => void;
 }
@@ -1196,20 +1198,58 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const clearConversation = useCallback(() => {
     abortControllerRef.current?.abort();
     void onClearPreview?.();
-    runtimeRef.current.forEach((r) => {
-      r.aborted = true;
-    });
-    runtimeRef.current.clear();
+    if (activeTurnId) {
+      const runtime = runtimeRef.current.get(activeTurnId);
+      if (runtime) {
+        runtime.aborted = true;
+        runtimeRef.current.delete(activeTurnId);
+      }
+      revealScheduledRef.current.delete(activeTurnId);
+    }
     conversationIdRef.current = null;
     historyRef.current = [];
-    turnsRef.current = [];
     revealScheduledRef.current.clear();
-    setTurns([]);
     setActiveTurnId(null);
     setConversationId(null);
     setIsWaitingForResponse(false);
     setActiveClarification(null);
-  }, [onClearPreview]);
+  }, [activeTurnId, onClearPreview]);
+
+  const selectTurn = useCallback((turnId: string) => {
+    if (turnsRef.current.some((turn) => turn.id === turnId)) {
+      setActiveTurnId(turnId);
+    }
+  }, []);
+
+  const closeTurn = useCallback(
+    (turnId: string) => {
+      const nextTurns = turnsRef.current.filter((turn) => turn.id !== turnId);
+
+      const runtime = runtimeRef.current.get(turnId);
+      if (runtime) {
+        runtime.aborted = true;
+        runtimeRef.current.delete(turnId);
+      }
+      revealScheduledRef.current.delete(turnId);
+
+      if (activeTurnId === turnId) {
+        abortControllerRef.current?.abort();
+        void onClearPreview?.();
+        setActiveClarification(null);
+        setActiveTurnId(nextTurns.length > 0 ? nextTurns[nextTurns.length - 1].id : null);
+        setIsWaitingForResponse(false);
+      }
+
+      syncTurns(nextTurns);
+
+      if (nextTurns.length === 0) {
+        conversationIdRef.current = null;
+        historyRef.current = [];
+        setConversationId(null);
+      }
+    },
+    [activeTurnId, onClearPreview, syncTurns],
+  );
 
   return {
     turns,
@@ -1226,6 +1266,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     rejectActions,
     endConversation,
     clearConversation,
+    selectTurn,
+    closeTurn,
     toggleThinking,
     markAnswerComplete,
   };

@@ -2,7 +2,7 @@ export type AssistantMode = 'ask' | 'action' | 'plan';
 
 export const ASSISTANT_MODES: AssistantMode[] = ['ask', 'action', 'plan'];
 
-export const DEFAULT_ASSISTANT_MODE: AssistantMode = 'ask';
+export const DEFAULT_ASSISTANT_MODE: AssistantMode = 'action';
 
 export interface AssistantModeMeta {
   id: AssistantMode;
