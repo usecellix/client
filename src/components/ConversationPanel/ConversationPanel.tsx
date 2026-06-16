@@ -165,14 +165,18 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }
       alt="Cellix workbook automation illustration"
     />
     <div className="cellix-empty-intro" aria-label="Cellix starter prompt">
-      <div className="cellix-empty-intro-mark">C</div>
       <div>
-        <h2>How can Cellix help today?</h2>
-        <p>Ask about your workbook, automate Excel tasks, or compare sheets.</p>
+        <h2>
+          Hi there, <span>User</span>
+          <br />
+          What would you like to <span>review?</span>
+        </h2>
+        <p>Review GST data, match ledgers, validate invoices, or prepare audit-ready Excel work.</p>
       </div>
     </div>
     {children}
-    {SUGGESTIONS.map((suggestion) => (
+    <div className="cellix-suggestion-carousel" aria-label="Suggested prompts">
+      {SUGGESTIONS.map((suggestion) => (
       <button
         key={suggestion}
         type="button"
@@ -182,7 +186,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }
         {suggestion}
         <span>→</span>
       </button>
-    ))}
+      ))}
+    </div>
   </div>
 );
 
@@ -797,7 +802,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         onCloseDraftChat={closeDraftChat}
       />
 
-      <div className="cellix-content" ref={contentRef}>
+      <div className={`cellix-content ${showStartScreen ? 'start' : ''}`} ref={contentRef}>
         {showStartScreen ? (
           <EmptyState onSuggestion={sendMessage}>
             <PanelInput

@@ -556,6 +556,11 @@
   gap: 10px;
 }
 
+.cellix-content.start {
+  padding: 0;
+  gap: 0;
+}
+
 .cellix-turn + .cellix-turn {
   padding-top: 6px;
   border-top: 1px solid var(--cx-gray-200);
@@ -1224,65 +1229,67 @@
 
 .cellix-empty {
   flex: 1;
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   margin: 0 auto;
   min-height: 100%;
-  padding: 24px 8px 0;
+  padding: 18px 0 0;
   overflow: hidden;
 }
 
 .cellix-empty-intro {
   order: 1;
-  width: calc(100% - 16px);
-  max-width: 620px;
+  width: min(594px, calc(100% - 16px));
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 146px);
+  transform: translateX(-50%);
+  z-index: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-start;
   align-self: center;
-  margin: 2px 0 4px;
-}
-
-.cellix-empty-intro-mark {
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  border-radius: 8px;
-  background: var(--cx-brand-700);
-  color: var(--cx-white);
-  font-size: 14px;
-  font-weight: 800;
-  line-height: 1;
+  margin: 0;
+  text-align: left;
 }
 
 .cellix-empty-intro h2 {
   margin: 0;
   color: var(--cx-gray-900);
-  font-size: 16px;
+  font-size: 22px;
   font-weight: 700;
-  line-height: 1.25;
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.cellix-empty-intro h2 span {
+  color: var(--cx-brand-600);
+  font-weight: 650;
 }
 
 .cellix-empty-intro p {
-  margin: 2px 0 0;
+  margin: 6px 0 0;
   color: var(--cx-gray-500);
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .cellix-empty .cellix-input-area {
-  order: 2;
-  width: calc(100% - 16px);
+  order: 3;
+  width: min(594px, calc(100% - 16px));
   align-self: center;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
   border-top: 0;
   background: transparent;
-  padding: 4px 0 8px;
+  padding: 2px 0 6px;
 }
 
 .cellix-empty .cellix-input-shell {
@@ -1291,28 +1298,54 @@
 }
 
 .cellix-empty .cellix-reference-editor {
-  min-height: 58px;
+  min-height: 76px;
 }
 
 .cellix-empty .cellix-input-shell textarea {
-  min-height: 52px;
+  min-height: 68px;
+}
+
+.cellix-suggestion-carousel {
+  order: 2;
+  width: min(594px, calc(100% - 16px));
+  display: none;
+  align-self: center;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0 4px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+.cellix-suggestion-carousel::-webkit-scrollbar {
+  display: none;
 }
 
 .cellix-empty .cellix-suggestion {
-  order: 3;
-  width: min(294px, 100%);
-  align-self: center;
-  padding: 8px 12px;
+  width: 210px;
+  min-width: 210px;
+  align-self: auto;
+  padding: 8px 10px;
+  scroll-snap-align: start;
+}
+
+.cellix-empty .cellix-suggestion:nth-of-type(1) {
+  margin-left: 0;
+}
+
+.cellix-empty .cellix-suggestion:nth-last-of-type(1) {
+  margin-right: 0;
 }
 
 .cellix-empty-illustration {
   order: 4;
-  width: min(640px, calc(100% + 16px));
+  width: min(610px, calc(100% - 24px));
   max-width: none;
-  max-height: clamp(180px, 32vh, 270px);
+  max-height: clamp(220px, 38vh, 310px);
   height: auto;
   align-self: center;
-  margin: auto -8px 0;
+  margin: auto 0 0;
   object-fit: contain;
   object-position: center bottom;
   opacity: 0.92;
