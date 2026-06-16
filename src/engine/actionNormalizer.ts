@@ -3,11 +3,6 @@ import { SheetAction } from '@/types/sheet-actions';
 import { columnLetterToIndex, parseCellAddress, parseRangeAddress } from './addressUtils';
 import { convertLegacyToRich } from './legacyConverter';
 
-/** Set to true to route unconverted actions through the legacy engine (migration fallback). */
-export const USE_LEGACY_ACTION_ENGINE =
-  typeof localStorage !== 'undefined' &&
-  localStorage.getItem('CELLIX_USE_LEGACY_ENGINE') === 'true';
-
 function isRichAction(action: SheetAction): boolean {
   const richOnly = new Set([
     'BATCH_SET',
@@ -306,10 +301,10 @@ export function richToLegacyAction(action: SheetAction): SheetAction | SheetActi
 
 export function partitionActions(actions: SheetAction[]): {
   rich: RichAction[];
-  legacy: SheetAction[];
+  unsupported: SheetAction[];
 } {
   const rich: RichAction[] = [];
-  const legacy: SheetAction[] = [];
+  const unsupported: SheetAction[] = [];
 
   for (const action of actions) {
     const converted = normalizeToRich(action);
@@ -319,14 +314,10 @@ export function partitionActions(actions: SheetAction[]): {
       } else {
         rich.push(converted);
       }
-    } else if (USE_LEGACY_ACTION_ENGINE) {
-      legacy.push(action);
     } else {
-      console.warn(
-        `[Cellix] Action ${action.type} could not be converted to rich format — skipped (set CELLIX_USE_LEGACY_ENGINE=true for legacy fallback)`,
-      );
+      unsupported.push(action);
     }
   }
 
-  return { rich, legacy };
+  return { rich, unsupported };
 }

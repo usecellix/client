@@ -174,6 +174,104 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
         newName: action.newSheetName ?? `${action.sheetName ?? 'Sheet'} Copy`,
       };
 
+    case 'HIDE_ROW':
+    case 'UNHIDE_ROW':
+    case 'SHOW_ROW':
+      if (action.row === undefined) return null;
+      return {
+        type: action.type === 'HIDE_ROW' ? 'HIDE_ROW' : 'UNHIDE_ROW',
+        sheetName,
+        row: action.row,
+        rowCount: action.rowCount ?? 1,
+      } as unknown as RichAction;
+
+    case 'HIDE_COLUMN':
+    case 'UNHIDE_COLUMN':
+    case 'SHOW_COLUMN':
+      if (action.col === undefined) return null;
+      return {
+        type: action.type === 'HIDE_COLUMN' ? 'HIDE_COLUMN' : 'UNHIDE_COLUMN',
+        sheetName,
+        col: action.col,
+        colCount: action.colCount ?? 1,
+      } as unknown as RichAction;
+
+    case 'SET_ROW_HEIGHT':
+      if (action.row === undefined || action.height === undefined) return null;
+      return {
+        type: 'SET_ROW_HEIGHT',
+        sheetName,
+        row: action.row,
+        height: action.height,
+      } as unknown as RichAction;
+
+    case 'SET_COLUMN_WIDTH':
+      if (action.col === undefined || action.width === undefined) return null;
+      return {
+        type: 'SET_COLUMN_WIDTH',
+        sheetName,
+        col: action.col,
+        width: action.width,
+      } as unknown as RichAction;
+
+    case 'FREEZE_PANES':
+      return {
+        type: 'FREEZE_PANES',
+        sheetName,
+        freezeRows: action.freezeRows ?? 1,
+        freezeColumns: action.freezeColumns ?? 0,
+      } as unknown as RichAction;
+
+    case 'UNFREEZE_PANES':
+      return { type: 'UNFREEZE_PANES', sheetName } as unknown as RichAction;
+
+    case 'SET_ZOOM':
+      if (typeof action.zoomPercent !== 'number') return null;
+      return { type: 'SET_ZOOM', sheetName, zoomPercent: action.zoomPercent } as unknown as RichAction;
+
+    case 'PROTECT_SHEET':
+      return { type: 'PROTECT_SHEET', sheetName } as unknown as RichAction;
+
+    case 'UNPROTECT_SHEET':
+      return { type: 'UNPROTECT_SHEET', sheetName } as unknown as RichAction;
+
+    case 'UNMERGE_CELLS': {
+      const row = action.row ?? 0;
+      const col = action.col ?? 0;
+      return {
+        type: 'UNMERGE_CELLS',
+        sheetName,
+        range: rangeAddress(row, col, action.rowCount ?? 1, action.colCount ?? 1),
+      } as unknown as RichAction;
+    }
+
+    case 'HIDE_SHEET':
+      return { type: 'HIDE_SHEET', sheetName } as unknown as RichAction;
+
+    case 'SHOW_SHEET':
+      return { type: 'SHOW_SHEET', sheetName } as unknown as RichAction;
+
+    case 'SET_SHEET_COLOR':
+      if (!action.color) return null;
+      return { type: 'SET_SHEET_COLOR', sheetName, color: action.color } as unknown as RichAction;
+
+    case 'ADD_COMMENT':
+      if (action.row === undefined || action.col === undefined || !action.comment) return null;
+      return {
+        type: 'ADD_COMMENT',
+        sheetName,
+        address: cellAddress(action.row, action.col),
+        comment: action.comment,
+      } as unknown as RichAction;
+
+    case 'DELETE_COMMENT':
+      if (action.row === undefined || action.col === undefined) return null;
+      return {
+        type: 'DELETE_COMMENT',
+        sheetName,
+        address: cellAddress(action.row, action.col),
+      } as unknown as RichAction;
+
     case 'MERGE_CELLS': {
       const row = action.row ?? 0;
       const col = action.col ?? 0;

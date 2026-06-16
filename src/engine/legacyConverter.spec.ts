@@ -82,6 +82,26 @@ describe('convertLegacyToRich', () => {
       range: 'A1:C1',
     });
   });
+
+  it('converts worksheet layout actions', () => {
+    expect(convertLegacyToRich({ type: 'HIDE_ROW', row: 4, rowCount: 2, sheetName: 'Sheet1' })).toEqual({
+      type: 'HIDE_ROW',
+      row: 4,
+      rowCount: 2,
+      sheetName: 'Sheet1',
+    });
+    expect(convertLegacyToRich({ type: 'FREEZE_PANES', freezeRows: 1, sheetName: 'Sheet1' })).toEqual({
+      type: 'FREEZE_PANES',
+      freezeRows: 1,
+      freezeColumns: 0,
+      sheetName: 'Sheet1',
+    });
+    expect(convertLegacyToRich({ type: 'SET_ZOOM', zoomPercent: 150, sheetName: 'Sheet1' })).toEqual({
+      type: 'SET_ZOOM',
+      zoomPercent: 150,
+      sheetName: 'Sheet1',
+    });
+  });
 });
 
 describe('partitionActions', () => {
@@ -92,9 +112,9 @@ describe('partitionActions', () => {
       { type: 'CREATE_SHEET', sheetName: 'Summary' },
     ];
 
-    const { rich, legacy } = partitionActions(actions);
+    const { rich, unsupported } = partitionActions(actions);
     expect(rich).toHaveLength(3);
     expect(rich.map((a) => a.type)).toEqual(['SET_CELL', 'APPEND_ROW', 'ADD_SHEET']);
-    expect(legacy).toHaveLength(0);
+    expect(unsupported).toHaveLength(0);
   });
 });

@@ -23,13 +23,18 @@ export type SheetActionType =
   | 'INSERT_COLUMN'
   | 'DELETE_COLUMN'
   | 'HIDE_ROW'
+  | 'UNHIDE_ROW'
   | 'SHOW_ROW'
   | 'HIDE_COLUMN'
+  | 'UNHIDE_COLUMN'
   | 'SHOW_COLUMN'
   | 'SET_ROW_HEIGHT'
   | 'SET_COLUMN_WIDTH'
   | 'FREEZE_PANES'
   | 'UNFREEZE_PANES'
+  | 'SET_ZOOM'
+  | 'PROTECT_SHEET'
+  | 'UNPROTECT_SHEET'
   | 'MERGE_CELLS'
   | 'UNMERGE_CELLS'
   | 'CLEAR_CONTENT'
@@ -80,6 +85,7 @@ export interface SheetAction {
   width?: number;
   freezeRows?: number;
   freezeColumns?: number;
+  zoomPercent?: number;
   mergeAcross?: boolean;
   format?: FormatSpec;
   endRow?: number;

@@ -25,6 +25,7 @@ interface TurnRendererProps {
   isWaiting: boolean;
   previewEnabled?: boolean;
   isApplying?: boolean;
+  showActionButtons?: boolean;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
@@ -158,12 +159,14 @@ function BlockRenderer({
   onToggleThinking,
   onAnswerComplete,
   onRunAsAction,
+  showActionButtons = true,
 }: {
   block: TurnBlock;
   turn: ConversationTurn;
   previewEnabled?: boolean;
   isApplying?: boolean;
   isWaiting: boolean;
+  showActionButtons?: boolean;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onToggleThinking: (turnId: string, blockId: string) => void;
@@ -294,7 +297,7 @@ function BlockRenderer({
             <li>…and {actionBlock.actions.length - 4} more</li>
           )}
         </ul>
-        {isPending && (
+        {isPending && showActionButtons && (
           <div className="cellix-action-btns">
             <button
               type="button"
@@ -327,6 +330,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   isWaiting,
   previewEnabled = false,
   isApplying = false,
+  showActionButtons = true,
   onAcceptActions,
   onRejectActions,
   onAnswerQuestion,
@@ -398,6 +402,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     previewEnabled={previewEnabled}
                     isApplying={isApplying}
                     isWaiting={isWaiting && isActive}
+                    showActionButtons={showActionButtons}
                     onAcceptActions={onAcceptActions}
                     onRejectActions={onRejectActions}
                     onToggleThinking={onToggleThinking}

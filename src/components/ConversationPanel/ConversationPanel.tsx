@@ -18,8 +18,12 @@ import { AssistantMode, ASSISTANT_MODES, ASSISTANT_MODE_META } from '@/types/mod
 import { ClarificationPanel } from '@/components/ClarificationPanel/ClarificationPanel';
 import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { ClarificationPayload } from '@/types/cellix.types';
-import { DiffPreviewPanel } from '@/components/DiffPreviewPanel/DiffPreviewPanel';
-import { CellChange } from '@/types/changeSet';
+import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
+import { isTurnPresentationComplete } from '@/utils/turnPresentation';
+import { ChangeHistoryPanel } from '@/components/ChangeHistoryPanel/ChangeHistoryPanel';
+import { CellChange, formatCellValue } from '@/types/changeSet';
+import { DiffItem } from '@/services/previewManager';
+import { SheetAction } from '@/types/sheet-actions';
 import PanelHeader from './PanelHeader';
 import TurnRenderer from './TurnRenderer';
 
@@ -684,6 +688,8 @@ interface ConversationPanelProps {
   onToggleThinking: (turnId: string, blockId: string) => void;
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onFollowUp: (text: string) => void;
+  conversationId: string | null;
+  onRevertHistoryEntry: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
   isApplyingActions?: boolean;
   pendingPreview?: {
     changes: CellChange[];
@@ -725,6 +731,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onToggleThinking,
   onAnswerComplete,
   onFollowUp,
+  conversationId,
+  onRevertHistoryEntry,
   isApplyingActions = false,
   pendingPreview = null,
   refinementChangeSetId = null,
@@ -736,6 +744,22 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const [draftChatOpen, setDraftChatOpen] = useState(false);
   const visibleTurns = activeTurnId ? turns.filter((turn) => turn.id === activeTurnId) : [];
   const showStartScreen = visibleTurns.length === 0;
+  const activeTurn = activeTurnId ? turns.find((turn) => turn.id === activeTurnId) : undefined;
+  const previewActionsReady = Boolean(
+    activeTurn && !isWaitingForResponse && isTurnPresentationComplete(activeTurn),
+  );
+  const previewItems: DiffItem[] = pendingPreview
+    ? pendingPreview.changes.map((change) => ({
+        sheetName: change.sheet,
+        address: change.cell,
+        actionType: change.formula ? 'SET_FORMULA' : 'SET_CELL',
+        before: formatCellValue(change.before),
+        after: formatCellValue(change.after),
+        description: change.formula
+          ? `Set formula ${change.formula}`
+          : `Change value to ${formatCellValue(change.after)}`,
+      }))
+    : [];
 
   const openDraftChat = () => {
     setDraftChatOpen(true);
@@ -804,6 +828,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               isWaiting={isWaitingForResponse}
               previewEnabled={previewEnabled}
               isApplying={isApplyingActions}
+              showActionButtons={previewActionsReady}
               onAcceptActions={onAcceptActions}
               onRejectActions={onRejectActions}
               onAnswerQuestion={onAnswerQuestion}
@@ -836,15 +861,17 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       )}
 
       {pendingPreview && (
-        <DiffPreviewPanel
-          changes={pendingPreview.changes}
-          changeSetId={pendingPreview.changeSetId}
+        <PreviewSummaryBar
+          items={previewItems}
           summary={pendingPreview.summary}
           onAccept={pendingPreview.onAccept}
           onReject={pendingPreview.onReject}
           isApplying={pendingPreview.isApplying}
+          showActions={previewActionsReady}
         />
       )}
+
+      <ChangeHistoryPanel conversationId={conversationId} onRevert={onRevertHistoryEntry} />
 
       {refinementChangeSetId && !quickEditMode && onStartQuickEdit && (
         <div className="cellix-quick-edit-banner">

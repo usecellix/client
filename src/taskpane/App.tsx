@@ -109,6 +109,7 @@ const App: React.FC = () => {
   const {
     turns,
     activeTurnId,
+    conversationId,
     isWaitingForResponse,
     isWaitingClarification,
     activeClarification,
@@ -313,10 +314,23 @@ const App: React.FC = () => {
     await answerClarification(answer, sheetData, workbookContext, promptContext, { mode });
   };
 
+  const handleRevertHistoryEntry = useCallback(
+    async (_changeSetId: string, inverseActions: SheetAction[]) => {
+      if (inverseActions.length > 0) {
+        await ActionEngine.applyActions(inverseActions);
+      }
+      clearPreviewState();
+      setQuickEditMode(false);
+      setRefinementChangeSetId(null);
+    },
+    [clearPreviewState],
+  );
+
   return (
     <ConversationPanel
       turns={turns}
       activeTurnId={activeTurnId}
+      conversationId={conversationId}
       isWaitingForResponse={isWaitingForResponse || isReadingWorkbook}
       isWaitingClarification={isWaitingClarification}
       activeClarification={activeClarification}
@@ -340,6 +354,7 @@ const App: React.FC = () => {
       onToggleThinking={toggleThinking}
       onAnswerComplete={markAnswerComplete}
       onFollowUp={handleSend}
+      onRevertHistoryEntry={handleRevertHistoryEntry}
       isApplyingActions={isApplying}
       pendingPreview={pendingPreview}
       refinementChangeSetId={refinementChangeSetId}

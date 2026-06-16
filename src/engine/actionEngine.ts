@@ -33,6 +33,7 @@ import {
   handleWriteTable,
 } from './handlers/misc.handler';
 import { applyRichFormat } from './handlers/format.handler';
+import { handleWorksheetAction } from './handlers/worksheet.handler';
 
 /* global Excel */
 
@@ -68,6 +69,10 @@ export class RichActionEngine {
   }
 
   private async dispatch(action: RichAction, ctx: Excel.RequestContext): Promise<void> {
+    if (await handleWorksheetAction(action, ctx)) {
+      return;
+    }
+
     switch (action.type) {
       case 'ADD_ROW':
         return handleAddRow(action, ctx);

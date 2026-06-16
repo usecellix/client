@@ -2181,6 +2181,12 @@
   cursor: not-allowed;
 }
 
+.cellix-preview-pending-label {
+  font-size: 12px;
+  color: var(--cx-gray-500);
+  white-space: nowrap;
+}
+
 .cellix-preview-summary-body {
   border-top: 1px solid var(--cx-gray-100);
   padding: 8px 12px 10px;

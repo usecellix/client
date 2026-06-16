@@ -8,6 +8,7 @@ interface PreviewSummaryBarProps {
   onAccept: () => void;
   onReject: () => void;
   isApplying: boolean;
+  showActions?: boolean;
 }
 
 export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
@@ -16,6 +17,7 @@ export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
   onAccept,
   onReject,
   isApplying,
+  showActions = true,
 }) => {
   const [expanded, setExpanded] = useState(false);
   const changeCount = items.length || 1;
@@ -41,22 +43,28 @@ export const PreviewSummaryBar: React.FC<PreviewSummaryBarProps> = ({
           </span>
         </button>
         <div className="cellix-preview-summary-actions">
-          <button
-            type="button"
-            className="cellix-preview-reject-btn"
-            onClick={onReject}
-            disabled={isApplying}
-          >
-            Reject
-          </button>
-          <button
-            type="button"
-            className="cellix-preview-accept-btn"
-            onClick={onAccept}
-            disabled={isApplying}
-          >
-            {isApplying ? 'Applying…' : 'Accept'}
-          </button>
+          {showActions ? (
+            <>
+              <button
+                type="button"
+                className="cellix-preview-reject-btn"
+                onClick={onReject}
+                disabled={isApplying}
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                className="cellix-preview-accept-btn"
+                onClick={onAccept}
+                disabled={isApplying}
+              >
+                {isApplying ? 'Applying…' : 'Accept'}
+              </button>
+            </>
+          ) : (
+            <span className="cellix-preview-pending-label">Review shortly…</span>
+          )}
         </div>
       </div>
 

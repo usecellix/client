@@ -1,4 +1,4 @@
-import { partitionActions, USE_LEGACY_ACTION_ENGINE } from '../engine/actionNormalizer';
+import { partitionActions } from '../engine/actionNormalizer';
 import { richActionEngine } from '../engine/actionEngine';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '../services/formatGuard';
@@ -62,61 +62,24 @@ export class ActionEngine {
     let applied = 0;
 
     try {
-      const { rich, legacy } = partitionActions(actions);
-      const safeActions = USE_LEGACY_ACTION_ENGINE ? guardActions(legacy) : [];
-      if (!safeActions.length && !rich.length) {
-        const unconverted = legacy.length
-          ? legacy.map((a) => a.type).join(', ')
-          : actions.length > 0
-            ? actions.map((a) => a.type).join(', ')
-            : 'none';
-        throw new Error(
-          `No actions to apply. Unconverted types: ${unconverted}. Set localStorage CELLIX_USE_LEGACY_ENGINE=true for legacy fallback.`,
-        );
-      }
-
-      if (legacy.length > 0 && !USE_LEGACY_ACTION_ENGINE) {
+      const safeInput = guardActions(actions);
+      const { rich, unsupported } = partitionActions(safeInput);
+      if (unsupported.length > 0) {
         errors.push(
-          `Skipped ${legacy.length} unconverted action(s): ${legacy.map((a) => a.type).join(', ')}`,
+          `Unsupported action(s): ${unsupported.map((a) => a.type).join(', ')}. Unified engine only.`,
         );
       }
-
-      const actionsToApply = this.previewRanges.length
-        ? safeActions.filter(
-            (action) => action.type === 'DELETE_ROW' || action.type === 'HIGHLIGHT_CELL',
-          )
-        : safeActions;
+      if (!rich.length) {
+        throw new Error(errors[0] ?? 'No actions to apply.');
+      }
 
       if (this.previewRanges.length) {
         await this.commitPreview();
       }
 
-      if (rich.length > 0) {
-        const richResult = await richActionEngine.applyActions(rich);
-        applied += richResult.applied;
-        errors.push(...richResult.errors);
-      }
-
-      if (actionsToApply.length > 0) {
-        await Excel.run(async (context) => {
-          for (const action of actionsToApply) {
-            const worksheet = this.resolveWorksheet(context, action);
-            try {
-              await this.applySingleAction(context, worksheet, action);
-              if (action.type === 'ADD_ROW') {
-                await context.sync();
-              }
-              applied += 1;
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              errors.push(`${action.type}: ${message}`);
-              console.warn('Action failed, skipping:', action, error);
-            }
-          }
-
-          await context.sync();
-        });
-      }
+      const richResult = await richActionEngine.applyActions(rich);
+      applied += richResult.applied;
+      errors.push(...richResult.errors);
     } catch (error) {
       console.error('Failed to apply actions to spreadsheet:', error);
       throw new Error(
@@ -263,12 +226,14 @@ export class ActionEngine {
       case 'HIDE_ROW':
         this.hideRow(worksheet, action);
         break;
+      case 'UNHIDE_ROW':
       case 'SHOW_ROW':
         this.showRow(worksheet, action);
         break;
       case 'HIDE_COLUMN':
         this.hideColumn(worksheet, action);
         break;
+      case 'UNHIDE_COLUMN':
       case 'SHOW_COLUMN':
         this.showColumn(worksheet, action);
         break;
@@ -283,6 +248,15 @@ export class ActionEngine {
         break;
       case 'UNFREEZE_PANES':
         worksheet.freezePanes.unfreeze();
+        break;
+      case 'SET_ZOOM':
+        this.setZoom(worksheet, action);
+        break;
+      case 'PROTECT_SHEET':
+        worksheet.protection.protect();
+        break;
+      case 'UNPROTECT_SHEET':
+        worksheet.protection.unprotect();
         break;
       case 'MERGE_CELLS':
         this.mergeCells(worksheet, action);
@@ -538,6 +512,12 @@ export class ActionEngine {
     const cols = action.freezeColumns ?? 0;
     if (rows > 0) worksheet.freezePanes.freezeRows(rows);
     if (cols > 0) worksheet.freezePanes.freezeColumns(cols);
+  }
+
+  private static setZoom(worksheet: Excel.Worksheet, action: SheetAction): void {
+    if (typeof action.zoomPercent !== 'number') return;
+    const clamped = Math.max(10, Math.min(400, Math.round(action.zoomPercent)));
+    worksheet.sheetView.zoom = clamped;
   }
 
   private static mergeCells(worksheet: Excel.Worksheet, action: SheetAction): void {
@@ -854,12 +834,14 @@ export class ActionEngine {
       case 'DELETE_ROW':
       case 'INSERT_ROW':
       case 'HIDE_ROW':
+      case 'UNHIDE_ROW':
       case 'SHOW_ROW':
       case 'SET_ROW_HEIGHT':
         return action.row !== undefined;
       case 'INSERT_COLUMN':
       case 'DELETE_COLUMN':
       case 'HIDE_COLUMN':
+      case 'UNHIDE_COLUMN':
       case 'SHOW_COLUMN':
       case 'SET_COLUMN_WIDTH':
       case 'FILL_DOWN':
@@ -876,6 +858,8 @@ export class ActionEngine {
         return action.row !== undefined && action.col !== undefined;
       case 'FREEZE_PANES':
       case 'UNFREEZE_PANES':
+      case 'PROTECT_SHEET':
+      case 'UNPROTECT_SHEET':
       case 'CREATE_SHEET':
       case 'DELETE_SHEET':
       case 'RENAME_SHEET':
@@ -900,6 +884,8 @@ export class ActionEngine {
         return Boolean(action.message);
       case 'ADD_SHEET':
         return Boolean(action.name ?? action.sheetName);
+      case 'SET_ZOOM':
+        return typeof action.zoomPercent === 'number';
       default:
         return false;
     }
