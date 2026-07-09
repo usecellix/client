@@ -1,6 +1,7 @@
 import { WorkbookContext } from '@/types/cellix.types';
 import { SheetAction } from '@/types/sheet-actions';
 import { AssistantMode } from '@/types/mode';
+import { extractSheetMentions, stripSheetMentions } from '@/utils/sheetMentions';
 
 export interface LocalSheetActionPlan {
   actions: SheetAction[];
@@ -12,7 +13,7 @@ function escapeRegex(value: string): string {
 }
 
 export function detectCreateSheetIntent(message: string): boolean {
-  return /\b(create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*sheet/i.test(message);
+  return /\b(create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*(?:sheet|tab)\b/i.test(message);
 }
 
 export function detectCopySheetIntent(message: string): boolean {
@@ -31,6 +32,13 @@ export function detectSortIntent(message: string): boolean {
 export function detectSheetDataGenerationIntent(message: string): boolean {
   const lower = message.toLowerCase();
   if (detectCopySheetIntent(message) || detectSortIntent(message)) return true;
+
+  if (/\badd\s+a\s+total\b/i.test(message) || /\btotal\s+row\b/i.test(message)) return true;
+  if (/\bsample\s+rows?\b/i.test(message)) return true;
+  if (/\bfill\s+with\b/i.test(message)) return true;
+  if (/\bwith\s+headers?\b/i.test(message) && /\b(create|add|make|build)\b/i.test(message)) {
+    return true;
+  }
 
   const hasDataKeyword =
     /\b(dummy|sample|data|values?|rows?|headers?|columns?|populate|generate|fill|table|content|gst)\b/i.test(
@@ -137,6 +145,46 @@ export function tryLocalCreateEmptySheetActions(
   };
 }
 
+function tryLocalRenameSheetActions(
+  message: string,
+  mode: AssistantMode,
+): LocalSheetActionPlan | null {
+  if (mode !== 'action') return null;
+  if (!/rename\s+(?:the\s+)?(?:sheet|tab)/i.test(message)) return null;
+
+  const match = message.match(
+    /rename\s+(?:the\s+)?(?:sheet|tab)\s+["']?([^"']+?)["']?\s+to\s+["']?([^"']+?)["']?\s*$/i,
+  );
+  if (!match) return null;
+
+  const oldName = match[1].trim();
+  const newName = match[2].trim();
+  return {
+    actions: [{ type: 'RENAME_SHEET', oldName, newName }],
+    explanation: `Rename sheet "${oldName}" to "${newName}"`,
+  };
+}
+
+function tryLocalClearSheetActions(
+  message: string,
+  mode: AssistantMode,
+): LocalSheetActionPlan | null {
+  if (mode !== 'action') return null;
+  if (
+    !/clear\s+(?:this\s+)?(?:entire\s+)?(?:sheet|all\s+(?:the\s+)?(?:data|content|cells))/i.test(
+      message,
+    )
+  ) {
+    return null;
+  }
+  if (/[A-Z]+\d+:[A-Z]+\d+/i.test(message)) return null;
+
+  return {
+    actions: [{ type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents' }],
+    explanation: 'Clear all data on the active sheet',
+  };
+}
+
 export function tryLocalSheetActions(
   message: string,
   workbookContext: WorkbookContext | undefined,
@@ -144,7 +192,10 @@ export function tryLocalSheetActions(
 ): LocalSheetActionPlan | null {
   return (
     tryLocalDeleteSheetActions(message, workbookContext, mode) ??
-    tryLocalCreateEmptySheetActions(message, workbookContext, mode)
+    tryLocalCreateEmptySheetActions(message, workbookContext, mode) ??
+    tryLocalRenameSheetActions(message, mode) ??
+    tryLocalClearSheetActions(message, mode) ??
+    null
   );
 }
 
@@ -189,40 +240,54 @@ export function extractDeleteSheetNames(
   availableSheets: string[],
   activeSheet?: string,
 ): string[] {
+  const mentions = extractSheetMentions(message);
+  if (mentions.length > 0) {
+    const resolved = resolveSheetNames(mentions, availableSheets);
+    if (resolved.length > 0) return resolved;
+    return mentions;
+  }
+
   if (/\b(this|current|active)\s+sheet\b/i.test(message) && activeSheet) {
     return [activeSheet];
   }
 
   const quoted = extractQuotedNames(message);
   if (quoted.length > 0) {
-    return resolveSheetNames(quoted, availableSheets);
+    const resolved = resolveSheetNames(quoted, availableSheets);
+    if (resolved.length > 0) return resolved;
+    return quoted;
   }
 
+  const cleaned = stripSheetMentions(message);
   const sortedSheets = [...availableSheets].sort((a, b) => b.length - a.length);
   const mentioned: string[] = [];
   for (const sheet of sortedSheets) {
     const pattern = new RegExp(`\\b${escapeRegex(sheet)}\\b`, 'i');
-    if (pattern.test(message) && !mentioned.includes(sheet)) {
+    if (pattern.test(cleaned) && !mentioned.includes(sheet)) {
       mentioned.push(sheet);
     }
   }
   if (mentioned.length > 0) {
     mentioned.sort(
       (a, b) =>
-        message.toLowerCase().indexOf(a.toLowerCase()) -
-        message.toLowerCase().indexOf(b.toLowerCase()),
+        cleaned.toLowerCase().indexOf(a.toLowerCase()) -
+        cleaned.toLowerCase().indexOf(b.toLowerCase()),
     );
     return mentioned;
   }
 
   const listMatch =
-    /\b(?:delete|remove|drop)\s+(?:the\s+)?sheets?\s+(?:named\s+)?(.+?)(?:[.!?]|$)/i.exec(message);
+    /\b(?:delete|remove|drop)\s+(?:the\s+)?sheets?\s+(?:named\s+)?(.+?)(?:[.!?]|$)/i.exec(
+      cleaned,
+    );
   if (listMatch?.[1]) {
     const parts = listMatch[1]
       .split(/\s*,\s*|\s+and\s+/i)
       .map((part) => part.replace(/^["']|["']$/g, '').trim())
       .filter(Boolean);
-    return resolveSheetNames(parts, availableSheets);
+    const resolved = resolveSheetNames(parts, availableSheets);
+    if (resolved.length > 0) return resolved;
+    return parts;
   }
 
   return [];
@@ -254,7 +319,8 @@ export function tryLocalDeleteSheetActions(
     .map((sheet) => sheet.sheetName)
     .filter(Boolean);
 
-  if (availableSheets.length === 0) return null;
+  const hasMentions = extractSheetMentions(message).length > 0;
+  if (availableSheets.length === 0 && !hasMentions) return null;
 
   const sheetNames = extractDeleteSheetNames(
     message,

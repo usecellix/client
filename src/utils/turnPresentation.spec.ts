@@ -51,4 +51,24 @@ describe('isTurnPresentationComplete', () => {
       ),
     ).toBe(true);
   });
+
+  it('returns false while a step is running', () => {
+    expect(
+      isTurnPresentationComplete(
+        baseTurn({
+          blocks: [{ id: 's1', type: 'step', label: 'Reading', phase: 'running' }],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false while status is pulsing', () => {
+    expect(
+      isTurnPresentationComplete(
+        baseTurn({
+          blocks: [{ id: 'st1', type: 'status', label: 'Working…', pulsing: true }],
+        }),
+      ),
+    ).toBe(false);
+  });
 });

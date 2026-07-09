@@ -1,23 +1,19 @@
 import React, { useMemo } from 'react';
-import { MapPin } from 'lucide-react';
 import {
   ActionBlock,
   AnswerBlock,
   ConversationTurn,
-  MatchesBlock,
   PlanBlock,
-  QuestionBlock,
   TurnBlock,
   formatMessageTime,
 } from '@/types/conversationTurn';
 import { SheetAction } from '@/hooks/useSseStream';
-import { navigateToCell } from '@/services/rangeFetchService';
 import { generateSuggestedFollowUps } from '@/utils/suggestedFollowUps';
 import StepIndicator from './StepIndicator';
 import ThinkingBlockView from './ThinkingBlockView';
 import AnswerReveal from './AnswerReveal';
-import ResponseOutput from './ResponseOutput';
 import FollowUpsSection from './FollowUpsSection';
+import QuestionChoicesPanel from './QuestionChoicesPanel';
 
 interface TurnRendererProps {
   turn: ConversationTurn;
@@ -106,48 +102,6 @@ function PlanBlockView({
   );
 }
 
-function MatchesBlockView({ block }: { block: MatchesBlock }) {
-  const handleNavigate = async (sheetName: string, row: number, col: number) => {
-    try {
-      await navigateToCell(sheetName, row, col);
-    } catch (error) {
-      console.warn('[Cellix] Failed to navigate to match:', error);
-    }
-  };
-
-  return (
-    <div className="cellix-matches-card cellix-block-enter">
-      {block.summary && <div className="cellix-matches-summary">{block.summary}</div>}
-      <ul className="cellix-matches-list">
-        {block.matches.map((match, i) => {
-          const cellRef =
-            match.colLetter && match.rowNum
-              ? `${match.sheetName}!${match.colLetter}${match.rowNum}`
-              : match.sheetName;
-          return (
-            <li key={i}>
-              <button
-                type="button"
-                className="cellix-match-link"
-                onClick={() => handleNavigate(match.sheetName, match.row, match.col)}
-                title={`Jump to ${cellRef}`}
-              >
-                <MapPin size={12} className="cellix-match-icon" />
-                <span className="cellix-match-label">
-                  Found — Row {match.rowNum}
-                  {match.label ? ` · ${match.label}` : ''}
-                </span>
-                {match.detail && <span className="cellix-match-detail">{match.detail}</span>}
-                <span className="cellix-match-ref">{cellRef}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
 function BlockRenderer({
   block,
   turn,
@@ -159,6 +113,7 @@ function BlockRenderer({
   onToggleThinking,
   onAnswerComplete,
   onRunAsAction,
+  onAnswerQuestion,
   showActionButtons = true,
 }: {
   block: TurnBlock;
@@ -172,24 +127,31 @@ function BlockRenderer({
   onToggleThinking: (turnId: string, blockId: string) => void;
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onRunAsAction: (message: string) => void;
+  onAnswerQuestion: (answer: string) => void;
 }) {
   if (block.type === 'thinking' && block.visible === false) return null;
   if (block.type === 'status' && block.visible === false) return null;
 
+  const hideProgress =
+    turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
+
   if (block.type === 'step') {
-    if (turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error') {
+    if (hideProgress) {
       return null;
     }
     return <StepIndicator block={block} />;
   }
 
   if (block.type === 'status') {
-    if (turn.phase === 'complete' || turn.phase === 'awaiting_input') {
+    if (hideProgress) {
       return null;
     }
   }
 
   if (block.type === 'thinking') {
+    if (hideProgress) {
+      return null;
+    }
     return (
       <ThinkingBlockView
         block={block}
@@ -211,6 +173,7 @@ function BlockRenderer({
     return (
       <AnswerReveal
         content={block.content}
+        matches={block.matches}
         revealState={block.revealState}
         onComplete={() => onAnswerComplete(turn.id, block.id)}
         disabled={isWaiting}
@@ -220,11 +183,14 @@ function BlockRenderer({
 
   if (block.type === 'question') {
     if (block.revealState === 'hidden') return null;
+    if (turn.phase !== 'awaiting_input' || !onAnswerQuestion) return null;
 
     return (
-      <ResponseOutput
-        content={block.question}
-        disabled={isWaiting || turn.phase !== 'awaiting_input'}
+      <QuestionChoicesPanel
+        question={block.question}
+        options={block.options}
+        onSelect={onAnswerQuestion}
+        disabled={isWaiting}
       />
     );
   }
@@ -233,10 +199,6 @@ function BlockRenderer({
     return (
       <PlanBlockView block={block} onRunAsAction={onRunAsAction} disabled={isWaiting} />
     );
-  }
-
-  if (block.type === 'matches') {
-    return <MatchesBlockView block={block} />;
   }
 
   if (block.type === 'actions') {
@@ -353,27 +315,20 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
       };
     }
 
-    const questionBlock = turn.blocks.find(
-      (b): b is QuestionBlock =>
-        b.type === 'question' && b.revealState === 'visible' && turn.phase === 'awaiting_input',
-    );
-    if (questionBlock?.options?.length) {
-      return {
-        followUps: questionBlock.options,
-        followUpHandler: onAnswerQuestion,
-        followUpsDisabled: isWaiting && isActive,
-      };
-    }
-
     return { followUps: [] as string[], followUpHandler: undefined, followUpsDisabled: true };
-  }, [turn.blocks, turn.userMessage, turn.phase, onFollowUp, onAnswerQuestion, isWaiting, isActive]);
+  }, [turn.blocks, turn.userMessage, onFollowUp, isWaiting, isActive]);
 
   const hasVisibleBlocks = turn.blocks.some((b) => {
-    if (hideProgress && (b.type === 'step' || b.type === 'status')) return false;
+    if (hideProgress && (b.type === 'step' || b.type === 'status' || b.type === 'thinking')) {
+      return false;
+    }
     if (b.type === 'step' && b.phase === 'hidden') return false;
     if (b.type === 'answer' && b.revealState === 'hidden') return false;
     if (b.type === 'thinking' && b.visible === false) return false;
     if (b.type === 'status' && b.visible === false) return false;
+    if (b.type === 'question' && turn.phase === 'awaiting_input' && b.revealState === 'visible') {
+      return true;
+    }
     return true;
   });
 
@@ -408,6 +363,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     onToggleThinking={onToggleThinking}
                     onAnswerComplete={onAnswerComplete}
                     onRunAsAction={onRunAsAction}
+                    onAnswerQuestion={onAnswerQuestion}
                   />
                 </React.Fragment>
               );

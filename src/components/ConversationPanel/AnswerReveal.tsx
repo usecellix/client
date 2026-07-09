@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
+import { MatchResult } from '@/types/conversationTurn';
+import { navigateToCell } from '@/services/rangeFetchService';
 import ResponseOutput from './ResponseOutput';
 
 interface AnswerRevealProps {
   content: string;
   revealState: 'hidden' | 'typing' | 'complete';
+  matches?: MatchResult[];
   userPrompt?: string;
   onComplete?: () => void;
   disabled?: boolean;
@@ -15,6 +18,7 @@ const TYPING_INTERVAL_MS = 24;
 const AnswerReveal: React.FC<AnswerRevealProps> = ({
   content,
   revealState,
+  matches,
   onComplete,
   disabled = false,
 }) => {
@@ -70,6 +74,7 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
   return (
     <ResponseOutput
       content={displayed}
+      matches={revealState === 'complete' ? matches : undefined}
       disabled={disabled}
       showTypingCursor={isTyping}
     />

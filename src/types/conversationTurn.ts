@@ -27,6 +27,7 @@ export interface AnswerBlock {
   type: 'answer';
   content: string;
   revealState: 'hidden' | 'typing' | 'complete';
+  matches?: MatchResult[];
 }
 
 export interface QuestionBlock {

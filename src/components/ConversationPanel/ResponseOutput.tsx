@@ -7,10 +7,13 @@ import {
   ThumbsDown,
   ThumbsUp,
 } from 'lucide-react';
-import { renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
+import { MatchResult } from '@/types/conversationTurn';
+import { navigateToCell } from '@/services/rangeFetchService';
+import { renderInlineBoldMarkdown, renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
 
 interface ResponseOutputProps {
   content: string;
+  matches?: MatchResult[];
   followUps?: string[];
   onFollowUp?: (text: string) => void;
   disabled?: boolean;
@@ -19,8 +22,59 @@ interface ResponseOutputProps {
   includeFollowUps?: boolean;
 }
 
+function formatCellRef(match: MatchResult): string {
+  if (match.colLetter && match.rowNum) {
+    return `${match.sheetName}!${match.colLetter}${match.rowNum}`;
+  }
+  return match.sheetName;
+}
+
+function FindPointersInline({ matches }: { matches: MatchResult[] }) {
+  const handleNavigate = async (sheetName: string, row: number, col: number) => {
+    try {
+      await navigateToCell(sheetName, row, col);
+    } catch (error) {
+      console.warn('[Cellix] Failed to navigate to match:', error);
+    }
+  };
+
+  return (
+    <>
+      {matches.map((match, index) => {
+        const cellRef = formatCellRef(match);
+        return (
+          <React.Fragment key={`${match.sheetName}-${match.row}-${match.col}-${index}`}>
+            {index > 0 ? <span className="cellix-find-sep">, </span> : null}
+            <button
+              type="button"
+              className="cellix-find-pointer"
+              onClick={() => handleNavigate(match.sheetName, match.row, match.col)}
+              title={`Jump to ${cellRef}`}
+            >
+              {cellRef}
+            </button>
+          </React.Fragment>
+        );
+      })}
+      <span className="cellix-find-end">.</span>
+    </>
+  );
+}
+
+function stripTrailingPeriod(text: string): string {
+  return text.replace(/\.\s*$/, '');
+}
+
+function buildCopyText(content: string, matches?: MatchResult[]): string {
+  if (!matches?.length) return content;
+  const intro = stripTrailingPeriod(content.trim());
+  const refs = matches.map(formatCellRef).join(', ');
+  return `${intro} ${refs}.`;
+}
+
 const ResponseOutput: React.FC<ResponseOutputProps> = ({
   content,
+  matches,
   followUps = [],
   onFollowUp,
   disabled = false,
@@ -29,10 +83,12 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const hasMatches = Boolean(matches?.length);
+  const introText = hasMatches ? stripTrailingPeriod(content.trim()) : content;
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(buildCopyText(content, matches));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -43,8 +99,18 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
   return (
     <div className="cellix-response-output cellix-block-enter">
       <div className="cellix-response-shell">
-        <div className={`cellix-response-text cellix-response-md ${showTypingCursor ? 'cellix-answer-streaming' : ''}`}>
-          {renderLightMarkdownPlain(content)}
+        <div
+          className={`cellix-response-text cellix-response-md ${hasMatches ? 'cellix-find-oneline' : ''} ${showTypingCursor ? 'cellix-answer-streaming' : ''}`}
+        >
+          {hasMatches && matches ? (
+            <span className="cellix-find-oneline-line">
+              {renderInlineBoldMarkdown(introText)}
+              {' '}
+              <FindPointersInline matches={matches} />
+            </span>
+          ) : (
+            renderLightMarkdownPlain(introText)
+          )}
         </div>
       </div>
 

@@ -15,7 +15,6 @@ import {
   X,
 } from 'lucide-react';
 import { AssistantMode, ASSISTANT_MODES, ASSISTANT_MODE_META } from '@/types/mode';
-import { ClarificationPanel } from '@/components/ClarificationPanel/ClarificationPanel';
 import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
@@ -668,6 +667,8 @@ export const PanelInput: React.FC<PanelInputProps> = ({
 };
 
 interface ConversationPanelProps {
+  sessions: import('@/types/chatSession').ChatSession[];
+  activeSessionId: string | null;
   turns: import('@/types/conversationTurn').ConversationTurn[];
   activeTurnId: string | null;
   isWaitingForResponse: boolean;
@@ -682,9 +683,9 @@ interface ConversationPanelProps {
   onCloseCompare: () => void;
   onSend: (message: string) => void;
   onStop: () => void;
-  onClear: () => void;
-  onSelectTurn: (turnId: string) => void;
-  onCloseTurn: (turnId: string) => void;
+  onNewChat: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
@@ -711,6 +712,8 @@ interface ConversationPanelProps {
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
+  sessions,
+  activeSessionId,
   turns,
   activeTurnId,
   isWaitingForResponse,
@@ -725,9 +728,9 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onCloseCompare,
   onSend,
   onStop,
-  onClear,
-  onSelectTurn,
-  onCloseTurn,
+  onNewChat,
+  onSelectSession,
+  onCloseSession,
   onAcceptActions,
   onRejectActions,
   onAnswerQuestion,
@@ -746,13 +749,18 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onCancelQuickEdit,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
-  const [draftChatOpen, setDraftChatOpen] = useState(false);
-  const visibleTurns = activeTurnId ? turns.filter((turn) => turn.id === activeTurnId) : [];
-  const showStartScreen = visibleTurns.length === 0;
+  const showStartScreen = turns.length === 0;
   const activeTurn = activeTurnId ? turns.find((turn) => turn.id === activeTurnId) : undefined;
   const previewActionsReady = Boolean(
     activeTurn && !isWaitingForResponse && isTurnPresentationComplete(activeTurn),
   );
+  const handleQuestionAnswer = (answer: string) => {
+    if (activeClarification) {
+      onClarificationAnswer(answer);
+      return;
+    }
+    onAnswerQuestion(answer);
+  };
   const previewItems: DiffItem[] = pendingPreview
     ? pendingPreview.changes.map((change) => ({
         sheetName: change.sheet,
@@ -766,25 +774,6 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       }))
     : [];
 
-  const openDraftChat = () => {
-    setDraftChatOpen(true);
-    onClear();
-  };
-
-  const closeDraftChat = () => {
-    setDraftChatOpen(false);
-    if (activeTurnId === null && turns.length > 0) {
-      onSelectTurn(turns[turns.length - 1].id);
-    }
-  };
-
-  const sendMessage = (message: string) => {
-    if (activeTurnId === null) {
-      setDraftChatOpen(false);
-    }
-    onSend(message);
-  };
-
   useEffect(() => {
     contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight, behavior: 'smooth' });
   }, [turns, activeTurnId, isWaitingForResponse, activeClarification]);
@@ -792,21 +781,19 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div className="cellix-panel">
       <PanelHeader
-        turns={turns}
-        activeTurnId={activeTurnId}
-        draftChatOpen={draftChatOpen}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
         isWaitingForResponse={isWaitingForResponse}
-        onSelectTurn={onSelectTurn}
-        onCloseTurn={onCloseTurn}
-        onNewChat={openDraftChat}
-        onCloseDraftChat={closeDraftChat}
+        onSelectSession={onSelectSession}
+        onCloseSession={onCloseSession}
+        onNewChat={onNewChat}
       />
 
       <div className={`cellix-content ${showStartScreen ? 'start' : ''}`} ref={contentRef}>
         {showStartScreen ? (
-          <EmptyState onSuggestion={sendMessage}>
+          <EmptyState onSuggestion={onSend}>
             <PanelInput
-              onSend={sendMessage}
+              onSend={onSend}
               onStop={onStop}
               disabled={isWaitingForResponse}
               isProcessing={isWaitingForResponse}
@@ -825,18 +812,18 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
             />
           </EmptyState>
         ) : (
-          visibleTurns.map((turn) => (
+          turns.map((turn) => (
             <TurnRenderer
               key={turn.id}
               turn={turn}
               isActive={turn.id === activeTurnId}
-              isWaiting={isWaitingForResponse}
+              isWaiting={isWaitingForResponse && turn.id === activeTurnId}
               previewEnabled={previewEnabled}
               isApplying={isApplyingActions}
               showActionButtons={previewActionsReady}
               onAcceptActions={onAcceptActions}
               onRejectActions={onRejectActions}
-              onAnswerQuestion={onAnswerQuestion}
+              onAnswerQuestion={handleQuestionAnswer}
               onToggleThinking={onToggleThinking}
               onAnswerComplete={onAnswerComplete}
               onFollowUp={onFollowUp}
@@ -846,20 +833,13 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         )}
       </div>
 
-      {(isComparing || compareResult || activeClarification) && (
+      {(isComparing || compareResult) && (
         <div className="cellix-bottom-tools">
           {(isComparing || compareResult) && (
             <SheetCompareView
               result={compareResult}
               isLoading={isComparing}
               onClose={onCloseCompare}
-            />
-          )}
-          {activeClarification && (
-            <ClarificationPanel
-              payload={activeClarification}
-              onAnswer={onClarificationAnswer}
-              onDismiss={onClarificationDismiss}
             />
           )}
         </div>
@@ -898,7 +878,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
       {!showStartScreen && (
         <PanelInput
-          onSend={sendMessage}
+          onSend={onSend}
           onStop={onStop}
           disabled={isWaitingForResponse}
           isProcessing={isWaitingForResponse}

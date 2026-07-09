@@ -14,19 +14,17 @@ import {
   X,
 } from 'lucide-react';
 import { CostDashboardPanel } from '@/components/CostDashboardPanel/CostDashboardPanel';
-import { ConversationTurn } from '@/types/conversationTurn';
+import { ChatSession } from '@/types/chatSession';
 
 type HeaderPanel = 'usage' | 'audit';
 
 interface PanelHeaderProps {
-  turns: ConversationTurn[];
-  activeTurnId: string | null;
-  draftChatOpen: boolean;
+  sessions: ChatSession[];
+  activeSessionId: string | null;
   isWaitingForResponse: boolean;
-  onSelectTurn: (turnId: string) => void;
-  onCloseTurn: (turnId: string) => void;
+  onSelectSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
   onNewChat: () => void;
-  onCloseDraftChat: () => void;
 }
 
 const PANEL_TITLES: Record<HeaderPanel, string> = {
@@ -35,14 +33,12 @@ const PANEL_TITLES: Record<HeaderPanel, string> = {
 };
 
 export const PanelHeader: React.FC<PanelHeaderProps> = ({
-  turns,
-  activeTurnId,
-  draftChatOpen,
+  sessions,
+  activeSessionId,
   isWaitingForResponse,
-  onSelectTurn,
-  onCloseTurn,
+  onSelectSession,
+  onCloseSession,
   onNewChat,
-  onCloseDraftChat,
 }) => {
   const [openPanel, setOpenPanel] = useState<HeaderPanel | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -50,8 +46,8 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   const [historyQuery, setHistoryQuery] = useState('');
   const headerRef = useRef<HTMLDivElement>(null);
 
-  const filteredTurns = turns.filter((turn) =>
-    turn.userMessage.toLowerCase().includes(historyQuery.trim().toLowerCase()),
+  const filteredSessions = sessions.filter((session) =>
+    session.title.toLowerCase().includes(historyQuery.trim().toLowerCase()),
   );
 
   const closeAll = () => {
@@ -83,7 +79,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
     <div className="cellix-topbar" ref={headerRef}>
       <div className="cellix-topbar-row">
         <div className="cellix-chat-tab-strip" role="tablist" aria-label="Chats">
-          {turns.length === 0 ? (
+          {sessions.length === 0 ? (
             <button
               type="button"
               className="cellix-chat-tab active cellix-new-chat-tab"
@@ -92,47 +88,28 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             >
               <MessageSquare size={14} />
               <span className="cellix-chat-tab-title">New chat</span>
-              <span
-                role="button"
-                tabIndex={0}
-                className="cellix-chat-tab-close"
-                title="Close chat"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseDraftChat();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onCloseDraftChat();
-                  }
-                }}
-              >
-                <X size={12} />
-              </span>
             </button>
           ) : (
-            turns.map((turn) => {
-              const active = turn.id === activeTurnId;
+            sessions.map((session) => {
+              const active = session.id === activeSessionId;
               const loading = active && isWaitingForResponse;
 
               return (
                 <button
-                  key={turn.id}
+                  key={session.id}
                   type="button"
                   className={`cellix-chat-tab ${active ? 'active' : ''}`}
                   role="tab"
                   aria-selected={active}
-                  onClick={() => onSelectTurn(turn.id)}
-                  title={turn.userMessage}
+                  onClick={() => onSelectSession(session.id)}
+                  title={session.title}
                 >
                   {loading ? (
                     <span className="cellix-spinner cellix-chat-tab-spinner" />
                   ) : (
                     <MessageSquare size={13} />
                   )}
-                  <span className="cellix-chat-tab-title">{turn.tabLabel}</span>
+                  <span className="cellix-chat-tab-title">{session.title}</span>
                   <span
                     role="button"
                     tabIndex={0}
@@ -140,13 +117,13 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                     title="Close chat"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onCloseTurn(turn.id);
+                      onCloseSession(session.id);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         event.stopPropagation();
-                        onCloseTurn(turn.id);
+                        onCloseSession(session.id);
                       }
                     }}
                   >
@@ -155,39 +132,6 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                 </button>
               );
             })
-          )}
-          {turns.length > 0 && draftChatOpen && (
-            <button
-              type="button"
-              className={`cellix-chat-tab cellix-new-chat-tab ${activeTurnId === null ? 'active' : ''}`}
-              onClick={() => {
-                closeAll();
-                onNewChat();
-              }}
-              title="New chat"
-            >
-              <MessageSquare size={13} />
-              <span className="cellix-chat-tab-title">New chat</span>
-              <span
-                role="button"
-                tabIndex={0}
-                className="cellix-chat-tab-close"
-                title="Close chat"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseDraftChat();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onCloseDraftChat();
-                  }
-                }}
-              >
-                <X size={12} />
-              </span>
-            </button>
           )}
         </div>
 
@@ -247,34 +191,34 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
               />
               <div className="cellix-chat-history-section">Today</div>
               <div className="cellix-chat-history-list">
-                {filteredTurns.length === 0 ? (
+                {filteredSessions.length === 0 ? (
                   <div className="cellix-chat-history-empty">
-                    {turns.length === 0 ? 'No chats yet' : 'No chats found'}
+                    {sessions.length === 0 ? 'No chats yet' : 'No chats found'}
                   </div>
                 ) : (
-                  filteredTurns.map((turn) => {
-                    const active = turn.id === activeTurnId;
+                  filteredSessions.map((session) => {
+                    const active = session.id === activeSessionId;
                     return (
                       <div
-                        key={turn.id}
+                        key={session.id}
                         className={`cellix-chat-history-item ${active ? 'active' : ''}`}
                         role="menuitem"
                         tabIndex={0}
                         onClick={() => {
-                          onSelectTurn(turn.id);
+                          onSelectSession(session.id);
                           closeAll();
                         }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
-                            onSelectTurn(turn.id);
+                            onSelectSession(session.id);
                             closeAll();
                           }
                         }}
-                        title={turn.userMessage}
+                        title={session.title}
                       >
                         <MessageSquare size={13} />
-                        <span>{turn.tabLabel}</span>
+                        <span>{session.title}</span>
                         {active && <Pin size={11} className="cellix-chat-history-pin" />}
                         <button
                           type="button"
@@ -283,7 +227,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                           aria-label="Remove chat"
                           onClick={(event) => {
                             event.stopPropagation();
-                            onCloseTurn(turn.id);
+                            onCloseSession(session.id);
                           }}
                         >
                           <Trash2 size={12} />

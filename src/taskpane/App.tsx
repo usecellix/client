@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ConversationPanel from '@/components/ConversationPanel/ConversationPanel';
 import { CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { useConversation, PreviewActionsMeta } from '@/hooks/useConversation';
@@ -9,6 +9,7 @@ import { markChangeSetApplied } from '@/services/auditService';
 import { buildWorkbookContext } from '@/services/sheetContextBuilder';
 import { SheetAction } from '@/types/sheet-actions';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE, isAssistantMode } from '@/types/mode';
+import { resolveWorkbookKey } from '@/utils/chatSessionStorage';
 import '@/styles/conversation-panel.css';
 import './taskpane.css';
 
@@ -106,7 +107,15 @@ const App: React.FC = () => {
     clearPreviewState();
   }, [clearPreviewState]);
 
+  const [workbookKey, setWorkbookKey] = useState('workbook');
+
+  useEffect(() => {
+    void resolveWorkbookKey().then(setWorkbookKey);
+  }, []);
+
   const {
+    sessions,
+    activeSessionId,
     turns,
     activeTurnId,
     conversationId,
@@ -120,12 +129,13 @@ const App: React.FC = () => {
     acceptActions,
     rejectActions,
     endConversation,
-    clearConversation,
-    selectTurn,
-    closeTurn,
+    newChat,
+    selectSession,
+    closeSession,
     toggleThinking,
     markAnswerComplete,
   } = useConversation({
+    workbookKey,
     onActions: applyActionsWithAudit,
     onPreviewActions: previewActions,
     onClearPreview: clearActionPreview,
@@ -328,6 +338,8 @@ const App: React.FC = () => {
 
   return (
     <ConversationPanel
+      sessions={sessions}
+      activeSessionId={activeSessionId}
       turns={turns}
       activeTurnId={activeTurnId}
       conversationId={conversationId}
@@ -343,9 +355,9 @@ const App: React.FC = () => {
       onCloseCompare={() => setCompareResult(null)}
       onSend={handleSend}
       onStop={endConversation}
-      onClear={clearConversation}
-      onSelectTurn={selectTurn}
-      onCloseTurn={closeTurn}
+      onNewChat={newChat}
+      onSelectSession={selectSession}
+      onCloseSession={closeSession}
       onAcceptActions={handleAcceptActions}
       onRejectActions={rejectActions}
       onAnswerQuestion={handleAnswerQuestion}

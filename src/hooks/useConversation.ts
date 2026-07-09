@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { buildWorkbookContext } from '@/services/sheetContextBuilder';
 import { getConversationEndpoint } from '@/lib/apiConfig';
 import { SheetAction } from '@/types/sheet-actions';
 import {
@@ -13,8 +14,8 @@ import {
   CLARIFY_ROW_PLACEMENT,
 } from '@/utils/actionGuard';
 import { parseSseEventBlock } from '@/utils/sseParser';
-import { navigateToCell } from '@/services/rangeFetchService';
 import { handleToolRequest } from '@/services/toolRequestHandler';
+import { shouldAcceptIncomingClarification } from '@/utils/clarification.util';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import { buildThoughtSummary } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isSimpleCreateTask } from '@/utils/statusMessage';
@@ -27,15 +28,29 @@ import {
   ActionBlock,
   AnswerBlock,
   ConversationTurn,
-  MatchesBlock,
+  MatchResult,
   PlanBlock,
   StepPhase,
   ThinkingBlock,
   TurnBlock,
   truncateTabLabel,
 } from '@/types/conversationTurn';
+import { ChatSession, createChatSession } from '@/types/chatSession';
+import {
+  loadChatSessions,
+  saveChatSessions,
+} from '@/utils/chatSessionStorage';
+import {
+  mergeSessionFromStored,
+  StoredConversation,
+} from '@/utils/rehydrateConversation';
+import { getConversationByIdEndpoint } from '@/lib/apiConfig';
+
+/* global Excel, Office */
 
 interface UseConversationReturn {
+  sessions: ChatSession[];
+  activeSessionId: string | null;
   turns: ConversationTurn[];
   activeTurnId: string | null;
   isWaitingForResponse: boolean;
@@ -67,7 +82,10 @@ interface UseConversationReturn {
   acceptActions: (turnId: string, blockId: string) => Promise<void>;
   rejectActions: (turnId: string, blockId: string) => void;
   endConversation: () => void;
+  newChat: () => void;
   clearConversation: () => void;
+  selectSession: (sessionId: string) => void;
+  closeSession: (sessionId: string) => void;
   selectTurn: (turnId: string) => void;
   closeTurn: (turnId: string) => void;
   toggleThinking: (turnId: string, blockId: string) => void;
@@ -75,6 +93,7 @@ interface UseConversationReturn {
 }
 
 interface UseConversationOptions {
+  workbookKey?: string;
   onActions?: (
     actions: SheetAction[],
     explanation: string,
@@ -100,6 +119,7 @@ export interface SendMessageOptions {
 interface PendingResponse {
   type: 'answer' | 'question' | 'clarification';
   answer?: string;
+  matches?: MatchResult[];
   question?: string;
   options?: string[];
 }
@@ -123,7 +143,6 @@ interface TurnRuntime {
   pendingResponse: PendingResponse | null;
   pendingActions: PendingActions | null;
   pendingPlan: PlanBlock | null;
-  pendingMatches: MatchesBlock | null;
   aborted: boolean;
   mode: AssistantMode;
 }
@@ -132,7 +151,11 @@ const THINKING_ID = 'thinking_main';
 const STATUS_ID = 'status_active';
 const STEP_READING_ID = 'step_reading';
 const STEP_ANALYZING_ID = 'step_analyzing';
-const ANSWER_ID = 'answer_main';
+const ANSWER_ID_PREFIX = 'answer_';
+
+function answerBlockId(turnId: string): string {
+  return `${ANSWER_ID_PREFIX}${turnId}`;
+}
 
 const READING_LABEL = 'Reading your worksheet…';
 const ANALYZING_LABEL = 'Analyzing your spreadsheet…';
@@ -140,6 +163,14 @@ const ANALYZING_LABEL = 'Analyzing your spreadsheet…';
 interface TimelineOptions {
   sheetIsEmpty: boolean;
   userMessage: string;
+}
+
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < Math.min(str.length, 2000); i += 1) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
 }
 
 function finalizeSteps(blocks: TurnBlock[], userMessage: string): TurnBlock[] {
@@ -231,7 +262,6 @@ function createRuntime(mode: AssistantMode = DEFAULT_ASSISTANT_MODE): TurnRuntim
     pendingResponse: null,
     pendingActions: null,
     pendingPlan: null,
-    pendingMatches: null,
     aborted: false,
     mode,
   };
@@ -255,6 +285,7 @@ function createActionBlock(
 
 export const useConversation = (options: UseConversationOptions = {}): UseConversationReturn => {
   const {
+    workbookKey = 'workbook',
     onActions,
     onPreviewActions,
     onClearPreview,
@@ -264,43 +295,175 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     isChangeSetApplied,
   } = options;
 
-  const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
   const [activeClarification, setActiveClarification] = useState<ClarificationPayload | null>(null);
+  const [isOfficeReady, setIsOfficeReady] = useState(false);
+
+  const pendingToonRef = useRef<{ toon: string; hash: string; workbookContext: WorkbookContext } | null>(
+    null,
+  );
+  const preCompressionInProgressRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof Office === 'undefined') return;
+    Office.onReady(() => setIsOfficeReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!isOfficeReady || typeof Excel === 'undefined') return;
+
+    Excel.run(async (ctx) => {
+      ctx.workbook.onSelectionChanged.add(async () => {
+        if (preCompressionInProgressRef.current) return;
+        preCompressionInProgressRef.current = true;
+        try {
+          const { context, promptContext } = await buildWorkbookContext([]);
+          const toonString = promptContext ?? '';
+          pendingToonRef.current = {
+            toon: toonString,
+            hash: simpleHash(toonString),
+            workbookContext: context,
+          };
+        } catch {
+          pendingToonRef.current = null;
+        } finally {
+          preCompressionInProgressRef.current = false;
+        }
+      });
+      await ctx.sync();
+    }).catch(() => {
+      // Office.js not available in test env — ignore
+    });
+
+    return () => {
+      // Office.js event handlers are cleaned up when the task pane unloads
+    };
+  }, [isOfficeReady]);
+
+  useEffect(() => {
+    activeClarificationRef.current = activeClarification;
+  }, [activeClarification]);
   const [conversationId, setConversationId] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const conversationIdRef = useRef<string | null>(null);
-  const turnsRef = useRef<ConversationTurn[]>([]);
+  const sessionsRef = useRef<ChatSession[]>([]);
+  const activeSessionIdRef = useRef<string | null>(null);
   const historyRef = useRef<ConversationHistoryMessage[]>([]);
   const runtimeRef = useRef<Map<string, TurnRuntime>>(new Map());
   const revealScheduledRef = useRef<Set<string>>(new Set());
   const sheetLayoutRef = useRef<SheetLayoutPayload | null>(null);
+  const activeClarificationRef = useRef<ClarificationPayload | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
+  const hydratedRef = useRef(false);
 
-  const syncTurns = useCallback((next: ConversationTurn[]) => {
-    turnsRef.current = next;
-    setTurns(next);
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
+  const turns = activeSession?.turns ?? [];
+  const awaitingInput = turns.some((turn) => turn.phase === 'awaiting_input');
+
+  const applySessionContext = useCallback((session: ChatSession | null) => {
+    conversationIdRef.current = session?.conversationId ?? null;
+    historyRef.current = session?.history ?? [];
+    setConversationId(session?.conversationId ?? null);
+  }, []);
+
+  const schedulePersist = useCallback(() => {
+    if (!workbookKey) return;
+    if (persistTimerRef.current) {
+      window.clearTimeout(persistTimerRef.current);
+    }
+    persistTimerRef.current = window.setTimeout(() => {
+      saveChatSessions(workbookKey, {
+        activeSessionId: activeSessionIdRef.current,
+        sessions: sessionsRef.current,
+      });
+    }, 400);
+  }, [workbookKey]);
+
+  const syncSessions = useCallback(
+    (next: ChatSession[]) => {
+      sessionsRef.current = next;
+      setSessions(next);
+      schedulePersist();
+    },
+    [schedulePersist],
+  );
+
+  const updateSession = useCallback(
+    (sessionId: string, updater: (session: ChatSession) => ChatSession) => {
+      syncSessions(
+        sessionsRef.current.map((session) =>
+          session.id === sessionId ? updater(session) : session,
+        ),
+      );
+    },
+    [syncSessions],
+  );
+
+  const getActiveSession = useCallback((): ChatSession | null => {
+    const id = activeSessionIdRef.current;
+    if (!id) return null;
+    return sessionsRef.current.find((session) => session.id === id) ?? null;
   }, []);
 
   const updateTurn = useCallback(
     (turnId: string, updater: (turn: ConversationTurn) => ConversationTurn) => {
-      syncTurns(
-        turnsRef.current.map((turn) => (turn.id === turnId ? updater(turn) : turn)),
-      );
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      updateSession(sessionId, (session) => ({
+        ...session,
+        updatedAt: new Date().toISOString(),
+        turns: session.turns.map((turn) => (turn.id === turnId ? updater(turn) : turn)),
+      }));
     },
-    [syncTurns],
+    [updateSession],
   );
 
-  const syncConversationId = useCallback((id?: string) => {
-    if (!id) return;
-    conversationIdRef.current = id;
-    setConversationId(id);
-  }, []);
+  const syncConversationId = useCallback(
+    (id?: string) => {
+      if (!id) return;
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      conversationIdRef.current = id;
+      setConversationId(id);
+      updateSession(sessionId, (session) => ({
+        ...session,
+        conversationId: id,
+        updatedAt: new Date().toISOString(),
+      }));
+    },
+    [updateSession],
+  );
 
-  const pushHistory = useCallback((entry: ConversationHistoryMessage) => {
-    historyRef.current = [...historyRef.current, entry];
-  }, []);
+  const pushHistory = useCallback(
+    (entry: ConversationHistoryMessage) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+      const nextHistory = [...historyRef.current, entry];
+      historyRef.current = nextHistory;
+      updateSession(sessionId, (session) => ({
+        ...session,
+        history: nextHistory,
+        updatedAt: new Date().toISOString(),
+      }));
+    },
+    [updateSession],
+  );
+
+  const ensureActiveSession = useCallback((): ChatSession => {
+    let session = getActiveSession();
+    if (session) return session;
+
+    const created = createChatSession();
+    activeSessionIdRef.current = created.id;
+    setActiveSessionId(created.id);
+    applySessionContext(created);
+    syncSessions([...sessionsRef.current, created]);
+    return created;
+  }, [applySessionContext, getActiveSession, syncSessions]);
 
   const getUserFacingErrorMessage = useCallback(async (response: Response): Promise<string> => {
     const contentType = response.headers.get('content-type') || '';
@@ -329,7 +492,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       const runtimeForReveal = runtimeRef.current.get(turnId);
       const pendingActions = runtimeForReveal?.pendingActions;
       const pendingPlan = runtimeForReveal?.pendingPlan;
-      const pendingMatches = runtimeForReveal?.pendingMatches;
 
       updateTurn(turnId, (turn) => ({
         ...turn,
@@ -348,13 +510,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           response.type === 'answer'
             ? [
                 {
-                  id: ANSWER_ID,
+                  id: answerBlockId(turnId),
                   type: 'answer',
                   content: response.answer ?? '',
                   revealState: 'typing',
+                  matches: response.matches,
                 } satisfies AnswerBlock,
               ]
-            : response.type === 'question'
+            : response.type === 'question' || response.type === 'clarification'
               ? [
                   {
                     id: `question_${Date.now()}`,
@@ -372,8 +535,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               ? [createActionBlock(pendingActions, isChangeSetApplied)]
               : [],
           )
-          .concat(pendingPlan ? [pendingPlan] : [])
-          .concat(pendingMatches ? [pendingMatches] : []),
+          .concat(pendingPlan ? [pendingPlan] : []),
       }));
 
       setIsWaitingForResponse(false);
@@ -663,20 +825,15 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               timestamp: new Date().toISOString(),
               type: 'answer',
             });
-            signalResponse(turnId, { type: 'answer', answer: event.data.answer });
+            signalResponse(turnId, {
+              type: 'answer',
+              answer: event.data.answer,
+              matches: event.data.matches,
+            });
             continue;
           }
 
           if (event.type === 'select_cell') {
-            try {
-              await navigateToCell(
-                String(event.data.sheetName ?? ''),
-                Number(event.data.row),
-                Number(event.data.col),
-              );
-            } catch (error) {
-              console.warn('[Cellix] Failed to select cell:', error);
-            }
             continue;
           }
 
@@ -703,24 +860,31 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'matches') {
-            const matchesBlock: MatchesBlock = {
-              id: `matches_${Date.now()}`,
-              type: 'matches',
-              summary: event.data.summary,
-              matches: event.data.matches,
-            };
             const runtime = runtimeRef.current.get(turnId);
-            if (runtime) runtime.pendingMatches = matchesBlock;
+            if (runtime?.pendingResponse?.type === 'answer') {
+              runtime.pendingResponse = {
+                ...runtime.pendingResponse,
+                matches: event.data.matches,
+              };
+            }
             if (revealScheduledRef.current.has(turnId)) {
               updateTurn(turnId, (turn) => ({
                 ...turn,
-                blocks: [...turn.blocks.filter((b) => b.type !== 'matches'), matchesBlock],
+                blocks: turn.blocks.map((block) =>
+                  block.type === 'answer' && block.id === answerBlockId(turnId)
+                    ? { ...block, matches: event.data.matches }
+                    : block,
+                ),
               }));
             }
             continue;
           }
 
           if (event.type === 'question') {
+            if (!shouldAcceptIncomingClarification(activeClarificationRef.current)) {
+              console.warn('[Cellix] Ignoring question event while clarification is pending');
+              continue;
+            }
             pushHistory({
               role: 'assistant',
               content: event.data.question,
@@ -736,6 +900,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'clarification') {
+            if (!shouldAcceptIncomingClarification(activeClarificationRef.current)) {
+              console.warn('[Cellix] Ignoring duplicate clarification while one is pending');
+              continue;
+            }
             pushHistory({
               role: 'assistant',
               content: `[Clarification needed]: ${event.data.question}`,
@@ -826,7 +994,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 changeSetId: event.data.changeSetId,
                 changes: event.data.changes,
               });
-              historyRef.current = [];
               setActiveClarification(null);
               updateTurn(turnId, (turn) => ({
                 ...turn,
@@ -904,6 +1071,16 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       await onClearPreview?.();
 
+      const session = ensureActiveSession();
+      setActiveClarification(null);
+
+      updateSession(session.id, (current) => ({
+        ...current,
+        turns: current.turns.map((turn) =>
+          turn.phase === 'awaiting_input' ? { ...turn, phase: 'complete' } : turn,
+        ),
+      }));
+
       const turnId = `turn_${Date.now()}`;
       const timestamp = new Date();
       const mode = sendOptions?.mode ?? DEFAULT_ASSISTANT_MODE;
@@ -930,7 +1107,16 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         type: 'command',
       });
 
-      syncTurns([...turnsRef.current, newTurn]);
+      const nextTitle =
+        session.turns.length === 0 ? truncateTabLabel(trimmed, 24) : session.title;
+
+      updateSession(session.id, (current) => ({
+        ...current,
+        title: nextTitle,
+        updatedAt: timestamp.toISOString(),
+        turns: [...current.turns, newTurn],
+      }));
+
       setActiveTurnId(turnId);
       setIsWaitingForResponse(true);
 
@@ -965,11 +1151,33 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         userMessage: trimmed,
       });
 
+      const buildPayloadContext = async () => {
+        if (pendingToonRef.current) {
+          const pending = pendingToonRef.current;
+          pendingToonRef.current = null;
+          return {
+            workbookContext: pending.workbookContext,
+            promptContext: pending.toon,
+          };
+        }
+        if (workbookContext && promptContext) {
+          return { workbookContext, promptContext };
+        }
+        const built = await buildWorkbookContext([]);
+        return {
+          workbookContext: workbookContext ?? built.context,
+          promptContext: promptContext ?? built.promptContext,
+        };
+      };
+
+      const { workbookContext: resolvedWorkbookContext, promptContext: resolvedPromptContext } =
+        await buildPayloadContext();
+
       const requestPayload = prepareConversationRequestPayload(trimmed, sheetData, {
         conversationId: conversationIdRef.current,
         previousMessages: historyRef.current.slice(0, -1),
-        workbookContext,
-        promptContext,
+        workbookContext: resolvedWorkbookContext,
+        promptContext: resolvedPromptContext,
         previewEnabled,
         refinementChangeSetId: sendOptions?.refinementChangeSetId,
         mode,
@@ -1031,13 +1239,15 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     },
     [
       dispatchLocalSheetActions,
+      ensureActiveSession,
+      getActiveSession,
       getUserFacingErrorMessage,
       onClearPreview,
       previewEnabled,
       processStream,
       pushHistory,
       runVisualTimeline,
-      syncTurns,
+      updateSession,
       updateTurn,
     ],
   );
@@ -1087,7 +1297,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     async (turnId: string, blockId: string) => {
       if (applyingActionsRef.current) return;
 
-      const turn = turnsRef.current.find((t) => t.id === turnId);
+      const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
       const block = turn?.blocks.find(
         (b): b is ActionBlock => b.id === blockId && b.type === 'actions',
       );
@@ -1117,7 +1327,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           onChangeSetApplied?.(block.changeSetId);
         }
 
-        historyRef.current = [];
         setActiveClarification(null);
       } catch (error) {
         updateTurn(turnId, (t) => ({
@@ -1195,7 +1404,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     setIsWaitingForResponse(false);
   }, [activeTurnId, onClearPreview, updateTurn]);
 
-  const clearConversation = useCallback(() => {
+  const newChat = useCallback(() => {
     abortControllerRef.current?.abort();
     void onClearPreview?.();
     if (activeTurnId) {
@@ -1206,56 +1415,138 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
       revealScheduledRef.current.delete(activeTurnId);
     }
-    conversationIdRef.current = null;
-    historyRef.current = [];
-    revealScheduledRef.current.clear();
+
+    const created = createChatSession();
+    activeSessionIdRef.current = created.id;
+    setActiveSessionId(created.id);
     setActiveTurnId(null);
-    setConversationId(null);
     setIsWaitingForResponse(false);
     setActiveClarification(null);
-  }, [activeTurnId, onClearPreview]);
+    applySessionContext(created);
+    syncSessions([...sessionsRef.current, created]);
+  }, [activeTurnId, applySessionContext, onClearPreview, syncSessions]);
 
-  const selectTurn = useCallback((turnId: string) => {
-    if (turnsRef.current.some((turn) => turn.id === turnId)) {
-      setActiveTurnId(turnId);
-    }
-  }, []);
+  const clearConversation = newChat;
 
-  const closeTurn = useCallback(
-    (turnId: string) => {
-      const nextTurns = turnsRef.current.filter((turn) => turn.id !== turnId);
+  const selectSession = useCallback(
+    (sessionId: string) => {
+      const session = sessionsRef.current.find((entry) => entry.id === sessionId);
+      if (!session) return;
+      activeSessionIdRef.current = sessionId;
+      setActiveSessionId(sessionId);
+      applySessionContext(session);
+      const lastTurn = session.turns[session.turns.length - 1];
+      setActiveTurnId(lastTurn?.id ?? null);
+      setActiveClarification(null);
+      schedulePersist();
+    },
+    [applySessionContext, schedulePersist],
+  );
 
-      const runtime = runtimeRef.current.get(turnId);
-      if (runtime) {
-        runtime.aborted = true;
-        runtimeRef.current.delete(turnId);
-      }
-      revealScheduledRef.current.delete(turnId);
+  const closeSession = useCallback(
+    (sessionId: string) => {
+      const nextSessions = sessionsRef.current.filter((session) => session.id !== sessionId);
+      const closingActive = activeSessionIdRef.current === sessionId;
 
-      if (activeTurnId === turnId) {
+      if (closingActive) {
         abortControllerRef.current?.abort();
         void onClearPreview?.();
         setActiveClarification(null);
-        setActiveTurnId(nextTurns.length > 0 ? nextTurns[nextTurns.length - 1].id : null);
         setIsWaitingForResponse(false);
+        setActiveTurnId(null);
+
+        const fallback = nextSessions[nextSessions.length - 1] ?? null;
+        activeSessionIdRef.current = fallback?.id ?? null;
+        setActiveSessionId(fallback?.id ?? null);
+        applySessionContext(fallback);
+        setActiveTurnId(fallback?.turns[fallback.turns.length - 1]?.id ?? null);
       }
 
-      syncTurns(nextTurns);
-
-      if (nextTurns.length === 0) {
-        conversationIdRef.current = null;
-        historyRef.current = [];
-        setConversationId(null);
-      }
+      syncSessions(nextSessions);
     },
-    [activeTurnId, onClearPreview, syncTurns],
+    [applySessionContext, onClearPreview, syncSessions],
   );
 
+  const selectTurn = useCallback(
+    (turnId: string) => {
+      const session = getActiveSession();
+      if (session?.turns.some((turn) => turn.id === turnId)) {
+        setActiveTurnId(turnId);
+      }
+    },
+    [getActiveSession],
+  );
+
+  const closeTurn = useCallback(
+    (sessionId: string) => {
+      closeSession(sessionId);
+    },
+    [closeSession],
+  );
+
+  const hydrateFromStorage = useCallback(async () => {
+    if (hydratedRef.current || !workbookKey) return;
+    hydratedRef.current = true;
+
+    const stored = loadChatSessions(workbookKey);
+    if (!stored?.sessions.length) return;
+
+    sessionsRef.current = stored.sessions;
+    activeSessionIdRef.current = stored.activeSessionId;
+    setSessions(stored.sessions);
+    setActiveSessionId(stored.activeSessionId);
+
+    const active =
+      stored.sessions.find((session) => session.id === stored.activeSessionId) ??
+      stored.sessions[stored.sessions.length - 1];
+    if (!active) return;
+
+    applySessionContext(active);
+    setActiveTurnId(active.turns[active.turns.length - 1]?.id ?? null);
+
+    if (active.conversationId) {
+      try {
+        const endpoint = getConversationByIdEndpoint(active.conversationId);
+        const headers: Record<string, string> = {};
+        if (endpoint.includes('.ngrok-free.app')) {
+          headers['ngrok-skip-browser-warning'] = 'true';
+        }
+        const response = await fetch(endpoint, { headers });
+        if (response.ok) {
+          const json = (await response.json()) as StoredConversation & { data?: StoredConversation };
+          const stored = json.data ?? json;
+          const merged = mergeSessionFromStored(active.turns, active.history, stored);
+          const conversationId = stored.conversationId ?? active.conversationId;
+          updateSession(active.id, (session) => ({
+            ...session,
+            turns: merged.turns,
+            history: merged.history,
+            conversationId,
+          }));
+          applySessionContext({
+            ...active,
+            turns: merged.turns,
+            history: merged.history,
+            conversationId,
+          });
+        }
+      } catch (error) {
+        console.warn('[Cellix] Failed to hydrate conversation from server:', error);
+      }
+    }
+  }, [applySessionContext, updateSession, workbookKey]);
+
+  useEffect(() => {
+    void hydrateFromStorage();
+  }, [hydrateFromStorage]);
+
   return {
+    sessions,
+    activeSessionId,
     turns,
     activeTurnId,
     isWaitingForResponse,
-    isWaitingClarification: activeClarification !== null,
+    isWaitingClarification: awaitingInput || activeClarification !== null,
     activeClarification,
     conversationId,
     sendMessage,
@@ -1265,7 +1556,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     acceptActions,
     rejectActions,
     endConversation,
+    newChat,
     clearConversation,
+    selectSession,
+    closeSession,
     selectTurn,
     closeTurn,
     toggleThinking,

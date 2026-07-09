@@ -8,6 +8,7 @@ export interface SseClarificationData extends ClarificationPayload {
 
 export interface SseAnswerData {
   answer: string;
+  matches?: SseMatchData[];
   conversationId?: string;
 }
 
@@ -189,7 +190,13 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
       return {
         type: 'answer',
         data: parsed
-          ? ({ answer: String(parsed.answer ?? rawData), conversationId: parsed.conversationId as string | undefined })
+          ? ({
+              answer: String(parsed.answer ?? rawData),
+              matches: Array.isArray(parsed.matches)
+                ? (parsed.matches as SseMatchData[])
+                : undefined,
+              conversationId: parsed.conversationId as string | undefined,
+            })
           : { answer: rawData },
       };
     case 'question':

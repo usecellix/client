@@ -37,6 +37,10 @@ export function getConversationEndpoint(): string {
   return `${getApiBaseUrl()}${CONVERSATION_PATH}`;
 }
 
+export function getConversationByIdEndpoint(conversationId: string): string {
+  return `${getApiBaseUrl()}${CONVERSATION_PATH}/${encodeURIComponent(conversationId)}`;
+}
+
 export function getToolResultEndpoint(): string {
   return `${getApiBaseUrl()}${CONVERSATION_PATH}/tool-result`;
 }
