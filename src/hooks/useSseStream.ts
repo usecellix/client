@@ -279,6 +279,7 @@ export const useSseStream = (): UseSseStreamReturn => {
       const response = await fetch(streamEndpoint, {
         method: 'POST',
         headers,
+        credentials: 'include',
         body: JSON.stringify(requestPayload),
         signal: abortControllerRef.current.signal,
       });

@@ -36,6 +36,8 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         input: {
           taskpane: './src/taskpane/taskpane.html',
+          authDialog: './src/auth/auth-dialog.html',
+          authComplete: './src/auth/auth-complete.html',
         },
       },
     },
@@ -48,11 +50,34 @@ export default defineConfig(({ mode }) => {
         credentials: true,
       },
       proxy: {
+        // Keep /api/auth prefix — Better Auth mounts at /api/auth on the Nest server.
+        '/api/auth': {
+          target: backendTarget,
+          changeOrigin: true,
+          secure: false,
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('x-forwarded-proto', 'https');
+              proxyReq.setHeader('x-forwarded-host', 'localhost:3000');
+            });
+          },
+          headers: backendTarget.includes('.ngrok-free.app')
+            ? {
+                'ngrok-skip-browser-warning': 'true',
+              }
+            : undefined,
+        },
         '/api': {
           target: backendTarget,
           changeOrigin: true,
-          secure: true,
+          secure: false,
           rewrite: (proxyPath) => proxyPath.replace(/^\/api/, ''),
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('x-forwarded-proto', 'https');
+              proxyReq.setHeader('x-forwarded-host', 'localhost:3000');
+            });
+          },
           headers: backendTarget.includes('.ngrok-free.app')
             ? {
                 'ngrok-skip-browser-warning': 'true',

@@ -167,6 +167,7 @@ export async function compareSheets(
     const response = await fetch(endpoint, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: JSON.stringify({ sheetA, sheetB, context }),
     });
 
