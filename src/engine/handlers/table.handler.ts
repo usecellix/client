@@ -3,6 +3,7 @@ import {
   DefineNamedRangeAction,
   AutoFitColumnsAction,
 } from '@/action.types';
+import { resolveWorksheet } from '../sheetResolve';
 
 /* global Excel */
 
@@ -10,7 +11,7 @@ export async function handleCreateTable(
   action: CreateTableAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const table = sheet.tables.add(action.range, action.hasHeaders);
   table.name = action.tableName;
   if (action.style) table.style = action.style;
@@ -39,7 +40,7 @@ export async function handleAutofitColumns(
   action: AutoFitColumnsAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   if (action.columns && action.columns.length > 0) {
     for (const col of action.columns) {
       sheet.getRange(`${col}:${col}`).format.autofitColumns();

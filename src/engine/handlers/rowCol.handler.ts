@@ -4,11 +4,12 @@ import {
   InsertColumnAction,
   DeleteColumnAction,
 } from '@/action.types';
+import { resolveWorksheet } from '../sheetResolve';
 
 /* global Excel */
 
 export async function handleAddRow(action: AddRowAction, ctx: Excel.RequestContext): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const insertRow = action.afterRow + 1;
   const insertRange = sheet.getRange(`${insertRow}:${insertRow}`);
   insertRange.insert('Down');
@@ -30,7 +31,7 @@ export async function handleDeleteRow(
   action: DeleteRowAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const sorted = [...action.rows].sort((a, b) => b - a);
   for (const row of sorted) {
     sheet.getRange(`${row}:${row}`).delete('Up');
@@ -42,7 +43,7 @@ export async function handleInsertColumn(
   action: InsertColumnAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const col = action.beforeColumn;
   for (let i = 0; i < action.count; i += 1) {
     sheet.getRange(`${col}:${col}`).insert('Right');
@@ -54,7 +55,7 @@ export async function handleDeleteColumn(
   action: DeleteColumnAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const sorted = [...action.columns].sort().reverse();
   for (const col of sorted) {
     sheet.getRange(`${col}:${col}`).delete('Left');

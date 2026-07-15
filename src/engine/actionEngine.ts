@@ -34,6 +34,7 @@ import {
 } from './handlers/misc.handler';
 import { applyRichFormat } from './handlers/format.handler';
 import { handleWorksheetAction } from './handlers/worksheet.handler';
+import { resolveWorksheet } from './sheetResolve';
 
 /* global Excel */
 
@@ -83,7 +84,7 @@ export class RichActionEngine {
       case 'SET_CELL':
         return handleSetCell(action, ctx);
       case 'FORMAT_RANGE': {
-        const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+        const sheet = resolveWorksheet(ctx, action.sheetName);
         const range = sheet.getRange(action.range);
         applyRichFormat(range, action.format);
         return;
