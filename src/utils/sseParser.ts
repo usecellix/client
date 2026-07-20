@@ -47,6 +47,8 @@ export interface SsePlanData {
   estimatedRows?: number;
   safestApproach?: string;
   conversationId?: string;
+  proposedActions?: SheetAction[];
+  tier?: number;
 }
 
 export interface SseMatchData {
@@ -81,6 +83,7 @@ export type ParsedSseEvent =
   | { type: 'actions'; data: SseActionsData }
   | { type: 'tool_request'; data: SseToolRequestData }
   | { type: 'plan'; data: SsePlanData }
+  | { type: 'plan_only'; data: SsePlanData }
   | { type: 'matches'; data: SseMatchesData }
   | { type: 'select_cell'; data: SseSelectCellData }
   | { type: 'error'; data: { message: string } }
@@ -258,9 +261,10 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
           }
         : null;
     case 'plan':
+    case 'plan_only':
       return parsed && Array.isArray(parsed.steps)
         ? {
-            type: 'plan',
+            type: inferredType as 'plan' | 'plan_only',
             data: {
               prompt: String(parsed.prompt ?? ''),
               summary: parsed.summary ? String(parsed.summary) : undefined,
@@ -276,6 +280,10 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
               safestApproach: parsed.safestApproach
                 ? String(parsed.safestApproach)
                 : undefined,
+              proposedActions: Array.isArray(parsed.proposedActions)
+                ? (parsed.proposedActions as SheetAction[])
+                : undefined,
+              tier: typeof parsed.tier === 'number' ? parsed.tier : undefined,
               conversationId: parsed.conversationId as string | undefined,
             },
           }

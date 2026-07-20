@@ -12,6 +12,15 @@ export async function handleDeleteSheet(
 
 export async function handleAddSheet(action: AddSheetAction, ctx: Excel.RequestContext): Promise<void> {
   const sheets = ctx.workbook.worksheets;
+  const existing = sheets.getItemOrNullObject(action.name);
+  existing.load('isNullObject');
+  await ctx.sync();
+  if (!existing.isNullObject) {
+    existing.activate();
+    await ctx.sync();
+    return;
+  }
+
   let created: Excel.Worksheet;
 
   if (action.copyFrom) {

@@ -6,25 +6,22 @@ import { ActionEngine } from '@/utils/actionEngine';
 import { CellChange } from '@/types/changeSet';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
-import { buildWorkbookContext } from '@/services/sheetContextBuilder';
+import { frontendTelemetry } from '@/services/frontendTelemetry';
+import {
+  getContextForSend,
+  markPendingWorkbookContextStale,
+} from '@/utils/pendingWorkbookContext';
 import { SheetAction } from '@/types/sheet-actions';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE, isAssistantMode } from '@/types/mode';
-import { resolveWorkbookKey } from '@/utils/chatSessionStorage';
+import { resolveWorkbookKey, loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
 import '@/styles/conversation-panel.css';
 import './taskpane.css';
 
 /* global Excel */
 
-const MODE_KEY = 'cellix.assistantMode.v2';
-
-function readMode(): AssistantMode {
-  const stored = localStorage.getItem(MODE_KEY);
-  return isAssistantMode(stored) ? stored : DEFAULT_ASSISTANT_MODE;
-}
-
 const App: React.FC = () => {
   const previewEnabled = true;
-  const [mode, setMode] = useState<AssistantMode>(readMode);
+  const [mode, setMode] = useState<AssistantMode>(DEFAULT_ASSISTANT_MODE);
   const [serverChanges, setServerChanges] = useState<CellChange[]>([]);
   const [pendingChangeSetId, setPendingChangeSetId] = useState<string | undefined>();
   const [diffSummary, setDiffSummary] = useState('');
@@ -37,15 +34,25 @@ const App: React.FC = () => {
   const [quickEditMode, setQuickEditMode] = useState(false);
   const applyInProgressRef = useRef(false);
   const appliedChangeSetIdsRef = useRef<Set<string>>(new Set());
+  const [workbookKey, setWorkbookKey] = useState('workbook');
 
   const isChangeSetApplied = useCallback((changeSetId?: string) => {
     return Boolean(changeSetId && appliedChangeSetIdsRef.current.has(changeSetId));
   }, []);
 
-  const handleModeChange = useCallback((next: AssistantMode) => {
-    setMode(next);
-    localStorage.setItem(MODE_KEY, next);
-  }, []);
+  const handleModeChange = useCallback(
+    (next: AssistantMode) => {
+      setMode(next);
+      if (!workbookKey) return;
+      const existing = loadChatSessions(workbookKey);
+      saveChatSessions(workbookKey, {
+        activeSessionId: existing?.activeSessionId ?? null,
+        sessions: existing?.sessions ?? [],
+        assistantMode: next,
+      });
+    },
+    [workbookKey],
+  );
 
   const clearPreviewState = useCallback(() => {
     setHasPendingPreview(false);
@@ -58,25 +65,45 @@ const App: React.FC = () => {
     async (actions: SheetAction[], explanation: string, meta?: PreviewActionsMeta) => {
       if (!actions.length) return;
 
-      if (previewManager.active) {
-        await previewManager.accept();
-      } else {
-        await ActionEngine.applyActions(actions);
-      }
+      frontendTelemetry.logAcceptClick(actions, {
+        changeSetId: meta?.changeSetId,
+        source: 'applyActionsWithAudit',
+      });
 
-      clearPreviewState();
-
-      if (meta?.changeSetId) {
-        appliedChangeSetIdsRef.current.add(meta.changeSetId);
-        try {
-          await markChangeSetApplied(meta.changeSetId);
-          setRefinementChangeSetId(meta.changeSetId);
-        } catch (error) {
-          console.warn('[Cellix] Failed to mark change set applied:', error);
+      try {
+        if (previewManager.active) {
+          await previewManager.accept();
+        } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
+          // Already applied earlier — do not re-run INSERT_COLUMN / writes.
+        } else {
+          // Preview never started or was cleared — apply directly.
+          await ActionEngine.applyActions(actions);
         }
-      }
 
-      console.info('[Cellix] Applied actions:', explanation, actions);
+        clearPreviewState();
+
+        if (meta?.changeSetId) {
+          appliedChangeSetIdsRef.current.add(meta.changeSetId);
+          try {
+            await markChangeSetApplied(meta.changeSetId);
+            setRefinementChangeSetId(meta.changeSetId);
+          } catch (error) {
+            console.warn('[Cellix] Failed to mark change set applied:', error);
+          }
+        }
+
+        // Spec 09 item 1: change-set apply invalidates the pending workbook prebuild.
+        markPendingWorkbookContextStale();
+
+        frontendTelemetry.logAcceptSuccess(actions, {
+          changeSetId: meta?.changeSetId,
+          explanation,
+        });
+        console.info('[Cellix] Applied actions:', explanation, actions);
+      } catch (error) {
+        frontendTelemetry.logAcceptFail(error, actions, { changeSetId: meta?.changeSetId });
+        throw error;
+      }
     },
     [clearPreviewState],
   );
@@ -86,16 +113,34 @@ const App: React.FC = () => {
       if (!actions.length) return;
 
       const changes = meta?.changes ?? [];
-      if (changes.length > 0) {
-        await previewManager.highlightChanges(changes, actions);
-      } else {
-        await previewManager.render({ actions, summary: explanation });
-      }
-
+      // Show Accept/Reject even if Office.js preview apply fails — Accept retries apply.
       setServerChanges(changes);
       setPendingChangeSetId(meta?.changeSetId);
       setDiffSummary(explanation);
       setHasPendingPreview(true);
+
+      frontendTelemetry.logPreviewStart(actions, explanation, { changeSetId: meta?.changeSetId });
+
+      try {
+        if (changes.length > 0) {
+          await previewManager.highlightChanges(changes, actions);
+        } else {
+          await previewManager.render({ actions, summary: explanation });
+        }
+        frontendTelemetry.logAction(
+          'preview',
+          'preview.ready',
+          'Preview structural apply succeeded',
+          {
+            changeSetId: meta?.changeSetId,
+            changeCount: changes.length,
+            actionCount: actions.length,
+          },
+        );
+      } catch (error) {
+        frontendTelemetry.logPreviewFail(error, actions);
+        console.error('[Cellix] Preview apply failed; use Accept to apply changes:', error);
+      }
     },
     [],
   );
@@ -107,11 +152,26 @@ const App: React.FC = () => {
     clearPreviewState();
   }, [clearPreviewState]);
 
-  const [workbookKey, setWorkbookKey] = useState('workbook');
+  useEffect(() => {
+    frontendTelemetry.installConsoleCapture();
+  }, []);
 
   useEffect(() => {
     void resolveWorkbookKey().then(setWorkbookKey);
   }, []);
+
+  useEffect(() => {
+    if (workbookKey) {
+      frontendTelemetry.setContext({ workbookKey });
+    }
+  }, [workbookKey]);
+  useEffect(() => {
+    if (!workbookKey) return;
+    const stored = loadChatSessions(workbookKey);
+    if (stored?.assistantMode && isAssistantMode(stored.assistantMode)) {
+      setMode(stored.assistantMode);
+    }
+  }, [workbookKey]);
 
   const {
     sessions,
@@ -147,6 +207,10 @@ const App: React.FC = () => {
     isChangeSetApplied,
   });
 
+  useEffect(() => {
+    frontendTelemetry.setContext({ conversationId });
+  }, [conversationId]);
+
   const findPendingActionBlock = useCallback(() => {
     for (const turn of turns) {
       const block = turn.blocks.find(
@@ -157,6 +221,7 @@ const App: React.FC = () => {
           turnId: turn.id,
           blockId: block.id,
           changeSetId: block.changeSetId,
+          actions: block.actions,
         };
       }
     }
@@ -173,6 +238,10 @@ const App: React.FC = () => {
     setIsApplying(true);
     let applied = false;
     try {
+      frontendTelemetry.logAcceptClick(pending?.actions ?? [], {
+        changeSetId: pending?.changeSetId ?? pendingChangeSetId,
+        source: 'previewSummaryBar',
+      });
       if (pending) {
         await acceptActions(pending.turnId, pending.blockId);
         applied = true;
@@ -184,11 +253,19 @@ const App: React.FC = () => {
           setRefinementChangeSetId(pendingChangeSetId);
         }
         applied = true;
+        frontendTelemetry.logAcceptSuccess([], {
+          changeSetId: pendingChangeSetId,
+          explanation: 'Preview accept (no pending block)',
+        });
       }
     } catch (error) {
+      frontendTelemetry.logAcceptFail(error, pending?.actions ?? [], {
+        changeSetId: pending?.changeSetId ?? pendingChangeSetId,
+      });
       console.error('[Cellix] Failed to apply previewed changes:', error);
     } finally {
       if (applied) {
+        markPendingWorkbookContextStale();
         clearPreviewState();
       }
       applyInProgressRef.current = false;
@@ -202,13 +279,21 @@ const App: React.FC = () => {
       applyInProgressRef.current = true;
       setIsApplying(true);
       try {
+        const turn = turns.find((t) => t.id === turnId);
+        const block = turn?.blocks.find((b) => b.id === blockId && b.type === 'actions');
+        if (block && block.type === 'actions') {
+          frontendTelemetry.logAcceptClick(block.actions, {
+            changeSetId: block.changeSetId,
+            source: 'actionCard',
+          });
+        }
         await acceptActions(turnId, blockId);
       } finally {
         applyInProgressRef.current = false;
         setIsApplying(false);
       }
     },
-    [acceptActions, isApplying],
+    [acceptActions, isApplying, turns],
   );
 
   const handlePreviewReject = useCallback(async () => {
@@ -218,6 +303,10 @@ const App: React.FC = () => {
     setIsApplying(true);
     try {
       const pending = findPendingActionBlock();
+      frontendTelemetry.logReject({
+        changeSetId: pending?.changeSetId ?? pendingChangeSetId,
+        source: 'previewSummaryBar',
+      });
       if (pending) {
         await rejectActions(pending.turnId, pending.blockId);
       } else {
@@ -230,7 +319,27 @@ const App: React.FC = () => {
       applyInProgressRef.current = false;
       setIsApplying(false);
     }
-  }, [clearActionPreview, clearPreviewState, findPendingActionBlock, isApplying, rejectActions]);
+  }, [
+    clearActionPreview,
+    clearPreviewState,
+    findPendingActionBlock,
+    isApplying,
+    pendingChangeSetId,
+    rejectActions,
+  ]);
+
+  const handleRejectActions = useCallback(
+    async (turnId: string, blockId: string) => {
+      const turn = turns.find((t) => t.id === turnId);
+      const block = turn?.blocks.find((b) => b.id === blockId && b.type === 'actions');
+      frontendTelemetry.logReject({
+        changeSetId: block && block.type === 'actions' ? block.changeSetId : undefined,
+        source: 'actionCard',
+      });
+      await rejectActions(turnId, blockId);
+    },
+    [rejectActions, turns],
+  );
 
   const pendingPreview = useMemo(() => {
     if (!previewEnabled || !hasPendingPreview) return null;
@@ -256,14 +365,12 @@ const App: React.FC = () => {
   const readWorkbookData = useCallback(async () => {
     setIsReadingWorkbook(true);
     try {
-      // Always read the entire workbook (all visible sheets) so every request
-      // has full cross-sheet context. Sheet selection narrows display/compare
-      // only, never the search/operation scope.
-      const { context, activeSheetData, promptContext } = await buildWorkbookContext([]);
+      // Spec 09 item 1: reuse selection-time prebuild when still fresh.
+      const resolved = await getContextForSend();
       return {
-        sheetData: activeSheetData,
-        workbookContext: context,
-        promptContext,
+        sheetData: resolved.sheetData,
+        workbookContext: resolved.workbookContext,
+        promptContext: resolved.promptContext,
       };
     } catch (err) {
       console.error('[Cellix] Workbook read failed:', err);
@@ -306,6 +413,15 @@ const App: React.FC = () => {
 
   const handleRunAsAction = useCallback(
     (message: string) => {
+      setMode('action');
+      if (workbookKey) {
+        const existing = loadChatSessions(workbookKey);
+        saveChatSessions(workbookKey, {
+          activeSessionId: existing?.activeSessionId ?? null,
+          sessions: existing?.sessions ?? [],
+          assistantMode: 'action',
+        });
+      }
       void handleSend(message, 'action');
     },
     // handleSend is defined inline each render; intentionally omitted from deps.
@@ -359,7 +475,7 @@ const App: React.FC = () => {
       onSelectSession={selectSession}
       onCloseSession={closeSession}
       onAcceptActions={handleAcceptActions}
-      onRejectActions={rejectActions}
+      onRejectActions={handleRejectActions}
       onAnswerQuestion={handleAnswerQuestion}
       onClarificationAnswer={handleClarificationAnswer}
       onClarificationDismiss={dismissClarification}

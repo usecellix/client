@@ -63,7 +63,7 @@ export interface PlanStep {
 
 export interface PlanBlock {
   id: string;
-  type: 'plan';
+  type: 'plan' | 'plan_only';
   summary?: string;
   steps: PlanStep[];
   affectedSheets: string[];
@@ -71,6 +71,9 @@ export interface PlanBlock {
   safestApproach?: string;
   /** The original user prompt, re-sent when running the plan as an action. */
   prompt: string;
+  /** Tier 2 plan-only proposals (read-only — not queued for preview). */
+  proposedActions?: SheetAction[];
+  tier?: number;
 }
 
 export interface MatchResult {

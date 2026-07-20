@@ -1,4 +1,4 @@
-import { CellValue, RichAction } from '@/action.types';
+import { CellValue, RichAction, CreateChartAction, UpdateChartAction, AggregateTableAction, FormatSpec } from '@/action.types';
 import { SheetAction } from '@/types/sheet-actions';
 import { columnLetterToIndex, parseCellAddress, parseRangeAddress } from './addressUtils';
 import { convertLegacyToRich } from './legacyConverter';
@@ -7,6 +7,7 @@ function isRichAction(action: SheetAction): boolean {
   const richOnly = new Set([
     'BATCH_SET',
     'CREATE_TABLE',
+    'CREATE_CHART',
     'DEFINE_NAMED_RANGE',
     'AUTOFIT_COLUMNS',
     'CLARIFY',
@@ -14,6 +15,12 @@ function isRichAction(action: SheetAction): boolean {
     'ADD_SHEET',
     'DELETE_SHEET',
     'SORT_RANGE',
+    'COPY_FILTERED_RANGE',
+    'FORMAT_MATCHING_ROWS',
+    'MOVE_RANGE',
+    'CREATE_CHART',
+    'UPDATE_CHART',
+    'AGGREGATE_TABLE',
   ]);
   if (richOnly.has(action.type)) return true;
 
@@ -30,6 +37,17 @@ function isRichAction(action: SheetAction): boolean {
     return true;
   }
   if (action.type === 'INSERT_COLUMN' && typeof record.beforeColumn === 'string') return true;
+  if (
+    action.type === 'INSERT_COLUMN' &&
+    typeof record.columnName === 'string' &&
+    (record.position === 'afterLastColumn' ||
+      typeof record.afterColumn === 'string' ||
+      (record.position &&
+        typeof record.position === 'object' &&
+        typeof (record.position as { afterColumn?: string }).afterColumn === 'string'))
+  ) {
+    return true;
+  }
   if (action.type === 'DELETE_COLUMN' && Array.isArray(record.columns)) return true;
   if (action.type === 'SET_CELL' && typeof record.address === 'string') return true;
   if (action.type === 'SET_FORMULA' && typeof record.address === 'string') return true;
@@ -62,6 +80,7 @@ export function toRichAction(action: SheetAction): RichAction | null {
         address: String(r.address),
         value: r.value as string | number | boolean | null,
         format: r.format as RichAction extends { type: 'SET_CELL' } ? never : never,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
     case 'SET_FORMULA':
       return {
@@ -70,6 +89,7 @@ export function toRichAction(action: SheetAction): RichAction | null {
         address: String(r.address),
         formula: String(r.formula ?? ''),
         format: r.format as RichAction extends { type: 'SET_FORMULA' } ? never : never,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
     case 'FORMAT_RANGE':
       return {
@@ -84,12 +104,14 @@ export function toRichAction(action: SheetAction): RichAction | null {
         sheetName: String(r.sheetName ?? ''),
         sourceRange: String(r.sourceRange),
         targetRange: String(r.targetRange),
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
     case 'BATCH_SET':
       return {
         type: 'BATCH_SET',
         sheetName: String(r.sheetName ?? ''),
         operations: r.operations as RichAction extends { type: 'BATCH_SET' } ? never : never,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
     case 'DELETE_ROW': {
       const rowNums = Array.isArray(r.rowNumbers)
@@ -107,9 +129,21 @@ export function toRichAction(action: SheetAction): RichAction | null {
       return {
         type: 'INSERT_COLUMN',
         sheetName: String(r.sheetName ?? ''),
-        beforeColumn: String(r.beforeColumn),
+        beforeColumn: r.beforeColumn as string | undefined,
         count: Number(r.count ?? 1),
         copyFormatFromColumn: r.copyFormatFromColumn as string | undefined,
+        columnName: r.columnName as string | undefined,
+        position:
+          r.position === 'afterLastColumn'
+            ? 'afterLastColumn'
+            : r.position &&
+                typeof r.position === 'object' &&
+                typeof (r.position as { afterColumn?: string }).afterColumn === 'string'
+              ? { afterColumn: (r.position as { afterColumn: string }).afterColumn }
+              : undefined,
+        afterColumn: r.afterColumn as string | undefined,
+        formula: r.formula as string | undefined,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
     case 'DELETE_COLUMN':
       return {
@@ -154,9 +188,47 @@ export function toRichAction(action: SheetAction): RichAction | null {
         type: 'CREATE_TABLE',
         sheetName: String(r.sheetName ?? ''),
         range: String(r.range),
-        tableName: String(r.tableName ?? ''),
-        hasHeaders: Boolean(r.hasHeaders),
+        tableName: String(r.tableName ?? r.name ?? '').trim(),
+        hasHeaders: r.hasHeaders === undefined ? true : Boolean(r.hasHeaders),
         style: r.style as string | undefined,
+      } as RichAction;
+    case 'CREATE_CHART':
+      return {
+        type: 'CREATE_CHART',
+        sheetName: String(r.sheetName ?? ''),
+        sourceSheetName: String(r.sourceSheetName ?? r.sheetName ?? ''),
+        sourceRange: String(r.sourceRange ?? r.range ?? ''),
+        chartType: String(r.chartType ?? 'ColumnClustered'),
+        title: r.title as string | undefined,
+        startCell: String(r.startCell ?? r.destCell ?? 'A1'),
+        endCell: String(r.endCell ?? 'H16'),
+        destCell: r.destCell as string | undefined,
+        colorScheme: r.colorScheme as CreateChartAction['colorScheme'],
+        chartId: r.chartId as string | undefined,
+      } as RichAction;
+    case 'UPDATE_CHART':
+      return {
+        type: 'UPDATE_CHART',
+        sheetName: String(r.sheetName ?? ''),
+        chartId: String(r.chartId ?? ''),
+        chartType: r.chartType as string | undefined,
+        colorScheme: r.colorScheme as UpdateChartAction['colorScheme'],
+      } as RichAction;
+    case 'AGGREGATE_TABLE':
+      return {
+        type: 'AGGREGATE_TABLE',
+        sourceSheet: String(r.sourceSheet ?? r.sheetName ?? ''),
+        sourceRange: String(r.sourceRange ?? r.range ?? ''),
+        groupByColumn: String(r.groupByColumn ?? ''),
+        aggregations: (Array.isArray(r.aggregations)
+          ? r.aggregations
+          : []) as AggregateTableAction['aggregations'],
+        sortBy: r.sortBy as AggregateTableAction['sortBy'],
+        topN: typeof r.topN === 'number' ? r.topN : undefined,
+        destSheet: String(r.destSheet ?? ''),
+        destStartCell: String(r.destStartCell ?? r.startCell ?? 'A1'),
+        hasHeaders: r.hasHeaders !== false,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
     case 'DEFINE_NAMED_RANGE':
       return {
@@ -192,6 +264,82 @@ export function toRichAction(action: SheetAction): RichAction | null {
         hasHeaders: r.hasHeaders !== false,
         columnName: r.columnName as string | undefined,
       } as RichAction;
+    case 'COPY_FILTERED_RANGE': {
+      const filter =
+        r.filter && typeof r.filter === 'object'
+          ? (r.filter as {
+              column: string;
+              operator:
+                | 'equals'
+                | 'contains'
+                | 'greaterThan'
+                | 'lessThan'
+                | 'notEquals'
+                | 'lengthEquals'
+                | 'lengthNotEquals'
+                | 'matchesRegex'
+                | 'notMatchesRegex';
+              value: string | number;
+            })
+          : undefined;
+      return {
+        type: 'COPY_FILTERED_RANGE',
+        sourceSheet: String(r.sourceSheet ?? r.sheetName ?? ''),
+        sourceRange: String(r.sourceRange ?? r.range ?? ''),
+        hasHeaders: r.hasHeaders !== false,
+        destSheet: String(r.destSheet ?? ''),
+        destStartCell: String(r.destStartCell ?? r.startCell ?? 'A1'),
+        filter,
+        mode: r.mode === 'move' ? 'move' : 'copy',
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
+      };
+    }
+    case 'FORMAT_MATCHING_ROWS': {
+      const filter =
+        r.filter && typeof r.filter === 'object'
+          ? (r.filter as {
+              column: string;
+              operator:
+                | 'equals'
+                | 'contains'
+                | 'greaterThan'
+                | 'lessThan'
+                | 'notEquals'
+                | 'lengthEquals'
+                | 'lengthNotEquals'
+                | 'matchesRegex'
+                | 'notMatchesRegex';
+              value: string | number;
+            })
+          : undefined;
+      if (!filter?.column) return null;
+      const format =
+        r.format && typeof r.format === 'object'
+          ? (r.format as FormatSpec)
+          : { fillColor: '#FFC7CE' };
+      return {
+        type: 'FORMAT_MATCHING_ROWS',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        hasHeaders: r.hasHeaders !== false,
+        filter,
+        format: format.clearFill
+          ? { clearFill: true }
+          : {
+              ...format,
+              fillColor: format.fillColor ?? '#FFC7CE',
+            },
+      };
+    }
+    case 'MOVE_RANGE':
+      return {
+        type: 'MOVE_RANGE',
+        sourceSheet: String(r.sourceSheet ?? r.sheetName ?? ''),
+        sourceRange: String(r.sourceRange ?? r.range ?? ''),
+        destSheet: String(r.destSheet ?? ''),
+        destStartCell: String(r.destStartCell ?? r.startCell ?? 'A1'),
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
+      };
     default:
       return null;
   }
@@ -262,7 +410,25 @@ export function richToLegacyAction(action: SheetAction): SheetAction | SheetActi
         sheetName: rich.sheetName,
         row: row - 1,
       }));
-    case 'INSERT_COLUMN':
+    case 'INSERT_COLUMN': {
+      if (rich.columnName) {
+        return {
+          type: 'INSERT_COLUMN',
+          sheetName: rich.sheetName,
+          columnName: rich.columnName,
+          position:
+            rich.position === 'afterLastColumn'
+              ? 'afterLastColumn'
+              : undefined,
+          afterColumn:
+            typeof rich.position === 'object'
+              ? rich.position.afterColumn
+              : rich.afterColumn,
+          formula: rich.formula,
+          explicitOverwriteConfirmed: rich.explicitOverwriteConfirmed,
+        };
+      }
+      if (!rich.beforeColumn) return null;
       return {
         type: 'INSERT_COLUMN',
         sheetName: rich.sheetName,
@@ -270,6 +436,7 @@ export function richToLegacyAction(action: SheetAction): SheetAction | SheetActi
         count: rich.count,
         position: 'left',
       };
+    }
     case 'DELETE_COLUMN':
       return rich.columns.map((col) => ({
         type: 'DELETE_COLUMN' as const,

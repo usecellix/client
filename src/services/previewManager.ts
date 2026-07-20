@@ -3,7 +3,9 @@ import { CellChange } from '@/types/changeSet';
 import { ActionEngine } from '@/utils/actionEngine';
 import {
   buildPreviewRejectActions,
+  DEFERRED_PREVIEW_ACTION_TYPES,
   partitionPreviewActions,
+  STRUCTURAL_PREVIEW_ACTION_TYPES,
 } from '@/utils/previewRevert';
 
 /* global Excel */
@@ -48,9 +50,15 @@ export class PreviewManager {
     this.pendingChanges = [];
     this.structuralApplied = false;
     this.deferredApplied = false;
+    this.isActive = true;
     const diffItems: DiffItem[] = [];
 
-    await this.applyStructuralPreview(payload.actions);
+    try {
+      await this.applyStructuralPreview(payload.actions);
+    } catch (error) {
+      console.error('[Cellix] Structural preview apply failed:', error);
+      throw error;
+    }
 
     await Excel.run(async (ctx) => {
       const activeSheet = ctx.workbook.worksheets.getActiveWorksheet();
@@ -82,7 +90,6 @@ export class PreviewManager {
       await ctx.sync();
     });
 
-    this.isActive = true;
     return diffItems;
   }
 
@@ -91,24 +98,31 @@ export class PreviewManager {
     this.applying = true;
 
     const actions = [...this.pendingActions];
-    const { deferred } = partitionPreviewActions(actions);
+    const { structural, deferred } = partitionPreviewActions(actions);
+    const hardDeferred = deferred.filter((action) =>
+      DEFERRED_PREVIEW_ACTION_TYPES.has(action.type),
+    );
+    const earlyDeferred = deferred.filter(
+      (action) => !DEFERRED_PREVIEW_ACTION_TYPES.has(action.type),
+    );
 
-    this.pendingActions = [];
-    this.pendingChanges = [];
-    this.isActive = false;
+    // Only apply what preview has not already applied. Flags must survive until
+    // success — clearing them in finally caused Accept to re-run INSERT_COLUMN.
+    const toApply = [
+      ...(this.structuralApplied ? [] : structural),
+      ...(this.deferredApplied ? [] : earlyDeferred),
+      ...hardDeferred,
+    ];
 
     try {
-      if (deferred.length > 0) {
-        await ActionEngine.applyActions(deferred);
-        this.deferredApplied = true;
+      if (toApply.length > 0) {
+        await ActionEngine.applyActions(toApply);
       }
+      this.reset();
     } catch (error) {
-      this.pendingActions = actions;
-      this.isActive = true;
+      // Keep pending + applied flags so a retry does not double-write.
       throw error;
     } finally {
-      this.structuralApplied = false;
-      this.deferredApplied = false;
       this.applying = false;
     }
   }
@@ -146,9 +160,16 @@ export class PreviewManager {
     this.pendingChanges = changes;
     this.structuralApplied = false;
     this.deferredApplied = false;
-
-    await this.applyStructuralPreview(actions);
+    // Mark active before apply so Accept can retry if structural preview fails.
     this.isActive = true;
+
+    try {
+      await this.applyStructuralPreview(actions);
+    } catch (error) {
+      // Leave pendingActions intact — Accept will apply what preview could not.
+      console.error('[Cellix] Structural preview apply failed:', error);
+      throw error;
+    }
   }
 
   get active(): boolean {
@@ -163,13 +184,25 @@ export class PreviewManager {
     this.isActive = false;
   }
 
-  /** Apply sheet/structural mutations immediately so reject can undo them. */
+  /**
+   * Apply only sheet-create structural actions during preview.
+   * Row/column/cell writes stay deferred until Accept.
+   */
   private async applyStructuralPreview(actions: SheetAction[]): Promise<void> {
     const { structural } = partitionPreviewActions(actions);
-    if (structural.length === 0) return;
+    // Only soft-structural sheet ops — never INSERT_COLUMN / ADD_ROW / SET_*.
+    const toApply = structural.filter((action) =>
+      STRUCTURAL_PREVIEW_ACTION_TYPES.has(action.type),
+    );
+    if (toApply.length === 0) {
+      this.structuralApplied = false;
+      this.deferredApplied = false;
+      return;
+    }
 
-    await ActionEngine.applyActions(structural);
-    this.structuralApplied = true;
+    await ActionEngine.applyActions(toApply);
+    this.structuralApplied = toApply.length > 0;
+    this.deferredApplied = false;
   }
 
   private async resolveTarget(

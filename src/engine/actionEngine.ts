@@ -23,6 +23,8 @@ import {
   handleAutofitColumns,
 } from './handlers/table.handler';
 import { handleSortRange } from './handlers/sort.handler';
+import { handleCopyFilteredRange, handleMoveRange, handleFormatMatchingRows } from './handlers/range.handler';
+import { handleAggregateTable } from './handlers/aggregate.handler';
 import {
   handleAppendRow,
   handleAutoFill,
@@ -34,6 +36,13 @@ import {
 } from './handlers/misc.handler';
 import { applyRichFormat } from './handlers/format.handler';
 import { handleWorksheetAction } from './handlers/worksheet.handler';
+import { handleCreateChart, handleUpdateChart } from './handlers/chart.handler';
+import {
+  guardAgainstOverwrite,
+  isOverwriteGuardError,
+  OverwriteGuardError,
+} from './overwriteGuard';
+import { selectActionRanges } from './selectRanges';
 
 /* global Excel */
 
@@ -53,14 +62,40 @@ export class RichActionEngine {
             await this.dispatch(action, ctx);
             applied += 1;
           } catch (err: unknown) {
+            // Overwrite guard is a hard stop — do not continue writing after a block.
+            if (isOverwriteGuardError(err)) {
+              throw err;
+            }
             const message = err instanceof Error ? err.message : String(err);
             errors.push(`${action.type}: ${message}`);
             console.error(`RichActionEngine error on ${action.type}:`, err);
           }
         }
+
+        // Mouse-select edited area (no fill colors) after successful writes.
+        if (applied > 0) {
+          try {
+            await selectActionRanges(actions, ctx);
+          } catch (selectErr) {
+            console.warn('[Cellix] Failed to select applied ranges:', selectErr);
+          }
+        }
+
         await ctx.sync();
       });
     } catch (err: unknown) {
+      if (isOverwriteGuardError(err)) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(message);
+        throw err instanceof OverwriteGuardError
+          ? err
+          : new OverwriteGuardError({
+              message,
+              targetRange: (err as OverwriteGuardError).targetRange ?? 'unknown',
+              sampleExistingValues:
+                (err as OverwriteGuardError).sampleExistingValues ?? [],
+            });
+      }
       const message = err instanceof Error ? err.message : String(err);
       errors.push(message);
     }
@@ -69,6 +104,9 @@ export class RichActionEngine {
   }
 
   private async dispatch(action: RichAction, ctx: Excel.RequestContext): Promise<void> {
+    // Last line of defense: never silently overwrite occupied cells.
+    await guardAgainstOverwrite(action, ctx);
+
     if (await handleWorksheetAction(action, ctx)) {
       return;
     }
@@ -112,6 +150,18 @@ export class RichActionEngine {
         return handleCopySheet(action, ctx);
       case 'CREATE_TABLE':
         return handleCreateTable(action, ctx);
+      case 'CREATE_CHART': {
+        const result = await handleCreateChart(action, ctx);
+        if (result.chartId && !(action as { chartId?: string }).chartId) {
+          (action as { chartId?: string }).chartId = result.chartId;
+        }
+        return;
+      }
+      case 'UPDATE_CHART':
+        return handleUpdateChart(action, ctx);
+      case 'AGGREGATE_TABLE':
+        await handleAggregateTable(action, ctx);
+        return;
       case 'DEFINE_NAMED_RANGE':
         return handleDefineNamedRange(action, ctx);
       case 'AUTOFIT_COLUMNS':
@@ -126,6 +176,15 @@ export class RichActionEngine {
         return handleClearRange(action, ctx);
       case 'SORT_RANGE':
         return handleSortRange(action, ctx);
+      case 'COPY_FILTERED_RANGE':
+        await handleCopyFilteredRange(action, ctx);
+        return;
+      case 'FORMAT_MATCHING_ROWS':
+        await handleFormatMatchingRows(action, ctx);
+        return;
+      case 'MOVE_RANGE':
+        await handleMoveRange(action, ctx);
+        return;
       case 'CLARIFY':
       case 'CHECKPOINT':
         return;
