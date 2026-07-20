@@ -26,7 +26,7 @@ async function auditFetch<T>(url: string, init?: RequestInit): Promise<T> {
     headers['ngrok-skip-browser-warning'] = 'true';
   }
 
-  const response = await fetch(url, { ...init, headers });
+  const response = await fetch(url, { credentials: 'include', ...init, headers });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     throw new Error(`Audit API ${response.status}: ${text || response.statusText}`);
@@ -77,7 +77,7 @@ export async function downloadAuditExport(
     headers['ngrok-skip-browser-warning'] = 'true';
   }
 
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, { headers, credentials: 'include' });
   if (!response.ok) {
     throw new Error(`Export failed (${response.status})`);
   }

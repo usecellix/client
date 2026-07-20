@@ -1,4 +1,5 @@
 import { RichAction } from '@/action.types';
+import { resolveWorksheet } from '../sheetResolve';
 
 /* global Excel */
 
@@ -13,11 +14,7 @@ export async function handleWorksheetAction(
   ctx: Excel.RequestContext,
 ): Promise<boolean> {
   const record = asActionRecord(action);
-  const sheetName = String(record.sheetName ?? '');
-  const sheet =
-    sheetName.trim().length > 0
-      ? ctx.workbook.worksheets.getItem(sheetName)
-      : ctx.workbook.worksheets.getActiveWorksheet();
+  const sheet = resolveWorksheet(ctx, String(record.sheetName ?? ''));
 
   switch (record.type) {
     case 'HIDE_ROW':

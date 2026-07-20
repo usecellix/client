@@ -25,6 +25,49 @@ declare namespace Office {
     Android = 'Android',
   }
 
+  enum AsyncResultStatus {
+    Succeeded = 'succeeded',
+    Failed = 'failed',
+  }
+
+  enum EventType {
+    DialogMessageReceived = 'dialogMessageReceived',
+    DialogEventReceived = 'dialogEventReceived',
+  }
+
+  interface AsyncResult<T> {
+    status: AsyncResultStatus;
+    value: T;
+    error?: { message?: string; code?: number };
+  }
+
+  interface Dialog {
+    close(): void;
+    addEventHandler(
+      eventType: EventType.DialogMessageReceived,
+      handler: (arg: { message: string; origin: string | undefined }) => void,
+    ): void;
+    addEventHandler(
+      eventType: EventType.DialogEventReceived,
+      handler: (arg: { error: number }) => void,
+    ): void;
+  }
+
+  interface UI {
+    displayDialogAsync(
+      startAddress: string,
+      options: { height?: number; width?: number; promptBeforeOpen?: boolean },
+      callback: (result: AsyncResult<Dialog>) => void,
+    ): void;
+    messageParent(message: string): void;
+  }
+
+  interface Context {
+    ui: UI;
+  }
+
+  const context: Context;
+
   function onReady(callback: (info: HostInfo) => void): void;
 }
 

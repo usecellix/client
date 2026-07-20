@@ -1,5 +1,6 @@
 import { SortRangeAction } from '@/action.types';
 import { isLocalRangeAddress, parseRangeAddress, stripSheetPrefix } from '../addressUtils';
+import { resolveWorksheet } from '../sheetResolve';
 import { compareSortValues } from '../sortCompare';
 
 /* global Excel */
@@ -8,7 +9,7 @@ export async function handleSortRange(
   action: SortRangeAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   let rangeAddress = stripSheetPrefix(action.range);
 
   if (!parseRangeAddress(rangeAddress)) {

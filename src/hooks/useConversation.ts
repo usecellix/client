@@ -1254,6 +1254,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         const response = await fetch(endpoint, {
           method: 'POST',
           headers,
+          credentials: 'include',
           body: JSON.stringify(requestPayload),
           signal: abortControllerRef.current.signal,
         });
@@ -1572,7 +1573,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         if (endpoint.includes('.ngrok-free.app')) {
           headers['ngrok-skip-browser-warning'] = 'true';
         }
-        const response = await fetch(endpoint, { headers });
+        const response = await fetch(endpoint, { headers, credentials: 'include' });
         if (response.ok) {
           const json = (await response.json()) as StoredConversation & { data?: StoredConversation };
           const stored = json.data ?? json;

@@ -5,17 +5,21 @@ import {
   DeleteColumnAction,
   InsertColumnPosition,
 } from '@/action.types';
+<<<<<<< HEAD
 import { columnIndexToLetter, columnLetterToIndex, parseRangeAddress } from '../addressUtils';
 import {
   OverwriteGuardError,
   rangeHasExistingData,
 } from '../overwriteGuard';
 import { stampAppliedBounds } from '../selectRanges';
+=======
+import { resolveWorksheet } from '../sheetResolve';
+>>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
 
 /* global Excel */
 
 export async function handleAddRow(action: AddRowAction, ctx: Excel.RequestContext): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const insertRow = action.afterRow + 1;
   const insertRange = sheet.getRange(`${insertRow}:${insertRow}`);
   insertRange.insert('Down');
@@ -45,7 +49,7 @@ export async function handleDeleteRow(
   action: DeleteRowAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const sorted = [...action.rows].sort((a, b) => b - a);
   for (const row of sorted) {
     sheet.getRange(`${row}:${row}`).delete('Up');
@@ -244,11 +248,15 @@ export async function handleInsertColumn(
   action: InsertColumnAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
+<<<<<<< HEAD
   if (isSemanticInsertColumn(action)) {
     return handleSemanticInsertColumn(action, ctx);
   }
 
   const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+=======
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+>>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
   const col = action.beforeColumn;
   if (!col) {
     throw new Error(
@@ -273,7 +281,7 @@ export async function handleDeleteColumn(
   action: DeleteColumnAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const sorted = [...action.columns].sort().reverse();
   for (const col of sorted) {
     sheet.getRange(`${col}:${col}`).delete('Left');

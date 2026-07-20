@@ -23,6 +23,7 @@ export async function handleToolRequest(payload: ToolRequestPayload): Promise<vo
     await fetch(endpoint, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: JSON.stringify({
         conversationId: payload.conversationId,
         requestId: payload.requestId,
@@ -34,6 +35,7 @@ export async function handleToolRequest(payload: ToolRequestPayload): Promise<vo
     await fetch(endpoint, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: JSON.stringify({
         conversationId: payload.conversationId,
         requestId: payload.requestId,

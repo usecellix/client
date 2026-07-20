@@ -4,6 +4,7 @@ import {
   FillDownAction,
   BatchSetAction,
 } from '@/action.types';
+import { resolveWorksheet } from '../sheetResolve';
 import { applyRichFormat } from './format.handler';
 import { resolveWorksheet } from './resolveWorksheet';
 
@@ -61,6 +62,5 @@ export async function handleBatchSet(
     }
     if (op.format) applyRichFormat(range, op.format);
   }
-
   await ctx.sync();
 }

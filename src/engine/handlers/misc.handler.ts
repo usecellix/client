@@ -9,8 +9,12 @@ import {
 } from '@/action.types';
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '@/services/formatGuard';
 import { parseCellAddress } from '../addressUtils';
+<<<<<<< HEAD
 import { resolveWorksheet } from './resolveWorksheet';
 import { stampAppliedBounds } from '../selectRanges';
+=======
+import { resolveWorksheet } from '../sheetResolve';
+>>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
 
 /* global Excel */
 
@@ -49,6 +53,14 @@ async function getUsedRowCount(
   return used.rowCount;
 }
 
+function asExcelCellValue(value: unknown): string | number | boolean {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  return String(value);
+}
+
 export async function handleAppendRow(
   action: AppendRowAction,
   ctx: Excel.RequestContext,
@@ -67,6 +79,7 @@ export async function handleAppendRow(
     colCount,
   );
   rowRange.values = [coercedData];
+<<<<<<< HEAD
   await applyFormatGuard(ctx, worksheet, { type: 'ADD_ROW', sheetName: action.sheetName }, targetRow, 0, 1, colCount);
   stampAppliedBounds(action, {
     sheetName: action.sheetName,
@@ -75,6 +88,17 @@ export async function handleAppendRow(
     rowCount: 1,
     colCount,
   });
+=======
+  await applyFormatGuard(
+    ctx,
+    worksheet,
+    { type: 'ADD_ROW', sheetName: action.sheetName },
+    targetRow,
+    0,
+    1,
+    colCount,
+  );
+>>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
   await ctx.sync();
 }
 
@@ -88,7 +112,15 @@ export async function handleInsertRow(
   const colCount = await getUsedColumnCount(worksheet, ctx);
   const range = worksheet.getRangeByIndexes(row, 0, count, colCount);
   range.getEntireRow().insert(action.position === 'above' ? 'Up' : 'Down');
-  await applyFormatGuard(ctx, worksheet, { type: 'INSERT_ROW', sheetName: action.sheetName }, row, 0, count, colCount);
+  await applyFormatGuard(
+    ctx,
+    worksheet,
+    { type: 'INSERT_ROW', sheetName: action.sheetName },
+    row,
+    0,
+    count,
+    colCount,
+  );
   await ctx.sync();
 }
 
@@ -129,6 +161,10 @@ export async function handleWriteTable(
   action: WriteTableAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
+<<<<<<< HEAD
+=======
+  // Server often omits sheetName for "create columns on this sheet" → use active sheet.
+>>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
   const worksheet = resolveWorksheet(ctx, action.sheetName);
   const headers = action.headers;
   const rows = action.rows;
@@ -144,12 +180,15 @@ export async function handleWriteTable(
     1,
   );
 
-  const range = worksheet.getRangeByIndexes(0, 0, rowCount, colCount);
-  range.values = tableRows.map((row) =>
+  // Rectangular primitive matrix only — jagged/object cells cause RichApi 0x80070057.
+  const matrix = tableRows.map((row) =>
     Array.from({ length: colCount }, (_, index) =>
-      Array.isArray(row) ? (row[index] ?? '') : '',
+      asExcelCellValue(Array.isArray(row) ? row[index] : ''),
     ),
   );
+
+  const range = worksheet.getRangeByIndexes(0, 0, rowCount, colCount);
+  range.values = matrix;
   await ctx.sync();
 }
 
