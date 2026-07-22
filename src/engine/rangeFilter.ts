@@ -6,4 +6,4 @@ export {
   resolveFilterColumnIndex,
   type RangeFilterOperator,
   type RangeFilterSpec,
-} from '../../../shared/rangeFilter';
+} from '../shared/rangeFilter';
