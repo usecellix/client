@@ -11,21 +11,17 @@ export async function handleCreateTable(
   action: CreateTableAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-<<<<<<< HEAD
   const tableName = action.tableName.trim();
   if (!tableName) {
     throw new Error('CREATE_TABLE requires a non-empty tableName');
   }
 
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const sheet = resolveWorksheet(ctx, action.sheetName);
   const existing = sheet.tables.getItemOrNullObject(tableName);
   existing.load('isNullObject');
   await ctx.sync();
   if (!existing.isNullObject) return;
 
-=======
-  const sheet = resolveWorksheet(ctx, action.sheetName);
->>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
   const table = sheet.tables.add(action.range, action.hasHeaders);
   table.name = tableName;
   if (action.style) table.style = action.style;

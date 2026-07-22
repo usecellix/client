@@ -160,6 +160,7 @@ export interface SheetAction {
   filter?: RangeFilterSpec;
   mode?: 'copy' | 'move';
   groupByColumn?: string;
+  groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
   aggregations?: Array<{
     column: string;
     fn: 'sum' | 'count' | 'average' | 'max' | 'min';
@@ -168,7 +169,7 @@ export interface SheetAction {
   sortBy?: { column: string; direction: 'asc' | 'desc' };
   topN?: number;
   destCell?: string;
-  colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey';
+  colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey' | 'green' | 'red' | 'orange' | 'purple' | 'yellow';
   chartId?: string;
   /**
    * When true, allow writing over non-empty cells.

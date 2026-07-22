@@ -54,6 +54,7 @@ export async function handleAggregateTable(
     rows: (sourceRange.values ?? []) as unknown[][],
     hasHeaders: action.hasHeaders !== false,
     groupByColumn: action.groupByColumn,
+    groupByTransform: action.groupByTransform,
     aggregations: action.aggregations,
     sortBy: action.sortBy,
     topN: action.topN,

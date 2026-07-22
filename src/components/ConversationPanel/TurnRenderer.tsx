@@ -7,14 +7,14 @@ import {
   TurnBlock,
   formatMessageTime,
 } from '@/types/conversationTurn';
-import { SheetAction } from '@/hooks/useSseStream';
 import { generateSuggestedFollowUps } from '@/utils/suggestedFollowUps';
-import { shortenActionPreviewCopy, summarizeActionsFallback } from '@/utils/actionPreviewCopy';
+import { shortenActionPreviewCopy } from '@/utils/actionPreviewCopy';
 import StepIndicator from './StepIndicator';
 import ThinkingBlockView from './ThinkingBlockView';
 import AnswerReveal from './AnswerReveal';
 import FollowUpsSection from './FollowUpsSection';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
+import ActionResponseCard from './ActionResponseCard';
 
 interface TurnRendererProps {
   turn: ConversationTurn;
@@ -30,28 +30,6 @@ interface TurnRendererProps {
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onFollowUp: (text: string) => void;
   onRunAsAction: (message: string) => void;
-}
-
-function describeAction(action: SheetAction): string {
-  if (action.type === 'SET_CELL' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Set cell ${col}${action.row + 1} to ${action.value ?? ''}`;
-  }
-  if (action.type === 'CLEAR_CELL' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Clear cell ${col}${action.row + 1}`;
-  }
-  if (action.type === 'SET_FORMULA' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Set formula in ${col}${action.row + 1}`;
-  }
-  if (action.type === 'HIGHLIGHT_CELL' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Highlight cell ${col}${action.row + 1}`;
-  }
-  if (action.type === 'ADD_ROW') return 'Add a new row';
-  if (action.type === 'DELETE_ROW' && action.row !== undefined) return `Delete row ${action.row + 1}`;
-  return action.type;
 }
 
 function PlanBlockView({
@@ -216,106 +194,15 @@ function BlockRenderer({
 
   if (block.type === 'actions') {
     const actionBlock = block as ActionBlock;
-    const isPending = actionBlock.proposalStatus === 'pending';
-    const isAccepted = actionBlock.proposalStatus === 'accepted';
-    const shortExplanation =
-      shortenActionPreviewCopy(actionBlock.explanation) ||
-      summarizeActionsFallback(actionBlock.actions.length);
-
-    if (isAccepted) {
-      return (
-        <div className="cellix-changes-card cellix-block-enter">
-          <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--cx-gray-700)' }}>
-            {shortExplanation}
-          </div>
-          <div className="cellix-changes-link">
-            <span className="cellix-badge">
-              {actionBlock.actions.length} Direct Change
-              {actionBlock.actions.length === 1 ? '' : 's'}
-            </span>
-            <span>Applied</span>
-          </div>
-        </div>
-      );
-    }
-
-    if (actionBlock.proposalStatus === 'rejected') {
-      return (
-        <div className="cellix-changes-card cellix-block-enter" style={{ opacity: 0.7 }}>
-          <div className="cellix-action-card-title">Changes rejected</div>
-          <div style={{ fontSize: 12, color: 'var(--cx-gray-500)' }}>{shortExplanation}</div>
-        </div>
-      );
-    }
-
-    if (isPending && previewEnabled) {
-      return (
-        <div className="cellix-changes-card cellix-block-enter">
-          <div className="cellix-changes-summary">{shortExplanation}</div>
-          <div className="cellix-changes-link">
-            <span className="cellix-badge">
-              {actionBlock.actions.length} Direct Change
-              {actionBlock.actions.length === 1 ? '' : 's'}
-            </span>
-            <span>Pending review</span>
-          </div>
-          {showActionButtons && (
-            <div className="cellix-action-btns">
-              <button
-                type="button"
-                className="cellix-btn-accept"
-                onClick={() => onAcceptActions(turn.id, block.id)}
-                disabled={isApplying}
-              >
-                {isApplying ? 'Applying…' : 'Accept'}
-              </button>
-              <button
-                type="button"
-                className="cellix-btn-reject"
-                onClick={() => onRejectActions(turn.id, block.id)}
-                disabled={isApplying}
-              >
-                Reject
-              </button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
     return (
-      <div className="cellix-action-card cellix-block-enter">
-        <div className="cellix-action-card-title">Cellix will make these changes:</div>
-        <ul>
-          <li>{shortExplanation}</li>
-          {actionBlock.actions.slice(0, 4).map((action, i) => (
-            <li key={i}>{describeAction(action)}</li>
-          ))}
-          {actionBlock.actions.length > 4 && (
-            <li>…and {actionBlock.actions.length - 4} more</li>
-          )}
-        </ul>
-        {isPending && showActionButtons && (
-          <div className="cellix-action-btns">
-            <button
-              type="button"
-              className="cellix-btn-accept"
-              onClick={() => onAcceptActions(turn.id, block.id)}
-              disabled={isApplying}
-            >
-              {isApplying ? 'Applying…' : 'Accept'}
-            </button>
-            <button
-              type="button"
-              className="cellix-btn-reject"
-              onClick={() => onRejectActions(turn.id, block.id)}
-              disabled={isApplying}
-            >
-              Reject
-            </button>
-          </div>
-        )}
-      </div>
+      <ActionResponseCard
+        block={actionBlock}
+        previewEnabled={previewEnabled}
+        isApplying={isApplying}
+        showActionButtons={showActionButtons}
+        onAccept={() => onAcceptActions(turn.id, block.id)}
+        onReject={() => onRejectActions(turn.id, block.id)}
+      />
     );
   }
 

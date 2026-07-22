@@ -6,7 +6,6 @@ import {
 } from '@/action.types';
 import { resolveWorksheet } from '../sheetResolve';
 import { applyRichFormat } from './format.handler';
-import { resolveWorksheet } from './resolveWorksheet';
 
 /* global Excel */
 

@@ -3,6 +3,32 @@ import { stripSheetPrefix } from '../addressUtils';
 
 /* global Excel */
 
+const CHART_COLOR_HEX: Record<string, string> = {
+  blue: '#4472C4',
+  grey: '#7F7F7F',
+  blueGrey: '#5B9BD5',
+  green: '#70AD47',
+  red: '#C00000',
+  orange: '#ED7D31',
+  purple: '#7030A0',
+  yellow: '#FFC000',
+};
+
+async function applyChartColorScheme(
+  chart: Excel.Chart,
+  ctx: Excel.RequestContext,
+  colorScheme: string | undefined,
+): Promise<void> {
+  if (!colorScheme || colorScheme === 'default') return;
+  const fill = CHART_COLOR_HEX[colorScheme];
+  if (!fill) return;
+  chart.series.load('items');
+  await ctx.sync();
+  for (const series of chart.series.items) {
+    series.format.fill.setSolidColor(fill);
+  }
+}
+
 /** Map friendly aliases + Excel enum names to ChartType. */
 export function resolveChartType(value: string): Excel.ChartType {
   const normalized = value.replace(/[\s_-]/g, '').toLowerCase();
@@ -58,6 +84,8 @@ export async function handleCreateChart(
   const end = action.endCell ?? 'H16';
   chart.setPosition(start, end);
 
+  await applyChartColorScheme(chart, ctx, action.colorScheme);
+
   // Capture Office.js-assigned name for follow-up UPDATE_CHART
   if (action.chartId?.trim()) {
     chart.name = action.chartId.trim();
@@ -83,21 +111,7 @@ export async function handleUpdateChart(
     chart.chartType = resolveChartType(action.chartType);
   }
 
-  if (action.colorScheme && action.colorScheme !== 'default') {
-    const colorMap: Record<string, string> = {
-      blue: '#4472C4',
-      grey: '#7F7F7F',
-      blueGrey: '#5B9BD5',
-    };
-    const fill = colorMap[action.colorScheme];
-    if (fill) {
-      chart.series.load('items');
-      await ctx.sync();
-      for (const series of chart.series.items) {
-        series.format.fill.setSolidColor(fill);
-      }
-    }
-  }
+  await applyChartColorScheme(chart, ctx, action.colorScheme);
 
   await ctx.sync();
 }

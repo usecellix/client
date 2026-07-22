@@ -9,12 +9,8 @@ import {
 } from '@/action.types';
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '@/services/formatGuard';
 import { parseCellAddress } from '../addressUtils';
-<<<<<<< HEAD
-import { resolveWorksheet } from './resolveWorksheet';
-import { stampAppliedBounds } from '../selectRanges';
-=======
 import { resolveWorksheet } from '../sheetResolve';
->>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
+import { stampAppliedBounds } from '../selectRanges';
 
 /* global Excel */
 
@@ -79,16 +75,6 @@ export async function handleAppendRow(
     colCount,
   );
   rowRange.values = [coercedData];
-<<<<<<< HEAD
-  await applyFormatGuard(ctx, worksheet, { type: 'ADD_ROW', sheetName: action.sheetName }, targetRow, 0, 1, colCount);
-  stampAppliedBounds(action, {
-    sheetName: action.sheetName,
-    row: targetRow,
-    col: 0,
-    rowCount: 1,
-    colCount,
-  });
-=======
   await applyFormatGuard(
     ctx,
     worksheet,
@@ -98,7 +84,13 @@ export async function handleAppendRow(
     1,
     colCount,
   );
->>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
+  stampAppliedBounds(action, {
+    sheetName: action.sheetName,
+    row: targetRow,
+    col: 0,
+    rowCount: 1,
+    colCount,
+  });
   await ctx.sync();
 }
 
@@ -161,10 +153,7 @@ export async function handleWriteTable(
   action: WriteTableAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-<<<<<<< HEAD
-=======
   // Server often omits sheetName for "create columns on this sheet" → use active sheet.
->>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
   const worksheet = resolveWorksheet(ctx, action.sheetName);
   const headers = action.headers;
   const rows = action.rows;

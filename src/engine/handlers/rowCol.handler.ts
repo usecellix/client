@@ -5,16 +5,13 @@ import {
   DeleteColumnAction,
   InsertColumnPosition,
 } from '@/action.types';
-<<<<<<< HEAD
 import { columnIndexToLetter, columnLetterToIndex, parseRangeAddress } from '../addressUtils';
 import {
   OverwriteGuardError,
   rangeHasExistingData,
 } from '../overwriteGuard';
 import { stampAppliedBounds } from '../selectRanges';
-=======
 import { resolveWorksheet } from '../sheetResolve';
->>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
 
 /* global Excel */
 
@@ -248,15 +245,11 @@ export async function handleInsertColumn(
   action: InsertColumnAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
-<<<<<<< HEAD
   if (isSemanticInsertColumn(action)) {
     return handleSemanticInsertColumn(action, ctx);
   }
 
-  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
-=======
   const sheet = resolveWorksheet(ctx, action.sheetName);
->>>>>>> dc51072bf62a34d903b3ceaea1dcb4cf10eb1649
   const col = action.beforeColumn;
   if (!col) {
     throw new Error(

@@ -109,6 +109,16 @@ describe('localSheetActions', () => {
     expect(tryLocalSheetActions('delete all blank sheets', context, 'action')).toBeNull();
   });
 
+  it('returns null for create sheet with chart analysis follow-up (LLM)', () => {
+    expect(
+      tryLocalSheetActions(
+        'create a sheet called Purchase Register and give a chart analysis of the purchase register',
+        context,
+        'action',
+      ),
+    ).toBeNull();
+  });
+
   it('returns null for create sheet with total row (LLM)', () => {
     expect(
       tryLocalSheetActions('create a sheet called Q2 and add a total row', context, 'action'),

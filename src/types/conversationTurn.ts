@@ -1,5 +1,9 @@
 import { SheetAction } from '@/hooks/useSseStream';
 import { CellChange } from '@/types/changeSet';
+import type {
+  ResponseInternalDetails,
+  UserFacingSummary,
+} from '@/utils/userFacingResponse';
 
 export type StepPhase = 'hidden' | 'revealed' | 'running' | 'done';
 
@@ -46,6 +50,8 @@ export interface ActionBlock {
   proposalStatus: 'pending' | 'accepted' | 'rejected';
   changeSetId?: string;
   changes?: CellChange[];
+  userFacingSummary?: UserFacingSummary;
+  internalDetails?: ResponseInternalDetails;
 }
 
 export interface StatusBlock {

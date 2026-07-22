@@ -51,6 +51,11 @@ import {
   StoredConversation,
 } from '@/utils/rehydrateConversation';
 import { getConversationByIdEndpoint } from '@/lib/apiConfig';
+import type {
+  ResponseInternalDetails,
+  UserFacingSummary,
+} from '@/utils/userFacingResponse';
+import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
 
 /* global Excel, Office */
 
@@ -136,11 +141,15 @@ interface PendingActions {
   explanation: string;
   changeSetId?: string;
   changes?: CellChange[];
+  userFacingSummary?: UserFacingSummary;
+  internalDetails?: ResponseInternalDetails;
 }
 
 export interface PreviewActionsMeta {
   changeSetId?: string;
   changes?: CellChange[];
+  userFacingSummary?: UserFacingSummary;
+  internalDetails?: ResponseInternalDetails;
 }
 
 interface TurnRuntime {
@@ -278,6 +287,8 @@ function createActionBlock(
     proposalStatus: alreadyApplied ? 'accepted' : 'pending',
     changeSetId: pending.changeSetId,
     changes: pending.changes,
+    userFacingSummary: pending.userFacingSummary,
+    internalDetails: pending.internalDetails,
   };
 }
 
@@ -1014,11 +1025,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               explanation,
               changeSetId: event.data.changeSetId,
               changes: event.data.changes,
+              userFacingSummary: event.data.userFacingSummary,
+              internalDetails: event.data.internalDetails,
             };
             const runtime = runtimeRef.current.get(turnId);
             if (runtime) {
               runtime.pendingActions = pendingActions;
             }
+
+            const previewCopy = resolveActionBlockCopy({
+              userFacingSummary: event.data.userFacingSummary,
+              explanation,
+              actions: sanitized.actions,
+              changes: event.data.changes,
+            });
 
             // Ask / Plan modes are read-only: never preview, apply, or audit
             // write actions even if the backend emits them.
@@ -1026,9 +1046,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             const usePreview = shouldPreviewActions(sanitized.actions, autoApplyActions);
 
             if (isActionMode && usePreview) {
-              await onPreviewActions?.(sanitized.actions, explanation, {
+              await onPreviewActions?.(sanitized.actions, previewCopy.headline, {
                 changeSetId: event.data.changeSetId,
                 changes: event.data.changes,
+                userFacingSummary: event.data.userFacingSummary,
+                internalDetails: event.data.internalDetails,
               });
             }
 
@@ -1053,9 +1075,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
             if (isActionMode && !usePreview && onActions) {
               await onClearPreview?.();
-              await onActions(sanitized.actions, explanation, {
+              await onActions(sanitized.actions, previewCopy.headline, {
                 changeSetId: event.data.changeSetId,
                 changes: event.data.changes,
+                userFacingSummary: event.data.userFacingSummary,
+                internalDetails: event.data.internalDetails,
               });
               setActiveClarification(null);
               updateTurn(turnId, (turn) => ({
@@ -1370,6 +1394,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       // Mark accepted immediately so Accept / preview controls disappear.
       updateTurn(turnId, (t) => ({
         ...t,
+        error: undefined,
         blocks: t.blocks.map((b) =>
           b.id === blockId && b.type === 'actions'
             ? { ...b, proposalStatus: 'accepted' }
@@ -1391,8 +1416,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
         setActiveClarification(null);
       } catch (error) {
+        const messageText =
+          error instanceof Error ? error.message : 'Failed to apply changes';
         updateTurn(turnId, (t) => ({
           ...t,
+          error: messageText,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'pending' }

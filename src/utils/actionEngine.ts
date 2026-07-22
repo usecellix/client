@@ -5,6 +5,7 @@ import { selectActionRanges } from '../engine/selectRanges';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '../services/formatGuard';
 import { sanitizeActions } from './actionGuard';
+import { sanitizeExcelSheetName } from './sheetName.util';
 
 /* global Excel */
 
@@ -338,7 +339,7 @@ export class ActionEngine {
       case 'ADD_SHEET':
         await this.createSheet(context, {
           ...action,
-          sheetName: action.name ?? action.sheetName ?? 'New Sheet',
+          sheetName: sanitizeExcelSheetName(action.name ?? action.sheetName ?? 'New Sheet'),
         });
         break;
       default:
@@ -636,7 +637,8 @@ export class ActionEngine {
 
   private static async createSheet(context: Excel.RequestContext, action: SheetAction): Promise<void> {
     const sheets = context.workbook.worksheets;
-    const newSheet = sheets.add(action.sheetName ?? 'New Sheet');
+    const sheetName = sanitizeExcelSheetName(action.sheetName ?? action.name ?? 'New Sheet');
+    const newSheet = sheets.add(sheetName);
 
     if (action.relativeTo && action.position) {
       const refSheet = sheets.getItem(action.relativeTo);

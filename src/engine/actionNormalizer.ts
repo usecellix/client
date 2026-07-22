@@ -220,6 +220,7 @@ export function toRichAction(action: SheetAction): RichAction | null {
         sourceSheet: String(r.sourceSheet ?? r.sheetName ?? ''),
         sourceRange: String(r.sourceRange ?? r.range ?? ''),
         groupByColumn: String(r.groupByColumn ?? ''),
+        groupByTransform: r.groupByTransform as AggregateTableAction['groupByTransform'],
         aggregations: (Array.isArray(r.aggregations)
           ? r.aggregations
           : []) as AggregateTableAction['aggregations'],
