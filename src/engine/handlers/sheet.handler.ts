@@ -1,4 +1,5 @@
 import { AddSheetAction, DeleteSheetAction, RenameSheetAction, CopySheetAction } from '@/action.types';
+import { sanitizeExcelSheetName } from '@/utils/sheetName.util';
 
 /* global Excel */
 
@@ -12,18 +13,28 @@ export async function handleDeleteSheet(
 
 export async function handleAddSheet(action: AddSheetAction, ctx: Excel.RequestContext): Promise<void> {
   const sheets = ctx.workbook.worksheets;
+  const name = sanitizeExcelSheetName(action.name);
+  const existing = sheets.getItemOrNullObject(name);
+  existing.load('isNullObject');
+  await ctx.sync();
+  if (!existing.isNullObject) {
+    existing.activate();
+    await ctx.sync();
+    return;
+  }
+
   let created: Excel.Worksheet;
 
   if (action.copyFrom) {
     const source = sheets.getItem(action.copyFrom);
     const copy = source.copy();
-    copy.name = action.name;
+    copy.name = name;
     if (action.position !== undefined) {
       copy.position = action.position;
     }
     created = copy;
   } else {
-    created = sheets.add(action.name);
+    created = sheets.add(name);
     if (action.position !== undefined) {
       created.position = action.position;
     }

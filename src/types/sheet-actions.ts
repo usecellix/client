@@ -5,6 +5,7 @@ export interface FormatSpec {
   fontSize?: number;
   fontColor?: string;
   fillColor?: string;
+  clearFill?: boolean;
   horizontalAlignment?: 'left' | 'center' | 'right';
   verticalAlignment?: 'top' | 'middle' | 'bottom';
   wrapText?: boolean;
@@ -55,12 +56,35 @@ export type SheetActionType =
   | 'WRITE_TABLE'
   | 'BATCH_SET'
   | 'CREATE_TABLE'
+  | 'CREATE_CHART'
   | 'DEFINE_NAMED_RANGE'
   | 'AUTOFIT_COLUMNS'
   | 'CLARIFY'
   | 'CHECKPOINT'
   | 'ADD_SHEET'
-  | 'SORT_RANGE';
+  | 'SORT_RANGE'
+  | 'COPY_FILTERED_RANGE'
+  | 'FORMAT_MATCHING_ROWS'
+  | 'MOVE_RANGE'
+  | 'AGGREGATE_TABLE'
+  | 'UPDATE_CHART';
+
+export type RangeFilterOperator =
+  | 'equals'
+  | 'contains'
+  | 'greaterThan'
+  | 'lessThan'
+  | 'notEquals'
+  | 'lengthEquals'
+  | 'lengthNotEquals'
+  | 'matchesRegex'
+  | 'notMatchesRegex';
+
+export interface RangeFilterSpec {
+  column: string;
+  operator: RangeFilterOperator;
+  value: string | number;
+}
 
 export interface BatchSetOperation {
   address: string;
@@ -80,7 +104,7 @@ export interface SheetAction {
   formula?: string;
   data?: unknown[];
   count?: number;
-  position?: 'above' | 'below' | 'left' | 'right' | 'before' | 'after';
+  position?: 'above' | 'below' | 'left' | 'right' | 'before' | 'after' | 'afterLastColumn';
   height?: number;
   width?: number;
   freezeRows?: number;
@@ -104,10 +128,17 @@ export interface SheetAction {
   range?: string;
   sourceRange?: string;
   targetRange?: string;
+  sourceSheetName?: string;
+  chartType?: string;
+  title?: string;
+  startCell?: string;
+  endCell?: string;
   operations?: BatchSetOperation[];
   /** Rich DELETE_ROW: 1-based row numbers (when type is DELETE_ROW) */
   rowNumbers?: number[];
   beforeColumn?: string;
+  /** INSERT_COLUMN semantic: insert after this header name */
+  afterColumn?: string;
   columns?: string[];
   oldName?: string;
   sourceName?: string;
@@ -122,6 +153,29 @@ export interface SheetAction {
   key?: number;
   ascending?: boolean;
   columnName?: string;
+  /** COPY_FILTERED_RANGE / MOVE_RANGE */
+  sourceSheet?: string;
+  destSheet?: string;
+  destStartCell?: string;
+  filter?: RangeFilterSpec;
+  mode?: 'copy' | 'move';
+  groupByColumn?: string;
+  groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
+  aggregations?: Array<{
+    column: string;
+    fn: 'sum' | 'count' | 'average' | 'max' | 'min';
+    outputLabel: string;
+  }>;
+  sortBy?: { column: string; direction: 'asc' | 'desc' };
+  topN?: number;
+  destCell?: string;
+  colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey' | 'green' | 'red' | 'orange' | 'purple' | 'yellow';
+  chartId?: string;
+  /**
+   * When true, allow writing over non-empty cells.
+   * Only set for unambiguously replace/clear intents — never inferred by the Executor.
+   */
+  explicitOverwriteConfirmed?: boolean;
 }
 
 export interface WorkbookContextPayload {

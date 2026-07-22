@@ -1,5 +1,9 @@
 import { SheetAction } from '@/hooks/useSseStream';
 import { CellChange } from '@/types/changeSet';
+import type {
+  ResponseInternalDetails,
+  UserFacingSummary,
+} from '@/utils/userFacingResponse';
 
 export type StepPhase = 'hidden' | 'revealed' | 'running' | 'done';
 
@@ -46,6 +50,8 @@ export interface ActionBlock {
   proposalStatus: 'pending' | 'accepted' | 'rejected';
   changeSetId?: string;
   changes?: CellChange[];
+  userFacingSummary?: UserFacingSummary;
+  internalDetails?: ResponseInternalDetails;
 }
 
 export interface StatusBlock {
@@ -63,7 +69,7 @@ export interface PlanStep {
 
 export interface PlanBlock {
   id: string;
-  type: 'plan';
+  type: 'plan' | 'plan_only';
   summary?: string;
   steps: PlanStep[];
   affectedSheets: string[];
@@ -71,6 +77,9 @@ export interface PlanBlock {
   safestApproach?: string;
   /** The original user prompt, re-sent when running the plan as an action. */
   prompt: string;
+  /** Tier 2 plan-only proposals (read-only — not queued for preview). */
+  proposedActions?: SheetAction[];
+  tier?: number;
 }
 
 export interface MatchResult {

@@ -36,7 +36,9 @@ export function applyFormat(range: Excel.Range, format: FormatSpec): void {
   if (format.italic !== undefined) range.format.font.italic = format.italic;
   if (format.fontSize !== undefined) range.format.font.size = format.fontSize;
   if (format.fontColor !== undefined) range.format.font.color = format.fontColor;
-  if (format.fillColor !== undefined) {
+  if (format.clearFill) {
+    range.format.fill.clear();
+  } else if (format.fillColor !== undefined) {
     range.format.fill.pattern = 'Solid';
     range.format.fill.color = format.fillColor;
   }

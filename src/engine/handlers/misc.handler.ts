@@ -10,6 +10,7 @@ import {
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '@/services/formatGuard';
 import { parseCellAddress } from '../addressUtils';
 import { resolveWorksheet } from '../sheetResolve';
+import { stampAppliedBounds } from '../selectRanges';
 
 /* global Excel */
 
@@ -83,6 +84,13 @@ export async function handleAppendRow(
     1,
     colCount,
   );
+  stampAppliedBounds(action, {
+    sheetName: action.sheetName,
+    row: targetRow,
+    col: 0,
+    rowCount: 1,
+    colCount,
+  });
   await ctx.sync();
 }
 

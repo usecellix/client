@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { buildWorkbookContext } from '@/services/sheetContextBuilder';
+import {
+  getContextForSend,
+  markPendingWorkbookContextStale,
+  setPendingWorkbookContext,
+} from '@/utils/pendingWorkbookContext';
 import { getConversationEndpoint } from '@/lib/apiConfig';
 import { SheetAction } from '@/types/sheet-actions';
 import {
@@ -15,6 +20,7 @@ import {
 } from '@/utils/actionGuard';
 import { parseSseEventBlock } from '@/utils/sseParser';
 import { handleToolRequest } from '@/services/toolRequestHandler';
+import { navigateToCell } from '@/services/rangeFetchService';
 import { shouldAcceptIncomingClarification } from '@/utils/clarification.util';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import { buildThoughtSummary } from '@/utils/thoughtSummary';
@@ -45,6 +51,11 @@ import {
   StoredConversation,
 } from '@/utils/rehydrateConversation';
 import { getConversationByIdEndpoint } from '@/lib/apiConfig';
+import type {
+  ResponseInternalDetails,
+  UserFacingSummary,
+} from '@/utils/userFacingResponse';
+import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
 
 /* global Excel, Office */
 
@@ -130,11 +141,15 @@ interface PendingActions {
   explanation: string;
   changeSetId?: string;
   changes?: CellChange[];
+  userFacingSummary?: UserFacingSummary;
+  internalDetails?: ResponseInternalDetails;
 }
 
 export interface PreviewActionsMeta {
   changeSetId?: string;
   changes?: CellChange[];
+  userFacingSummary?: UserFacingSummary;
+  internalDetails?: ResponseInternalDetails;
 }
 
 interface TurnRuntime {
@@ -163,14 +178,6 @@ const ANALYZING_LABEL = 'Analyzing your spreadsheet…';
 interface TimelineOptions {
   sheetIsEmpty: boolean;
   userMessage: string;
-}
-
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < Math.min(str.length, 2000); i += 1) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return hash.toString(36);
 }
 
 function finalizeSteps(blocks: TurnBlock[], userMessage: string): TurnBlock[] {
@@ -280,6 +287,8 @@ function createActionBlock(
     proposalStatus: alreadyApplied ? 'accepted' : 'pending',
     changeSetId: pending.changeSetId,
     changes: pending.changes,
+    userFacingSummary: pending.userFacingSummary,
+    internalDetails: pending.internalDetails,
   };
 }
 
@@ -302,9 +311,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const [activeClarification, setActiveClarification] = useState<ClarificationPayload | null>(null);
   const [isOfficeReady, setIsOfficeReady] = useState(false);
 
-  const pendingToonRef = useRef<{ toon: string; hash: string; workbookContext: WorkbookContext } | null>(
-    null,
-  );
   const preCompressionInProgressRef = useRef(false);
 
   useEffect(() => {
@@ -315,31 +321,50 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   useEffect(() => {
     if (!isOfficeReady || typeof Excel === 'undefined') return;
 
+    let selectionHandler: { remove: () => void } | null = null;
+    const changedHandlers: Array<{ remove: () => void }> = [];
+
     Excel.run(async (ctx) => {
-      ctx.workbook.onSelectionChanged.add(async () => {
+      const selectionResult = ctx.workbook.onSelectionChanged.add(async () => {
         if (preCompressionInProgressRef.current) return;
         preCompressionInProgressRef.current = true;
         try {
-          const { context, promptContext } = await buildWorkbookContext([]);
+          // Selection change invalidates then warm-rebuilds the pending snapshot.
+          markPendingWorkbookContextStale();
+          const { context, promptContext, activeSheetData } = await buildWorkbookContext([]);
           const toonString = promptContext ?? '';
-          pendingToonRef.current = {
+          setPendingWorkbookContext({
             toon: toonString,
-            hash: simpleHash(toonString),
             workbookContext: context,
-          };
+            activeSheetData,
+          });
         } catch {
-          pendingToonRef.current = null;
+          markPendingWorkbookContextStale();
         } finally {
           preCompressionInProgressRef.current = false;
         }
       });
+      selectionHandler = selectionResult as unknown as { remove: () => void };
+
+      ctx.workbook.worksheets.load('items');
+      await ctx.sync();
+      for (const sheet of ctx.workbook.worksheets.items) {
+        const changed = sheet.onChanged.add(async () => {
+          // External or in-sheet edits invalidate the prebuild (rebuild on next send).
+          markPendingWorkbookContextStale();
+        });
+        changedHandlers.push(changed as unknown as { remove: () => void });
+      }
       await ctx.sync();
     }).catch(() => {
       // Office.js not available in test env — ignore
     });
 
     return () => {
-      // Office.js event handlers are cleaned up when the task pane unloads
+      void selectionHandler?.remove?.();
+      for (const handler of changedHandlers) {
+        void handler.remove?.();
+      }
     };
   }, [isOfficeReady]);
 
@@ -376,9 +401,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       window.clearTimeout(persistTimerRef.current);
     }
     persistTimerRef.current = window.setTimeout(() => {
+      const existing = loadChatSessions(workbookKey);
       saveChatSessions(workbookKey, {
         activeSessionId: activeSessionIdRef.current,
         sessions: sessionsRef.current,
+        assistantMode: existing?.assistantMode,
       });
     }, 400);
   }, [workbookKey]);
@@ -627,6 +654,13 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           ...turn,
           blocks: upsertStep(turn.blocks, STEP_READING_ID, statusLabel, 'done'),
         }));
+        if (!runtime.pendingResponse) {
+          await runtime.responseGate.wait();
+        }
+        const simpleResponse = runtime.pendingResponse;
+        if (simpleResponse && !revealScheduledRef.current.has(turnId)) {
+          revealFinalResponse(turnId, simpleResponse);
+        }
         return;
       }
 
@@ -692,6 +726,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       if (opts.sheetIsEmpty) {
         runtime.analyzingGate.open();
         await waitWithMin(runtime.responseGate, TIMING.readingMinRun);
+        if (isAborted()) return;
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          blocks: upsertStep(turn.blocks, STEP_READING_ID, readingLabel, 'done'),
+        }));
+        if (!runtime.pendingResponse) {
+          await runtime.responseGate.wait();
+        }
+        const emptyResponse = runtime.pendingResponse;
+        if (emptyResponse && !revealScheduledRef.current.has(turnId)) {
+          revealFinalResponse(turnId, emptyResponse);
+        }
         return;
       }
 
@@ -834,6 +880,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'select_cell') {
+            const { sheetName, row, col } = event.data;
+            void navigateToCell(sheetName, row, col).catch((error) => {
+              console.warn('[Cellix] Failed to select find target cell:', error);
+            });
             continue;
           }
 
@@ -853,7 +903,31 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             if (revealScheduledRef.current.has(turnId)) {
               updateTurn(turnId, (turn) => ({
                 ...turn,
-                blocks: [...turn.blocks.filter((b) => b.type !== 'plan'), planBlock],
+                blocks: [...turn.blocks.filter((b) => b.type !== 'plan' && b.type !== 'plan_only'), planBlock],
+              }));
+            }
+            continue;
+          }
+
+          if (event.type === 'plan_only') {
+            const planBlock: PlanBlock = {
+              id: `plan_only_${Date.now()}`,
+              type: 'plan_only',
+              summary: event.data.summary,
+              steps: event.data.steps,
+              affectedSheets: event.data.affectedSheets,
+              estimatedRows: event.data.estimatedRows,
+              safestApproach: event.data.safestApproach,
+              prompt: event.data.prompt,
+              proposedActions: event.data.proposedActions,
+              tier: event.data.tier,
+            };
+            const runtime = runtimeRef.current.get(turnId);
+            if (runtime) runtime.pendingPlan = planBlock;
+            if (revealScheduledRef.current.has(turnId)) {
+              updateTurn(turnId, (turn) => ({
+                ...turn,
+                blocks: [...turn.blocks.filter((b) => b.type !== 'plan' && b.type !== 'plan_only'), planBlock],
               }));
             }
             continue;
@@ -951,11 +1025,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               explanation,
               changeSetId: event.data.changeSetId,
               changes: event.data.changes,
+              userFacingSummary: event.data.userFacingSummary,
+              internalDetails: event.data.internalDetails,
             };
             const runtime = runtimeRef.current.get(turnId);
             if (runtime) {
               runtime.pendingActions = pendingActions;
             }
+
+            const previewCopy = resolveActionBlockCopy({
+              userFacingSummary: event.data.userFacingSummary,
+              explanation,
+              actions: sanitized.actions,
+              changes: event.data.changes,
+            });
 
             // Ask / Plan modes are read-only: never preview, apply, or audit
             // write actions even if the backend emits them.
@@ -963,9 +1046,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             const usePreview = shouldPreviewActions(sanitized.actions, autoApplyActions);
 
             if (isActionMode && usePreview) {
-              await onPreviewActions?.(sanitized.actions, explanation, {
+              await onPreviewActions?.(sanitized.actions, previewCopy.headline, {
                 changeSetId: event.data.changeSetId,
                 changes: event.data.changes,
+                userFacingSummary: event.data.userFacingSummary,
+                internalDetails: event.data.internalDetails,
               });
             }
 
@@ -990,9 +1075,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
             if (isActionMode && !usePreview && onActions) {
               await onClearPreview?.();
-              await onActions(sanitized.actions, explanation, {
+              await onActions(sanitized.actions, previewCopy.headline, {
                 changeSetId: event.data.changeSetId,
                 changes: event.data.changes,
+                userFacingSummary: event.data.userFacingSummary,
+                internalDetails: event.data.internalDetails,
               });
               setActiveClarification(null);
               updateTurn(turnId, (turn) => ({
@@ -1152,28 +1239,26 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       });
 
       const buildPayloadContext = async () => {
-        if (pendingToonRef.current) {
-          const pending = pendingToonRef.current;
-          pendingToonRef.current = null;
-          return {
-            workbookContext: pending.workbookContext,
-            promptContext: pending.toon,
-          };
-        }
+        // Prefer caller-supplied context only when it already came from getContextForSend.
+        // Otherwise reuse/refresh the shared pending snapshot (Spec 09 item 1).
         if (workbookContext && promptContext) {
-          return { workbookContext, promptContext };
+          return { workbookContext, promptContext, sheetData };
         }
-        const built = await buildWorkbookContext([]);
+        const resolved = await getContextForSend();
         return {
-          workbookContext: workbookContext ?? built.context,
-          promptContext: promptContext ?? built.promptContext,
+          workbookContext: resolved.workbookContext,
+          promptContext: resolved.promptContext,
+          sheetData: resolved.sheetData.length ? resolved.sheetData : sheetData,
         };
       };
 
-      const { workbookContext: resolvedWorkbookContext, promptContext: resolvedPromptContext } =
-        await buildPayloadContext();
+      const {
+        workbookContext: resolvedWorkbookContext,
+        promptContext: resolvedPromptContext,
+        sheetData: resolvedSheetData,
+      } = await buildPayloadContext();
 
-      const requestPayload = prepareConversationRequestPayload(trimmed, sheetData, {
+      const requestPayload = prepareConversationRequestPayload(trimmed, resolvedSheetData, {
         conversationId: conversationIdRef.current,
         previousMessages: historyRef.current.slice(0, -1),
         workbookContext: resolvedWorkbookContext,
@@ -1309,6 +1394,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       // Mark accepted immediately so Accept / preview controls disappear.
       updateTurn(turnId, (t) => ({
         ...t,
+        error: undefined,
         blocks: t.blocks.map((b) =>
           b.id === blockId && b.type === 'actions'
             ? { ...b, proposalStatus: 'accepted' }
@@ -1330,8 +1416,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
         setActiveClarification(null);
       } catch (error) {
+        const messageText =
+          error instanceof Error ? error.message : 'Failed to apply changes';
         updateTurn(turnId, (t) => ({
           ...t,
+          error: messageText,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'pending' }

@@ -2,6 +2,12 @@ import { WorkbookContext } from '@/types/cellix.types';
 import { SheetAction } from '@/types/sheet-actions';
 import { AssistantMode } from '@/types/mode';
 import { extractSheetMentions, stripSheetMentions } from '@/utils/sheetMentions';
+import {
+  detectCompoundSheetFollowUp,
+  extractSheetNameFromPrompt,
+  sanitizeExcelSheetName,
+  SHEET_NAME_BOUNDARY,
+} from '@/utils/sheetName.util';
 
 export interface LocalSheetActionPlan {
   actions: SheetAction[];
@@ -31,6 +37,7 @@ export function detectSortIntent(message: string): boolean {
 /** Prompts that need LLM planning (data, copy, sort, etc.) — not empty-sheet-only. */
 export function detectSheetDataGenerationIntent(message: string): boolean {
   const lower = message.toLowerCase();
+  if (detectCompoundSheetFollowUp(message)) return true;
   if (detectCopySheetIntent(message) || detectSortIntent(message)) return true;
 
   if (/\badd\s+a\s+total\b/i.test(message) || /\btotal\s+row\b/i.test(message)) return true;
@@ -48,6 +55,8 @@ export function detectSheetDataGenerationIntent(message: string): boolean {
     lower,
   );
 
+  if (/\bchart\b/i.test(message) && /\banaly(?:sis|ze|se)\b/i.test(message)) return true;
+
   return hasDataKeyword && hasCreateKeyword;
 }
 
@@ -57,15 +66,7 @@ export function detectEmptySheetCreateIntent(message: string): boolean {
   return true;
 }
 
-export function extractSheetNameFromPrompt(message: string): string | null {
-  const quoted = /(?:named|called)\s+["']([^"']+)["']/i.exec(message)?.[1];
-  if (quoted?.trim()) return quoted.trim();
-
-  const unquoted = /(?:named|called)\s+([A-Za-z][A-Za-z0-9 _-]*?)(?:\s+with|\s*$)/i.exec(message)?.[1];
-  if (unquoted?.trim()) return unquoted.trim();
-
-  return null;
-}
+export { extractSheetNameFromPrompt } from '@/utils/sheetName.util';
 
 function nextUniqueSheetName(base: string, availableSheets: string[]): string {
   const existing = new Set(availableSheets.map((sheet) => sheet.toLowerCase()));
@@ -98,9 +99,10 @@ export function extractCreateSheetName(
     if (resolved[0]) return resolved[0];
   }
 
-  const afterSheet = /\b(?:create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*sheets?\s+(?:named\s+)?([A-Za-z][A-Za-z0-9 _-]+)/i.exec(
-    message,
-  );
+  const afterSheet = new RegExp(
+    `\\b(?:create|add)\\s+(?:an?\\s+)?(?:(?:new|empty|blank)\\s+)*sheets?\\s+(?:named\\s+|called\\s+)?([A-Za-z][A-Za-z0-9 _-]+?)(?=${SHEET_NAME_BOUNDARY})`,
+    'i',
+  ).exec(message);
   const candidate = afterSheet?.[1]?.trim();
   if (candidate && !/^(with|and|named|called)$/i.test(candidate)) {
     return nextUniqueSheetName(candidate, availableSheets);
@@ -117,7 +119,7 @@ export function extractCreateSheetName(
 }
 
 export function buildCreateEmptySheetActions(sheetName: string): SheetAction[] {
-  return [{ type: 'ADD_SHEET', name: sheetName }];
+  return [{ type: 'ADD_SHEET', name: sanitizeExcelSheetName(sheetName) }];
 }
 
 export function buildCreateEmptySheetExplanation(sheetName: string): string {

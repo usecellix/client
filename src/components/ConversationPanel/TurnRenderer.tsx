@@ -7,13 +7,14 @@ import {
   TurnBlock,
   formatMessageTime,
 } from '@/types/conversationTurn';
-import { SheetAction } from '@/hooks/useSseStream';
 import { generateSuggestedFollowUps } from '@/utils/suggestedFollowUps';
+import { shortenActionPreviewCopy } from '@/utils/actionPreviewCopy';
 import StepIndicator from './StepIndicator';
 import ThinkingBlockView from './ThinkingBlockView';
 import AnswerReveal from './AnswerReveal';
 import FollowUpsSection from './FollowUpsSection';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
+import ActionResponseCard from './ActionResponseCard';
 
 interface TurnRendererProps {
   turn: ConversationTurn;
@@ -31,28 +32,6 @@ interface TurnRendererProps {
   onRunAsAction: (message: string) => void;
 }
 
-function describeAction(action: SheetAction): string {
-  if (action.type === 'SET_CELL' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Set cell ${col}${action.row + 1} to ${action.value ?? ''}`;
-  }
-  if (action.type === 'CLEAR_CELL' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Clear cell ${col}${action.row + 1}`;
-  }
-  if (action.type === 'SET_FORMULA' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Set formula in ${col}${action.row + 1}`;
-  }
-  if (action.type === 'HIGHLIGHT_CELL' && action.row !== undefined && action.col !== undefined) {
-    const col = String.fromCharCode(65 + action.col);
-    return `Highlight cell ${col}${action.row + 1}`;
-  }
-  if (action.type === 'ADD_ROW') return 'Add a new row';
-  if (action.type === 'DELETE_ROW' && action.row !== undefined) return `Delete row ${action.row + 1}`;
-  return action.type;
-}
-
 function PlanBlockView({
   block,
   onRunAsAction,
@@ -64,7 +43,7 @@ function PlanBlockView({
 }) {
   return (
     <div className="cellix-plan-card cellix-block-enter">
-      <div className="cellix-plan-title">Plan</div>
+      <div className="cellix-plan-title">{block.type === 'plan_only' ? 'Plan (preview)' : 'Plan'}</div>
       {block.summary && <div className="cellix-plan-summary">{block.summary}</div>}
       <ol className="cellix-plan-steps">
         {block.steps.map((step, i) => (
@@ -87,6 +66,14 @@ function PlanBlockView({
       </div>
       {block.safestApproach && (
         <div className="cellix-plan-safest">{block.safestApproach}</div>
+      )}
+      {block.type === 'plan_only' && block.proposedActions && block.proposedActions.length > 0 && (
+        <div className="cellix-plan-meta">
+          <span className="cellix-badge">
+            {block.proposedActions.length} proposed change
+            {block.proposedActions.length === 1 ? '' : 's'} (not applied)
+          </span>
+        </div>
       )}
       <div className="cellix-action-btns">
         <button
@@ -170,9 +157,13 @@ function BlockRenderer({
   }
 
   if (block.type === 'answer') {
+    const hasActions = turn.blocks.some((b) => b.type === 'actions');
+    const content = hasActions
+      ? shortenActionPreviewCopy(block.content) || block.content
+      : block.content;
     return (
       <AnswerReveal
-        content={block.content}
+        content={content}
         matches={block.matches}
         revealState={block.revealState}
         onComplete={() => onAnswerComplete(turn.id, block.id)}
@@ -195,7 +186,7 @@ function BlockRenderer({
     );
   }
 
-  if (block.type === 'plan') {
+  if (block.type === 'plan' || block.type === 'plan_only') {
     return (
       <PlanBlockView block={block} onRunAsAction={onRunAsAction} disabled={isWaiting} />
     );
@@ -203,83 +194,15 @@ function BlockRenderer({
 
   if (block.type === 'actions') {
     const actionBlock = block as ActionBlock;
-    const isPending = actionBlock.proposalStatus === 'pending';
-    const isAccepted = actionBlock.proposalStatus === 'accepted';
-
-    if (isAccepted) {
-      return (
-        <div className="cellix-changes-card cellix-block-enter">
-          <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--cx-gray-700)' }}>
-            {actionBlock.explanation}
-          </div>
-          <div className="cellix-changes-link">
-            <span className="cellix-badge">
-              {actionBlock.actions.length} Direct Change
-              {actionBlock.actions.length === 1 ? '' : 's'}
-            </span>
-            <span>Applied</span>
-          </div>
-        </div>
-      );
-    }
-
-    if (actionBlock.proposalStatus === 'rejected') {
-      return (
-        <div className="cellix-changes-card cellix-block-enter" style={{ opacity: 0.7 }}>
-          <div className="cellix-action-card-title">Changes rejected</div>
-          <div style={{ fontSize: 12, color: 'var(--cx-gray-500)' }}>{actionBlock.explanation}</div>
-        </div>
-      );
-    }
-
-    if (isPending && previewEnabled) {
-      return (
-        <div className="cellix-changes-card cellix-block-enter">
-          <div className="cellix-changes-summary">{actionBlock.explanation}</div>
-          <div className="cellix-changes-link">
-            <span className="cellix-badge">
-              {actionBlock.actions.length} Direct Change
-              {actionBlock.actions.length === 1 ? '' : 's'}
-            </span>
-            <span>Review below</span>
-          </div>
-        </div>
-      );
-    }
-
     return (
-      <div className="cellix-action-card cellix-block-enter">
-        <div className="cellix-action-card-title">Cellix will make these changes:</div>
-        <ul>
-          <li>{actionBlock.explanation}</li>
-          {actionBlock.actions.slice(0, 4).map((action, i) => (
-            <li key={i}>{describeAction(action)}</li>
-          ))}
-          {actionBlock.actions.length > 4 && (
-            <li>…and {actionBlock.actions.length - 4} more</li>
-          )}
-        </ul>
-        {isPending && showActionButtons && (
-          <div className="cellix-action-btns">
-            <button
-              type="button"
-              className="cellix-btn-accept"
-              onClick={() => onAcceptActions(turn.id, block.id)}
-              disabled={isApplying}
-            >
-              {isApplying ? 'Applying…' : 'Accept'}
-            </button>
-            <button
-              type="button"
-              className="cellix-btn-reject"
-              onClick={() => onRejectActions(turn.id, block.id)}
-              disabled={isApplying}
-            >
-              Reject
-            </button>
-          </div>
-        )}
-      </div>
+      <ActionResponseCard
+        block={actionBlock}
+        previewEnabled={previewEnabled}
+        isApplying={isApplying}
+        showActionButtons={showActionButtons}
+        onAccept={() => onAcceptActions(turn.id, block.id)}
+        onReject={() => onRejectActions(turn.id, block.id)}
+      />
     );
   }
 

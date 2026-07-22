@@ -1,8 +1,11 @@
 import { partitionActions } from '../engine/actionNormalizer';
 import { richActionEngine } from '../engine/actionEngine';
+import { isOverwriteGuardError } from '../engine/overwriteGuard';
+import { selectActionRanges } from '../engine/selectRanges';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
 import { applyFormatGuard, coerceRowDataToReferenceFormats } from '../services/formatGuard';
 import { sanitizeActions } from './actionGuard';
+import { sanitizeExcelSheetName } from './sheetName.util';
 
 /* global Excel */
 
@@ -80,7 +83,13 @@ export class ActionEngine {
       const richResult = await richActionEngine.applyActions(rich);
       applied += richResult.applied;
       errors.push(...richResult.errors);
+      if (richResult.errors.some((e) => e.includes('Write blocked:'))) {
+        throw new Error(richResult.errors.find((e) => e.includes('Write blocked:')) ?? richResult.errors[0]);
+      }
     } catch (error) {
+      if (isOverwriteGuardError(error)) {
+        throw error;
+      }
       console.error('Failed to apply actions to spreadsheet:', error);
       throw new Error(
         `Spreadsheet update failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -88,6 +97,14 @@ export class ActionEngine {
     }
 
     return { applied, errors };
+  }
+
+  /** Select (no fill) the ranges touched by these actions. */
+  static async selectAppliedRanges(actions: SheetAction[]): Promise<void> {
+    if (!actions.length) return;
+    await Excel.run(async (ctx) => {
+      await selectActionRanges(actions, ctx);
+    });
   }
 
   static async previewActions(actions: SheetAction[]): Promise<void> {
@@ -322,7 +339,7 @@ export class ActionEngine {
       case 'ADD_SHEET':
         await this.createSheet(context, {
           ...action,
-          sheetName: action.name ?? action.sheetName ?? 'New Sheet',
+          sheetName: sanitizeExcelSheetName(action.name ?? action.sheetName ?? 'New Sheet'),
         });
         break;
       default:
@@ -546,7 +563,9 @@ export class ActionEngine {
     if (fmt.underline !== undefined) range.format.font.underline = fmt.underline ? 'Single' : 'None';
     if (fmt.fontSize !== undefined) range.format.font.size = fmt.fontSize;
     if (fmt.fontColor !== undefined) range.format.font.color = fmt.fontColor;
-    if (fmt.fillColor !== undefined) {
+    if (fmt.clearFill) {
+      range.format.fill.clear();
+    } else if (fmt.fillColor !== undefined) {
       range.format.fill.pattern = 'Solid';
       range.format.fill.color = fmt.fillColor;
     }
@@ -618,7 +637,8 @@ export class ActionEngine {
 
   private static async createSheet(context: Excel.RequestContext, action: SheetAction): Promise<void> {
     const sheets = context.workbook.worksheets;
-    const newSheet = sheets.add(action.sheetName ?? 'New Sheet');
+    const sheetName = sanitizeExcelSheetName(action.sheetName ?? action.name ?? 'New Sheet');
+    const newSheet = sheets.add(sheetName);
 
     if (action.relativeTo && action.position) {
       const refSheet = sheets.getItem(action.relativeTo);

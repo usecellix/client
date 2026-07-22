@@ -36,6 +36,7 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
         address: cellAddress(action.row, action.col),
         value: action.value as CellValue,
         format: action.format as RichAction extends { type: 'SET_CELL' } ? never : never,
+        explicitOverwriteConfirmed: action.explicitOverwriteConfirmed,
       } as RichAction;
 
     case 'CLEAR_CELL':
@@ -66,6 +67,7 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
         address: cellAddress(action.row, action.col),
         formula: action.formula,
         format: action.format as RichAction extends { type: 'SET_FORMULA' } ? never : never,
+        explicitOverwriteConfirmed: action.explicitOverwriteConfirmed,
       } as RichAction;
 
     case 'ADD_ROW':
@@ -96,14 +98,50 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
         position: action.position as 'above' | 'below' | undefined,
       };
 
-    case 'INSERT_COLUMN':
-      if (action.col === undefined) return null;
+    case 'INSERT_COLUMN': {
+      // Semantic add-column (preferred for "add a column called X")
+      if (
+        typeof action.columnName === 'string' &&
+        action.columnName.trim() &&
+        (action.position === 'afterLastColumn' ||
+          (typeof action.afterColumn === 'string' && action.afterColumn.trim()) ||
+          (action.position &&
+            typeof action.position === 'object' &&
+            typeof (action.position as { afterColumn?: string }).afterColumn === 'string'))
+      ) {
+        const position =
+          action.position === 'afterLastColumn'
+            ? 'afterLastColumn'
+            : action.position &&
+                typeof action.position === 'object' &&
+                typeof (action.position as { afterColumn?: string }).afterColumn === 'string'
+              ? { afterColumn: (action.position as { afterColumn: string }).afterColumn }
+              : action.afterColumn
+                ? { afterColumn: action.afterColumn }
+                : 'afterLastColumn';
+        return {
+          type: 'INSERT_COLUMN',
+          sheetName,
+          columnName: action.columnName.trim(),
+          position,
+          afterColumn:
+            typeof position === 'object' ? position.afterColumn : action.afterColumn,
+          formula: action.formula,
+          explicitOverwriteConfirmed: action.explicitOverwriteConfirmed,
+        };
+      }
+      if (action.col === undefined && typeof action.beforeColumn !== 'string') return null;
       return {
         type: 'INSERT_COLUMN',
         sheetName,
-        beforeColumn: columnIndexToLetter(action.col),
+        beforeColumn:
+          typeof action.beforeColumn === 'string'
+            ? action.beforeColumn
+            : columnIndexToLetter(action.col as number),
         count: action.count ?? 1,
+        explicitOverwriteConfirmed: action.explicitOverwriteConfirmed,
       };
+    }
 
     case 'DELETE_COLUMN':
       if (action.col === undefined) return null;

@@ -1,5 +1,6 @@
 import { ConversationHistoryMessage } from '@/utils/payloadCompressor';
 import { ConversationTurn } from '@/types/conversationTurn';
+import { AssistantMode } from '@/types/mode';
 
 export interface ChatSession {
   id: string;
@@ -14,6 +15,8 @@ export interface ChatSession {
 export interface ChatSessionStore {
   activeSessionId: string | null;
   sessions: ChatSession[];
+  /** Last-selected assistant mode for this workbook (Ask / Plan / Action). */
+  assistantMode?: AssistantMode;
 }
 
 export function createChatSession(title = 'New chat'): ChatSession {

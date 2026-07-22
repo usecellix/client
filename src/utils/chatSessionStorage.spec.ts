@@ -63,4 +63,17 @@ describe('chatSessionStorage', () => {
     expect(loadChatSessions('')).toBeNull();
     expect(loadChatSessions('missing-workbook')).toBeNull();
   });
+
+  it('round-trips assistantMode per workbook', () => {
+    const store = {
+      activeSessionId: null,
+      sessions: [],
+      assistantMode: 'plan' as const,
+    };
+
+    saveChatSessions('Budget_2026.xlsx', store);
+    const loaded = loadChatSessions('Budget_2026.xlsx');
+
+    expect(loaded?.assistantMode).toBe('plan');
+  });
 });
