@@ -53,40 +53,7 @@
   min-height: 100vh;
 }
 
-.auth-shell__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
-}
-
-.auth-shell__user {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.auth-shell__name {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #0f172a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auth-shell__email {
-  font-size: 0.75rem;
-  color: #64748b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auth-shell__content {
+.auth-shell > * {
   flex: 1;
   min-height: 0;
 }

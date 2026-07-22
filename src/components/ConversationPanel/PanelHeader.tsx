@@ -3,6 +3,7 @@ import {
   Archive,
   BarChart3,
   ChevronRight,
+  LogOut,
   MessageSquare,
   MoreHorizontal,
   Pin,
@@ -13,6 +14,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { signOutUser } from '@/auth/useAuth';
 import { CostDashboardPanel } from '@/components/CostDashboardPanel/CostDashboardPanel';
 import { ChatSession } from '@/types/chatSession';
 
@@ -266,6 +268,16 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             aria-label="New chat"
           >
             <SquarePen size={16} />
+          </button>
+
+          <button
+            type="button"
+            className="cellix-topbar-icon-btn"
+            onClick={() => void signOutUser()}
+            title="Sign out"
+            aria-label="Sign out"
+          >
+            <LogOut size={16} />
           </button>
         </div>
       </div>
