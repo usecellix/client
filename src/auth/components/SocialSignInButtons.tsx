@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { signInWithProvider, type SocialProvider } from '@/auth/useAuth';
+import { signInWithProvider } from '@/auth/useAuth';
 
 interface SocialSignInButtonsProps {
   disabled?: boolean;
@@ -8,43 +8,32 @@ interface SocialSignInButtonsProps {
 }
 
 export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({ disabled, onError }) => {
-  const [pending, setPending] = React.useState<SocialProvider | null>(null);
+  const [pending, setPending] = React.useState(false);
 
-  const handleSignIn = async (provider: SocialProvider) => {
-    setPending(provider);
+  const handleSignIn = async () => {
+    setPending(true);
     try {
-      await signInWithProvider(provider);
+      await signInWithProvider('google');
     } catch (error) {
-      const message = error instanceof Error ? error.message : `Failed to sign in with ${provider}`;
+      const message = error instanceof Error ? error.message : 'Failed to sign in with Google';
       onError?.(message);
-      setPending(null);
+      setPending(false);
     }
   };
 
-  const busy = Boolean(pending) || disabled;
+  const busy = pending || disabled;
 
   return (
-    <div className="flex w-full flex-col gap-3">
+    <div className="flex w-fit flex-col gap-3">
       <Button
         type="button"
         variant="outline"
-        className="w-full justify-center gap-2 border-[#dadce0] bg-white text-[#3c4043] hover:bg-[#f8f9fa]"
+        className="auth-login__google-btn h-10 w-auto justify-center gap-2 bg-white text-[#3c4043] hover:bg-[#f8f9fa]"
         disabled={busy}
-        onClick={() => void handleSignIn('google')}
+        onClick={() => void handleSignIn()}
       >
         <GoogleIcon />
-        {pending === 'google' ? 'Redirecting…' : 'Continue with Google'}
-      </Button>
-
-      <Button
-        type="button"
-        variant="outline"
-        className="w-full justify-center gap-2 border-[#8c8c8c] bg-white text-[#5e5e5e] hover:bg-[#f5f5f5]"
-        disabled={busy}
-        onClick={() => void handleSignIn('microsoft')}
-      >
-        <MicrosoftIcon />
-        {pending === 'microsoft' ? 'Redirecting…' : 'Continue with Microsoft'}
+        {pending ? 'Redirecting…' : 'Continue with Google'}
       </Button>
     </div>
   );
@@ -69,17 +58,6 @@ function GoogleIcon() {
         fill="#EA4335"
         d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"
       />
-    </svg>
-  );
-}
-
-function MicrosoftIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
-      <rect x="1" y="1" width="9" height="9" fill="#F25022" />
-      <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
-      <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
-      <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
     </svg>
   );
 }

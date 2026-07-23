@@ -1,6 +1,6 @@
 import { authClient } from './auth-client';
 
-export type SocialProvider = 'google' | 'microsoft';
+export type SocialProvider = 'google';
 
 export function getAuthCompleteUrl(provider?: SocialProvider): string {
   const origin =
@@ -27,7 +27,7 @@ function canUseOfficeDialog(): boolean {
 }
 
 /**
- * Office Dialog = small window inside Excel → default Google/Microsoft OAuth pages.
+ * Office Dialog = small window inside Excel → default Google OAuth page.
  * Server uses prompt=select_account so Google shows its native account chooser when
  * that WebView already has Google cookies (after the first sign-in in this dialog).
  */
