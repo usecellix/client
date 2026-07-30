@@ -1,22 +1,22 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Archive,
-  BarChart3,
   ChevronRight,
+  ExternalLink,
+  LogOut,
   MessageSquare,
-  MoreHorizontal,
   Pin,
   RotateCcw,
-  ScrollText,
   Settings,
+  Sparkles,
   SquarePen,
   Trash2,
+  User,
   X,
 } from 'lucide-react';
-import { CostDashboardPanel } from '@/components/CostDashboardPanel/CostDashboardPanel';
+import { useSession } from '@/auth/auth-client';
+import { signOutUser } from '@/auth/useAuth';
 import { ChatSession } from '@/types/chatSession';
-
-type HeaderPanel = 'usage' | 'audit';
 
 interface PanelHeaderProps {
   sessions: ChatSession[];
@@ -27,11 +27,6 @@ interface PanelHeaderProps {
   onNewChat: () => void;
 }
 
-const PANEL_TITLES: Record<HeaderPanel, string> = {
-  usage: 'Usage',
-  audit: 'Audit',
-};
-
 export const PanelHeader: React.FC<PanelHeaderProps> = ({
   sessions,
   activeSessionId,
@@ -40,30 +35,25 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   onCloseSession,
   onNewChat,
 }) => {
-  const [openPanel, setOpenPanel] = useState<HeaderPanel | null>(null);
+  const { data: session } = useSession();
+  const userEmail = session?.user?.email?.trim() || 'Signed in';
+
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   const headerRef = useRef<HTMLDivElement>(null);
 
-  const filteredSessions = sessions.filter((session) =>
-    session.title.toLowerCase().includes(historyQuery.trim().toLowerCase()),
+  const filteredSessions = sessions.filter((chatSession) =>
+    chatSession.title.toLowerCase().includes(historyQuery.trim().toLowerCase()),
   );
 
   const closeAll = () => {
-    setOpenPanel(null);
     setHistoryOpen(false);
-    setMoreOpen(false);
-  };
-
-  const togglePanel = (panel: HeaderPanel) => {
-    setOpenPanel((prev) => (prev === panel ? null : panel));
-    setHistoryOpen(false);
-    setMoreOpen(false);
+    setSettingsOpen(false);
   };
 
   useEffect(() => {
-    if (!openPanel && !historyOpen && !moreOpen) return;
+    if (!historyOpen && !settingsOpen) return;
 
     const handlePointerDown = (event: MouseEvent) => {
       if (headerRef.current && !headerRef.current.contains(event.target as Node)) {
@@ -73,7 +63,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
 
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [openPanel, historyOpen, moreOpen]);
+  }, [historyOpen, settingsOpen]);
 
   return (
     <div className="cellix-topbar" ref={headerRef}>
@@ -90,26 +80,26 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
               <span className="cellix-chat-tab-title">New chat</span>
             </button>
           ) : (
-            sessions.map((session) => {
-              const active = session.id === activeSessionId;
+            sessions.map((chatSession) => {
+              const active = chatSession.id === activeSessionId;
               const loading = active && isWaitingForResponse;
 
               return (
                 <button
-                  key={session.id}
+                  key={chatSession.id}
                   type="button"
                   className={`cellix-chat-tab ${active ? 'active' : ''}`}
                   role="tab"
                   aria-selected={active}
-                  onClick={() => onSelectSession(session.id)}
-                  title={session.title}
+                  onClick={() => onSelectSession(chatSession.id)}
+                  title={chatSession.title}
                 >
                   {loading ? (
                     <span className="cellix-spinner cellix-chat-tab-spinner" />
                   ) : (
                     <MessageSquare size={13} />
                   )}
-                  <span className="cellix-chat-tab-title">{session.title}</span>
+                  <span className="cellix-chat-tab-title">{chatSession.title}</span>
                   <span
                     role="button"
                     tabIndex={0}
@@ -117,13 +107,13 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                     title="Close chat"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onCloseSession(session.id);
+                      onCloseSession(chatSession.id);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         event.stopPropagation();
-                        onCloseSession(session.id);
+                        onCloseSession(chatSession.id);
                       }
                     }}
                   >
@@ -136,41 +126,12 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
         </div>
 
         <div className="cellix-topbar-icons">
-          <div className="cellix-topbar-more-wrap">
-            <button
-              type="button"
-              className={`cellix-topbar-icon-btn ${moreOpen ? 'active' : ''}`}
-              onClick={() => {
-                setMoreOpen((prev) => !prev);
-                setOpenPanel(null);
-              }}
-              title="More"
-              aria-label="More"
-              aria-haspopup="menu"
-              aria-expanded={moreOpen}
-            >
-              <MoreHorizontal size={16} />
-            </button>
-
-            {moreOpen && (
-              <div className="cellix-header-menu" role="menu">
-                <button type="button" role="menuitem" onClick={() => togglePanel('usage')}>
-                  <BarChart3 size={13} /> Usage
-                </button>
-                <button type="button" role="menuitem" onClick={() => togglePanel('audit')}>
-                  <ScrollText size={13} /> Audit
-                </button>
-              </div>
-            )}
-          </div>
-
           <button
             type="button"
             className={`cellix-topbar-icon-btn ${historyOpen ? 'active' : ''}`}
             onClick={() => {
               setHistoryOpen((prev) => !prev);
-              setOpenPanel(null);
-              setMoreOpen(false);
+              setSettingsOpen(false);
             }}
             title="Chat history"
             aria-label="Chat history"
@@ -196,29 +157,29 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                     {sessions.length === 0 ? 'No chats yet' : 'No chats found'}
                   </div>
                 ) : (
-                  filteredSessions.map((session) => {
-                    const active = session.id === activeSessionId;
+                  filteredSessions.map((chatSession) => {
+                    const active = chatSession.id === activeSessionId;
                     return (
                       <div
-                        key={session.id}
+                        key={chatSession.id}
                         className={`cellix-chat-history-item ${active ? 'active' : ''}`}
                         role="menuitem"
                         tabIndex={0}
                         onClick={() => {
-                          onSelectSession(session.id);
+                          onSelectSession(chatSession.id);
                           closeAll();
                         }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
-                            onSelectSession(session.id);
+                            onSelectSession(chatSession.id);
                             closeAll();
                           }
                         }}
-                        title={session.title}
+                        title={chatSession.title}
                       >
                         <MessageSquare size={13} />
-                        <span>{session.title}</span>
+                        <span>{chatSession.title}</span>
                         {active && <Pin size={11} className="cellix-chat-history-pin" />}
                         <button
                           type="button"
@@ -227,7 +188,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                           aria-label="Remove chat"
                           onClick={(event) => {
                             event.stopPropagation();
-                            onCloseSession(session.id);
+                            onCloseSession(chatSession.id);
                           }}
                         >
                           <Trash2 size={12} />
@@ -245,15 +206,23 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             </div>
           )}
 
-          <button
-            type="button"
-            className={`cellix-topbar-icon-btn ${openPanel === 'usage' ? 'active' : ''}`}
-            onClick={() => togglePanel('usage')}
-            title="Settings"
-            aria-label="Settings"
-          >
-            <Settings size={16} />
-          </button>
+          <div className="cellix-topbar-settings-wrap">
+            <button
+              type="button"
+              className={`cellix-topbar-icon-btn ${settingsOpen ? 'active' : ''}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setSettingsOpen((prev) => !prev);
+                setHistoryOpen(false);
+              }}
+              title="Settings"
+              aria-label="Settings"
+              aria-haspopup="menu"
+              aria-expanded={settingsOpen}
+            >
+              <Settings size={16} />
+            </button>
+          </div>
 
           <button
             type="button"
@@ -270,18 +239,55 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
         </div>
       </div>
 
-      {openPanel && (
-        <div className="cellix-header-popover">
-          <div className="cellix-header-popover-head">
-            <span>{PANEL_TITLES[openPanel]}</span>
-            <button type="button" className="cellix-header-popover-close" onClick={closeAll}>
-              x
-            </button>
+      {settingsOpen && (
+        <div className="cellix-settings-menu" role="menu" aria-label="Settings">
+          <div className="cellix-settings-menu-section">Account</div>
+          <div className="cellix-settings-menu-meta" title={userEmail}>
+            <User size={13} />
+            <span>{userEmail}</span>
           </div>
-          <div className="cellix-header-popover-body">
-            {openPanel === 'usage' && <CostDashboardPanel embedded section="usage" />}
-            {openPanel === 'audit' && <CostDashboardPanel embedded section="audit" />}
-          </div>
+
+          <button
+            type="button"
+            className="cellix-settings-menu-item"
+            role="menuitem"
+            onClick={() => {
+              closeAll();
+            }}
+          >
+            <Sparkles size={13} />
+            <span>Upgrade the plan</span>
+            <ExternalLink size={12} className="cellix-settings-menu-trailing" />
+          </button>
+
+          <div className="cellix-settings-menu-divider" />
+
+          <button
+            type="button"
+            className="cellix-settings-menu-item"
+            role="menuitem"
+            onClick={() => {
+              closeAll();
+            }}
+          >
+            <Settings size={13} />
+            <span>Cellix settings</span>
+          </button>
+
+          <div className="cellix-settings-menu-divider" />
+
+          <button
+            type="button"
+            className="cellix-settings-menu-item cellix-settings-menu-item--danger"
+            role="menuitem"
+            onClick={() => {
+              closeAll();
+              void signOutUser();
+            }}
+          >
+            <LogOut size={13} />
+            <span>Log out</span>
+          </button>
         </div>
       )}
     </div>

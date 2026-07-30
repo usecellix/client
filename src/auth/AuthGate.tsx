@@ -1,8 +1,7 @@
 import React from 'react';
 import { useSession } from '@/auth/auth-client';
+import { AuthSplash } from '@/auth/components/AuthSplash';
 import { LoginPage } from '@/auth/components/LoginPage';
-import { signOutUser } from '@/auth/useAuth';
-import { Button } from '@/components/ui/button';
 
 interface AuthGateProps {
   children: React.ReactNode;
@@ -10,17 +9,25 @@ interface AuthGateProps {
 
 /**
  * Gates the task pane behind a Better Auth session.
- * Shows Google / Microsoft login until the user is authenticated.
+ * Splash while checking → login if signed out → app if signed in.
  */
 export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
   const { data: session, isPending, error } = useSession();
+  const [showSplash, setShowSplash] = React.useState(true);
 
-  if (isPending) {
-    return (
-      <div className="auth-login">
-        <p className="auth-login__subtitle">Checking session…</p>
-      </div>
-    );
+  // Keep splash briefly so the UI doesn’t flash when the session resolves instantly.
+  React.useEffect(() => {
+    if (isPending) {
+      setShowSplash(true);
+      return;
+    }
+
+    const timer = window.setTimeout(() => setShowSplash(false), 400);
+    return () => window.clearTimeout(timer);
+  }, [isPending]);
+
+  if (isPending || showSplash) {
+    return <AuthSplash />;
   }
 
   if (!session) {
@@ -31,20 +38,5 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
     );
   }
 
-  return (
-    <div className="auth-shell">
-      <header className="auth-shell__bar">
-        <div className="auth-shell__user">
-          <span className="auth-shell__name">{session.user.name || 'Signed in'}</span>
-          {session.user.email ? (
-            <span className="auth-shell__email">{session.user.email}</span>
-          ) : null}
-        </div>
-        <Button type="button" variant="ghost" size="sm" onClick={() => void signOutUser()}>
-          Sign out
-        </Button>
-      </header>
-      <div className="auth-shell__content">{children}</div>
-    </div>
-  );
+  return <div className="auth-shell">{children}</div>;
 };

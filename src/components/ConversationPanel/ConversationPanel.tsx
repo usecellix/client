@@ -23,6 +23,7 @@ import { ChangeHistoryPanel } from '@/components/ChangeHistoryPanel/ChangeHistor
 import { CellChange, formatCellValue } from '@/types/changeSet';
 import { DiffItem } from '@/services/previewManager';
 import { SheetAction } from '@/types/sheet-actions';
+import { useSession } from '@/auth/auth-client';
 import PanelHeader from './PanelHeader';
 import TurnRenderer from './TurnRenderer';
 
@@ -156,39 +157,44 @@ interface EmptyStateProps {
   children?: React.ReactNode;
 }
 
-export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }) => (
-  <div className="cellix-empty">
-    <img
-      className="cellix-empty-illustration"
-      src={cellixWorkflowIllustration}
-      alt="Cellix workbook automation illustration"
-    />
-    <div className="cellix-empty-intro" aria-label="Cellix starter prompt">
-      <div>
-        <h2>
-          Hi there, <span>User</span>
-          <br />
-          What would you like to <span>review?</span>
-        </h2>
-        <p>Review GST data, match ledgers, validate invoices, or prepare audit-ready Excel work.</p>
+export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }) => {
+  const { data: session } = useSession();
+  const userName = session?.user?.name?.trim().split(/\s+/)[0] || 'User';
+
+  return (
+    <div className="cellix-empty">
+      <img
+        className="cellix-empty-illustration"
+        src={cellixWorkflowIllustration}
+        alt="Cellix workbook automation illustration"
+      />
+      <div className="cellix-empty-intro" aria-label="Cellix starter prompt">
+        <div>
+          <h2>
+            Hi there, <span>{userName}</span>
+            <br />
+            What would you like to <span>review?</span>
+          </h2>
+          <p>Review GST data, match ledgers, validate invoices, or prepare audit-ready Excel work.</p>
+        </div>
+      </div>
+      {children}
+      <div className="cellix-suggestion-carousel" aria-label="Suggested prompts">
+        {SUGGESTIONS.map((suggestion) => (
+          <button
+            key={suggestion}
+            type="button"
+            className="cellix-suggestion"
+            onClick={() => onSuggestion(suggestion)}
+          >
+            {suggestion}
+            <span>→</span>
+          </button>
+        ))}
       </div>
     </div>
-    {children}
-    <div className="cellix-suggestion-carousel" aria-label="Suggested prompts">
-      {SUGGESTIONS.map((suggestion) => (
-      <button
-        key={suggestion}
-        type="button"
-        className="cellix-suggestion"
-        onClick={() => onSuggestion(suggestion)}
-      >
-        {suggestion}
-        <span>→</span>
-      </button>
-      ))}
-    </div>
-  </div>
-);
+  );
+};
 
 export const PanelInput: React.FC<PanelInputProps> = ({
   onSend,

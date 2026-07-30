@@ -34,9 +34,10 @@
 
 .cellix-topbar {
   position: relative;
-  z-index: 20;
+  z-index: 100;
   flex-shrink: 0;
   padding: 0;
+  overflow: visible;
   background: var(--cx-white);
   border-bottom: 1px solid var(--cx-brand-300, #c7d2fe);
 }
@@ -48,7 +49,7 @@
   gap: 8px;
   min-height: 38px;
   padding: 0 8px 0 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .cellix-topbar-row.no-brand {
@@ -145,12 +146,14 @@
 }
 
 .cellix-topbar-icons {
+  position: relative;
   display: flex;
   gap: 3px;
   align-items: center;
   flex-shrink: 0;
   height: 38px;
   padding-left: 8px;
+  overflow: visible;
   border-left: 1px solid var(--cx-brand-300, #c7d2fe);
 }
 
@@ -181,6 +184,105 @@
 .cellix-topbar-more-wrap {
   position: relative;
   display: inline-flex;
+}
+
+.cellix-topbar-settings-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.cellix-settings-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 8px;
+  z-index: 120;
+  width: min(260px, calc(100vw - 28px));
+  padding: 7px 6px 6px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  background: var(--cx-white);
+  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16);
+  color: var(--cx-gray-700);
+}
+
+.cellix-settings-menu-section {
+  padding: 5px 6px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cx-gray-500);
+}
+
+.cellix-settings-menu-meta {
+  width: 100%;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--cx-radius-sm);
+  color: var(--cx-gray-500);
+  font-family: var(--cx-font);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cellix-settings-menu-meta > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellix-settings-menu-divider {
+  height: 1px;
+  margin: 5px 2px;
+  background: var(--cx-gray-100);
+}
+
+.cellix-settings-menu-item {
+  width: 100%;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--cx-radius-sm);
+  background: transparent;
+  color: var(--cx-gray-700);
+  font-family: var(--cx-font);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cellix-settings-menu-item > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellix-settings-menu-trailing {
+  flex-shrink: 0;
+  color: var(--cx-gray-500);
+}
+
+.cellix-settings-menu-item:hover {
+  background: var(--cx-brand-50);
+  color: var(--cx-brand-800);
+}
+
+.cellix-settings-menu-item:hover .cellix-settings-menu-trailing {
+  color: var(--cx-brand-700);
+}
+
+.cellix-settings-menu-item--danger:hover {
+  background: #fef2f2;
+  color: #b91c1c;
 }
 
 .cellix-chat-history-menu {

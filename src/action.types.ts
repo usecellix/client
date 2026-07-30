@@ -1,1 +1,1 @@
-export * from '../../shared/action.types';
+export * from './shared/action.types';
