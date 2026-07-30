@@ -56,6 +56,8 @@ import type {
   UserFacingSummary,
 } from '@/utils/userFacingResponse';
 import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
+import { stripSheetPrefix } from '@/engine/addressUtils';
+import { guardAgainstOverwrite, isOverwriteGuardError } from '@/engine/overwriteGuard';
 
 /* global Excel, Office */
 
@@ -290,6 +292,90 @@ function createActionBlock(
     userFacingSummary: pending.userFacingSummary,
     internalDetails: pending.internalDetails,
   };
+}
+
+function normalizeLocalCellAddress(address: string): string {
+  return stripSheetPrefix(address).trim().toUpperCase();
+}
+
+function extractOverwriteGuardWriteCells(action: SheetAction): string[] {
+  switch (action.type) {
+    case 'SET_CELL':
+    case 'SET_FORMULA':
+      return action.address ? [normalizeLocalCellAddress(action.address)] : [];
+    case 'BATCH_SET':
+      return (action.operations ?? [])
+        .map((op) => op.address)
+        .filter(Boolean)
+        .map((addr) => normalizeLocalCellAddress(String(addr)));
+    default:
+      return [];
+  }
+}
+
+async function preflightOverwriteBlockedActions(
+  actions: SheetAction[],
+  changes: CellChange[],
+): Promise<{
+  safeActions: SheetAction[];
+  safeChanges: CellChange[];
+  blockedMessage: string | null;
+}> {
+  // If Office.js isn't available (tests / non-taskpane env), fail open.
+  if (typeof Excel === 'undefined' || typeof Excel.run !== 'function') {
+    return { safeActions: actions, safeChanges: changes, blockedMessage: null };
+  }
+
+  return Excel.run(async (ctx) => {
+    const activeWs = ctx.workbook.worksheets.getActiveWorksheet();
+    activeWs.load('name');
+    await ctx.sync();
+    const activeSheetName = activeWs.name ?? '';
+
+    const safeActions: SheetAction[] = [];
+    const blocked: Array<{ action: SheetAction; message: string }> = [];
+
+    for (const action of actions) {
+      try {
+        // Dry-run: guardAgainstOverwrite only loads values & throws on occupancy.
+        await guardAgainstOverwrite(action, ctx);
+        safeActions.push(action);
+      } catch (error) {
+        if (isOverwriteGuardError(error)) {
+          blocked.push({ action, message: error.message });
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (blocked.length === 0) {
+      return { safeActions, safeChanges: changes, blockedMessage: null };
+    }
+
+    // Filter ChangeSet diff/highlight cells for the blocked actions only.
+    // (We start conservative: only address exact cells for SET_* and BATCH_SET.)
+    const blockedKeys = new Set<string>();
+    for (const { action } of blocked) {
+      const sheetName = String(action.sheetName ?? activeSheetName).trim();
+      for (const cell of extractOverwriteGuardWriteCells(action)) {
+        blockedKeys.add(`${sheetName}|${cell}`);
+      }
+    }
+
+    const hasAnyBlockedCellAddresses = blockedKeys.size > 0;
+    const safeChanges = hasAnyBlockedCellAddresses
+      ? changes.filter(
+          (ch) => !blockedKeys.has(`${ch.sheet}|${String(ch.cell).trim().toUpperCase()}`),
+        )
+      : changes;
+
+    return {
+      safeActions,
+      safeChanges,
+      blockedMessage: blocked[0]?.message ?? null,
+    };
+  });
 }
 
 export const useConversation = (options: UseConversationOptions = {}): UseConversationReturn => {
@@ -1019,36 +1105,53 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 ? `${event.data.explanation} (${sanitized.warnings.join(' ')})`
                 : event.data.explanation;
 
+            const runtime = runtimeRef.current.get(turnId);
+            // Ask / Plan modes are read-only: never preview, apply, or audit
+            // write actions even if the backend emits them.
+            const isActionMode = (runtime?.mode ?? DEFAULT_ASSISTANT_MODE) === 'action';
+            const usePreview = shouldPreviewActions(sanitized.actions, autoApplyActions);
+
+            const basePendingId = `actions_${Date.now()}`;
+
+            let actionsForPreview = sanitized.actions;
+            let changesForPreview = event.data.changes;
+            let blockedGuardMessage: string | null = null;
+
+            if (isActionMode && usePreview && sanitized.actions.length > 0) {
+              const preflight = await preflightOverwriteBlockedActions(
+                sanitized.actions,
+                event.data.changes,
+              );
+              actionsForPreview = preflight.safeActions;
+              changesForPreview = preflight.safeChanges;
+              blockedGuardMessage = preflight.blockedMessage;
+            }
+
             const pendingActions: PendingActions = {
-              id: `actions_${Date.now()}`,
-              actions: sanitized.actions,
+              id: basePendingId,
+              actions: actionsForPreview,
               explanation,
               changeSetId: event.data.changeSetId,
-              changes: event.data.changes,
+              changes: changesForPreview,
               userFacingSummary: event.data.userFacingSummary,
               internalDetails: event.data.internalDetails,
             };
-            const runtime = runtimeRef.current.get(turnId);
-            if (runtime) {
+
+            if (runtime && pendingActions.actions.length > 0) {
               runtime.pendingActions = pendingActions;
             }
 
             const previewCopy = resolveActionBlockCopy({
               userFacingSummary: event.data.userFacingSummary,
               explanation,
-              actions: sanitized.actions,
-              changes: event.data.changes,
+              actions: pendingActions.actions,
+              changes: pendingActions.changes,
             });
 
-            // Ask / Plan modes are read-only: never preview, apply, or audit
-            // write actions even if the backend emits them.
-            const isActionMode = (runtime?.mode ?? DEFAULT_ASSISTANT_MODE) === 'action';
-            const usePreview = shouldPreviewActions(sanitized.actions, autoApplyActions);
-
-            if (isActionMode && usePreview) {
-              await onPreviewActions?.(sanitized.actions, previewCopy.headline, {
+            if (isActionMode && usePreview && pendingActions.actions.length > 0) {
+              await onPreviewActions?.(pendingActions.actions, previewCopy.headline, {
                 changeSetId: event.data.changeSetId,
-                changes: event.data.changes,
+                changes: pendingActions.changes,
                 userFacingSummary: event.data.userFacingSummary,
                 internalDetails: event.data.internalDetails,
               });
@@ -1059,15 +1162,37 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 const withoutOldPending = turn.blocks.filter(
                   (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
                 );
-                const alreadyHasBlock = withoutOldPending.some(
+
+                const hasSafeActions = pendingActions.actions.length > 0;
+                const alreadyHasSafeBlock = withoutOldPending.some(
                   (b) => b.type === 'actions' && b.id === pendingActions.id,
                 );
-                if (alreadyHasBlock) return turn;
+                const blockedBlockId = `${basePendingId}_blocked`;
+                const alreadyHasBlockedBlock = withoutOldPending.some(
+                  (b) => b.type === 'actions' && b.id === blockedBlockId,
+                );
+
+                const blocksToAdd = [
+                  hasSafeActions && !alreadyHasSafeBlock
+                    ? createActionBlock(pendingActions, isChangeSetApplied)
+                    : null,
+                  blockedGuardMessage && !alreadyHasBlockedBlock
+                    ? ({
+                        id: blockedBlockId,
+                        type: 'actions',
+                        actions: [],
+                        explanation: blockedGuardMessage,
+                        proposalStatus: 'rejected',
+                        changes: [],
+                      } satisfies ActionBlock)
+                    : null,
+                ].filter(Boolean) as TurnBlock[];
+
                 return {
                   ...turn,
                   blocks: [
                     ...withoutOldPending,
-                    createActionBlock(pendingActions, isChangeSetApplied),
+                    ...blocksToAdd,
                   ],
                 };
               });
@@ -1085,7 +1210,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               updateTurn(turnId, (turn) => ({
                 ...turn,
                 blocks: turn.blocks.map((b) =>
-                  b.id === pendingActions.id && b.type === 'actions'
+                  b.id === basePendingId && b.type === 'actions'
                     ? { ...b, proposalStatus: 'accepted' }
                     : b,
                 ),

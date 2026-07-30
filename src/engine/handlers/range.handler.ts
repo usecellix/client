@@ -136,6 +136,33 @@ export async function handleCopyFilteredRange(
   const destSheet = await resolveOrCreateSheet(ctx, action.destSheet);
   await writeOutputRows(destSheet, action.destStartCell, outputRows, ctx);
 
+  // Preserve header + matched-row formatting when we filtered by header column.
+  // (Values are written above; this copies formats only.)
+  if (action.filter && action.hasHeaders && headerRow && outputRows.length > 0) {
+    const start = parseCellAddress(action.destStartCell);
+    if (start) {
+      const colCount = Math.max(...outputRows.map((row) => row.length), 1);
+      const formatsCopyType = (Excel as any)?.RangeCopyType?.formats;
+      if (formatsCopyType) {
+        // Copy header formatting.
+        const sourceHeaderRange = sourceRange.getRangeByIndexes(0, 0, 1, colCount);
+        const destHeaderRange = destSheet.getRangeByIndexes(start.row, start.col, 1, colCount);
+        destHeaderRange.copyFrom(sourceHeaderRange, formatsCopyType);
+
+        // Copy formatting for each matched data row (in the same order we wrote values).
+        const matchedOffsets = findMatchingRowOffsets(rows, action.hasHeaders, action.filter);
+        for (let i = 0; i < matchedOffsets.length; i++) {
+          const sourceRowIndex = matchedOffsets[i]!;
+          const destRowIndex = i + 1; // outputRows: [header, ...matchedDataRows]
+          const sourceRowRange = sourceRange.getRangeByIndexes(sourceRowIndex, 0, 1, colCount);
+          const destRowRange = destSheet.getRangeByIndexes(start.row + destRowIndex, start.col, 1, colCount);
+          destRowRange.copyFrom(sourceRowRange, formatsCopyType);
+        }
+        await ctx.sync();
+      }
+    }
+  }
+
   if (action.mode === 'move' && action.filter) {
     await clearMatchedSourceRows(
       sourceSheet,
