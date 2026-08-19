@@ -24,6 +24,7 @@ import { CellChange, formatCellValue } from '@/types/changeSet';
 import { DiffItem } from '@/services/previewManager';
 import { SheetAction } from '@/types/sheet-actions';
 import { useSession } from '@/auth/auth-client';
+import { TextAnimate } from '@/components/ui/text-animate';
 import PanelHeader from './PanelHeader';
 import TurnRenderer from './TurnRenderer';
 
@@ -157,9 +158,34 @@ interface EmptyStateProps {
   children?: React.ReactNode;
 }
 
+const HEADING_CHAR_DURATION = 0.5;
+
+const getDayGreeting = () => {
+  // Always use IST (Asia/Kolkata), not the browser's local timezone.
+  const hour = Number(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      hour: 'numeric',
+      hourCycle: 'h23',
+    }).format(new Date()),
+  );
+  if (hour < 12) return 'Good morning';
+  if (hour < 16) return 'Good afternoon';
+  return 'Good evening';
+};
+
+/** When the next character-stagger TextAnimate should start for a continuous feel. */
+const getNextCharDelay = (delay = 0) => delay + HEADING_CHAR_DURATION;
+
 export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }) => {
   const { data: session } = useSession();
   const userName = session?.user?.name?.trim().split(/\s+/)[0] || 'User';
+  const greetingPrefix = React.useMemo(() => `${getDayGreeting()}, `, []);
+  const promptPrefix = 'What would you like to ';
+  const promptAccent = 'review?';
+  const nameDelay = getNextCharDelay();
+  const promptDelay = getNextCharDelay(nameDelay) + 0.2;
+  const accentDelay = getNextCharDelay(promptDelay);
 
   return (
     <div className="cellix-empty">
@@ -171,9 +197,57 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }
       <div className="cellix-empty-intro" aria-label="Cellix starter prompt">
         <div>
           <h2>
-            Hi there, <span>{userName}</span>
-            <br />
-            What would you like to <span>review?</span>
+            <span className="cellix-empty-heading-line">
+              <TextAnimate
+                as="span"
+                animation="blurInUp"
+                by="character"
+                once
+                startOnView={false}
+                duration={HEADING_CHAR_DURATION}
+                className="cellix-empty-heading-animate"
+              >
+                {greetingPrefix}
+              </TextAnimate>
+              <TextAnimate
+                as="span"
+                animation="blurInUp"
+                by="character"
+                once
+                startOnView={false}
+                delay={nameDelay}
+                duration={HEADING_CHAR_DURATION}
+                className="cellix-empty-heading-animate cellix-empty-accent"
+              >
+                {userName}
+              </TextAnimate>
+            </span>
+            <span className="cellix-empty-heading-line">
+              <TextAnimate
+                as="span"
+                animation="blurInUp"
+                by="character"
+                once
+                startOnView={false}
+                delay={promptDelay}
+                duration={HEADING_CHAR_DURATION}
+                className="cellix-empty-heading-animate"
+              >
+                {promptPrefix}
+              </TextAnimate>
+              <TextAnimate
+                as="span"
+                animation="blurInUp"
+                by="character"
+                once
+                startOnView={false}
+                delay={accentDelay}
+                duration={HEADING_CHAR_DURATION}
+                className="cellix-empty-heading-animate cellix-empty-accent"
+              >
+                {promptAccent}
+              </TextAnimate>
+            </span>
           </h2>
           <p>Review GST data, match ledgers, validate invoices, or prepare audit-ready Excel work.</p>
         </div>
