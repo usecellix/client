@@ -52,6 +52,13 @@ export interface ActionBlock {
   changes?: CellChange[];
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
+  /**
+   * Staged accept waves (large multi-sheet builds split "create the sheets"
+   * from "fill them in"): when set, this block must not be accepted until the
+   * sibling block whose changeSetId matches this value is 'accepted' — its
+   * actions (e.g. sheet creates) must actually exist first.
+   */
+  dependsOnChangeSetId?: string;
 }
 
 export interface StatusBlock {

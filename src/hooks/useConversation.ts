@@ -7,6 +7,7 @@ import {
 } from '@/utils/pendingWorkbookContext';
 import { getConversationEndpoint } from '@/lib/apiConfig';
 import { SheetAction } from '@/types/sheet-actions';
+import { RichAction } from '@/action.types';
 import {
   prepareConversationRequestPayload,
   ConversationHistoryMessage,
@@ -16,6 +17,7 @@ import {
 import { WorkbookContext } from '@/types/cellix.types';
 import {
   sanitizeActions,
+  blockedActionsAreDataWrites,
   CLARIFY_ROW_PLACEMENT,
 } from '@/utils/actionGuard';
 import { parseSseEventBlock } from '@/utils/sseParser';
@@ -56,6 +58,8 @@ import type {
   UserFacingSummary,
 } from '@/utils/userFacingResponse';
 import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
+import { toUserFacingApplyError } from '@/utils/toUserFacingApplyError';
+import { collectCascadeRejectIds, isWaveDependencySatisfied } from '@/utils/actionWaveGating';
 import { stripSheetPrefix } from '@/engine/addressUtils';
 import { guardAgainstOverwrite, isOverwriteGuardError } from '@/engine/overwriteGuard';
 
@@ -145,6 +149,7 @@ interface PendingActions {
   changes?: CellChange[];
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
+  dependsOnChangeSetId?: string;
 }
 
 export interface PreviewActionsMeta {
@@ -189,16 +194,46 @@ function finalizeSteps(blocks: TurnBlock[], userMessage: string): TurnBlock[] {
     .filter((b) => b.type !== 'step' && b.type !== 'status')
     .map((block) => {
       if (block.type === 'thinking') {
+        // Prefer agent live log over synthetic summary so Blocked / progress messages remain.
+        const keepContent = block.content.trim().length > 0 ? block.content.trim() : summary;
         return {
           ...block,
-          content: block.content.trim() ? block.content : summary,
+          content: keepContent,
           loading: false,
-          expanded: false,
+          expanded: keepContent.includes('\n') || /blocked|cannot create|verification/i.test(keepContent),
           visible: true,
         };
       }
       return block;
     });
+}
+
+function appendThinkingLog(
+  blocks: TurnBlock[],
+  message: string,
+  opts: { loading?: boolean; expanded?: boolean } = {},
+): TurnBlock[] {
+  const text = message.trim();
+  if (!text) return blocks;
+  const existing = blocks.find((b): b is ThinkingBlock => b.type === 'thinking');
+  const prev = existing?.content?.trim() ?? '';
+  // Dedup consecutive repeats (status + thinking often carry the same line).
+  if (prev.endsWith(text)) {
+    return upsertThinking(blocks, prev, {
+      loading: opts.loading ?? true,
+      expanded: opts.expanded ?? true,
+      visible: true,
+    });
+  }
+  const next = prev ? `${prev}\n\n${text}` : text;
+  // Cap growth so a long agent run does not blow the UI.
+  const capped =
+    next.length > 6000 ? `…\n\n${next.slice(next.length - 5800)}` : next;
+  return upsertThinking(blocks, capped, {
+    loading: opts.loading ?? true,
+    expanded: opts.expanded ?? true,
+    visible: true,
+  });
 }
 
 function withoutStatus(blocks: TurnBlock[]): TurnBlock[] {
@@ -291,6 +326,7 @@ function createActionBlock(
     changes: pending.changes,
     userFacingSummary: pending.userFacingSummary,
     internalDetails: pending.internalDetails,
+    dependsOnChangeSetId: pending.dependsOnChangeSetId,
   };
 }
 
@@ -338,7 +374,10 @@ async function preflightOverwriteBlockedActions(
     for (const action of actions) {
       try {
         // Dry-run: guardAgainstOverwrite only loads values & throws on occupancy.
-        await guardAgainstOverwrite(action, ctx);
+        // These are still legacy-shaped (normalization happens at apply time), but
+        // the guard reads only the address/range/value fields both shapes share —
+        // and RichActionEngine re-runs the authoritative guard before writing.
+        await guardAgainstOverwrite(action as unknown as RichAction, ctx);
         safeActions.push(action);
       } catch (error) {
         if (isOverwriteGuardError(error)) {
@@ -603,53 +642,70 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       if (revealScheduledRef.current.has(turnId)) return;
       revealScheduledRef.current.add(turnId);
       const runtimeForReveal = runtimeRef.current.get(turnId);
-      const pendingActions = runtimeForReveal?.pendingActions;
+      // Ask / Plan modes are read-only: never surface an Accept-able action
+      // block, even if pendingActions got populated (e.g. by a backend that
+      // shouldn't have emitted write actions on a read-only turn in the first
+      // place — this is the last line of defense, not the only one).
+      const isActionModeForReveal = (runtimeForReveal?.mode ?? DEFAULT_ASSISTANT_MODE) === 'action';
+      const pendingActions = isActionModeForReveal ? runtimeForReveal?.pendingActions : undefined;
       const pendingPlan = runtimeForReveal?.pendingPlan;
 
-      updateTurn(turnId, (turn) => ({
-        ...turn,
-        phase:
-          response.type === 'question' || response.type === 'clarification'
-            ? 'awaiting_input'
-            : 'complete',
-        blocks: finalizeSteps(
-          upsertThinking(turn.blocks, buildThoughtSummary(turn.userMessage, 'final'), {
-            loading: false,
-            expanded: false,
-            visible: true,
-          }),
-          turn.userMessage,
-        ).concat(
-          response.type === 'answer'
-            ? [
-                {
-                  id: answerBlockId(turnId),
-                  type: 'answer',
-                  content: response.answer ?? '',
-                  revealState: 'typing',
-                  matches: response.matches,
-                } satisfies AnswerBlock,
-              ]
-            : response.type === 'question' || response.type === 'clarification'
+      updateTurn(turnId, (turn) => {
+        const thinkingExisting = turn.blocks.find(
+          (b): b is ThinkingBlock => b.type === 'thinking',
+        );
+        const preservedThought =
+          thinkingExisting?.content?.trim() &&
+          thinkingExisting.content.trim().length > 12 &&
+          !/^thought process/i.test(thinkingExisting.content)
+            ? thinkingExisting.content.trim()
+            : buildThoughtSummary(turn.userMessage, 'final');
+
+        return {
+          ...turn,
+          phase:
+            response.type === 'question' || response.type === 'clarification'
+              ? 'awaiting_input'
+              : 'complete',
+          blocks: finalizeSteps(
+            upsertThinking(turn.blocks, preservedThought, {
+              loading: false,
+              expanded: /blocked|cannot create|verification/i.test(preservedThought),
+              visible: true,
+            }),
+            turn.userMessage,
+          ).concat(
+            response.type === 'answer'
               ? [
                   {
-                    id: `question_${Date.now()}`,
-                    type: 'question',
-                    question: response.question ?? '',
-                    options: response.options,
-                    revealState: 'visible',
-                  },
+                    id: answerBlockId(turnId),
+                    type: 'answer',
+                    content: response.answer ?? '',
+                    revealState: 'typing',
+                    matches: response.matches,
+                  } satisfies AnswerBlock,
                 ]
-              : [],
-        )
-          .concat(
-            pendingActions &&
-            !turn.blocks.some((b) => b.type === 'actions' && b.id === pendingActions.id)
-              ? [createActionBlock(pendingActions, isChangeSetApplied)]
-              : [],
+              : response.type === 'question' || response.type === 'clarification'
+                ? [
+                    {
+                      id: `question_${Date.now()}`,
+                      type: 'question',
+                      question: response.question ?? '',
+                      options: response.options,
+                      revealState: 'visible',
+                    },
+                  ]
+                : [],
           )
-          .concat(pendingPlan ? [pendingPlan] : []),
-      }));
+            .concat(
+              pendingActions &&
+              !turn.blocks.some((b) => b.type === 'actions' && b.id === pendingActions.id)
+                ? [createActionBlock(pendingActions, isChangeSetApplied)]
+                : [],
+            )
+            .concat(pendingPlan ? [pendingPlan] : []),
+        };
+      });
 
       setIsWaitingForResponse(false);
     },
@@ -937,9 +993,26 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             runtimeRef.current.get(turnId)?.analyzingGate.open();
             updateTurn(turnId, (turn) => ({
               ...turn,
-              blocks: upsertThinking(turn.blocks, buildThoughtSummary(turn.userMessage, 'analyzing'), {
-                loading: true,
-              }),
+              blocks: appendThinkingLog(
+                upsertStatus(turn.blocks, event.data.message, true, true),
+                event.data.message,
+              ),
+            }));
+            continue;
+          }
+
+          // Live agent status / thinking — show like Cursor/agent progress, not idle spinner.
+          if (event.type === 'status' || event.type === 'thinking') {
+            // Both carry { message }; there is no text variant on these events.
+            const message = typeof event.data.message === 'string' ? event.data.message : '';
+            if (!message.trim()) continue;
+            runtimeRef.current.get(turnId)?.analyzingGate.open();
+            updateTurn(turnId, (turn) => ({
+              ...turn,
+              blocks: appendThinkingLog(
+                upsertStatus(turn.blocks, message, true, true),
+                message,
+              ),
             }));
             continue;
           }
@@ -1085,7 +1158,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               sheetLayoutRef.current ?? undefined,
             );
 
-            if (sanitized.requiresClarification && sanitized.actions.length === 0) {
+            // Only the "where does the NEW ROW go?" card is for blocked data writes.
+            // Never use it for pure header formatting (FORMAT_RANGE on row 0) — that
+            // used to fire every time a valid header fill was wrongly blocked.
+            if (
+              sanitized.requiresClarification &&
+              sanitized.actions.length === 0 &&
+              blockedActionsAreDataWrites(sanitized.blocked)
+            ) {
               pushHistory({
                 role: 'assistant',
                 content: CLARIFY_ROW_PLACEMENT.question,
@@ -1096,6 +1176,23 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 type: 'question',
                 question: CLARIFY_ROW_PLACEMENT.question,
                 options: [...CLARIFY_ROW_PLACEMENT.options],
+              });
+              continue;
+            }
+
+            if (sanitized.requiresClarification && sanitized.actions.length === 0) {
+              // Cosmetic/other actions fully blocked — honest failure, not row-insert UI.
+              const message =
+                'I could not apply that change without altering protected cells. Rephrase the formatting request (e.g. "highlight the header row light green").';
+              pushHistory({
+                role: 'assistant',
+                content: message,
+                timestamp: new Date().toISOString(),
+                type: 'answer',
+              });
+              signalResponse(turnId, {
+                type: 'answer',
+                answer: message,
               });
               continue;
             }
@@ -1120,7 +1217,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             if (isActionMode && usePreview && sanitized.actions.length > 0) {
               const preflight = await preflightOverwriteBlockedActions(
                 sanitized.actions,
-                event.data.changes,
+                event.data.changes ?? [],
               );
               actionsForPreview = preflight.safeActions;
               changesForPreview = preflight.safeChanges;
@@ -1135,9 +1232,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               changes: changesForPreview,
               userFacingSummary: event.data.userFacingSummary,
               internalDetails: event.data.internalDetails,
+              dependsOnChangeSetId: event.data.dependsOnChangeSetId,
             };
 
-            if (runtime && pendingActions.actions.length > 0) {
+            if (runtime && isActionMode && pendingActions.actions.length > 0) {
               runtime.pendingActions = pendingActions;
             }
 
@@ -1148,7 +1246,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               changes: pendingActions.changes,
             });
 
-            if (isActionMode && usePreview && pendingActions.actions.length > 0) {
+            // Staged accept waves: only the first (dependency-free) wave gets a
+            // live soft-preview. previewManager holds one active preview at a
+            // time — soft-previewing a later wave would reject/clear the
+            // earlier wave's still-pending preview out from under it. Later
+            // waves are added as pending blocks below and applied directly on
+            // Accept, once their dependency is satisfied.
+            if (
+              isActionMode &&
+              usePreview &&
+              pendingActions.actions.length > 0 &&
+              !pendingActions.dependsOnChangeSetId
+            ) {
               await onPreviewActions?.(pendingActions.actions, previewCopy.headline, {
                 changeSetId: event.data.changeSetId,
                 changes: pendingActions.changes,
@@ -1159,24 +1268,19 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
             if (isActionMode && usePreview) {
               updateTurn(turnId, (turn) => {
-                const withoutOldPending = turn.blocks.filter(
-                  (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
+                // Stack multiple Accept packages for large multi-wave work — don't replace prior pending.
+                const existingIds = new Set(
+                  turn.blocks.filter((b) => b.type === 'actions').map((b) => b.id),
                 );
 
                 const hasSafeActions = pendingActions.actions.length > 0;
-                const alreadyHasSafeBlock = withoutOldPending.some(
-                  (b) => b.type === 'actions' && b.id === pendingActions.id,
-                );
                 const blockedBlockId = `${basePendingId}_blocked`;
-                const alreadyHasBlockedBlock = withoutOldPending.some(
-                  (b) => b.type === 'actions' && b.id === blockedBlockId,
-                );
 
                 const blocksToAdd = [
-                  hasSafeActions && !alreadyHasSafeBlock
+                  hasSafeActions && !existingIds.has(pendingActions.id)
                     ? createActionBlock(pendingActions, isChangeSetApplied)
                     : null,
-                  blockedGuardMessage && !alreadyHasBlockedBlock
+                  blockedGuardMessage && !existingIds.has(blockedBlockId)
                     ? ({
                         id: blockedBlockId,
                         type: 'actions',
@@ -1190,10 +1294,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
                 return {
                   ...turn,
-                  blocks: [
-                    ...withoutOldPending,
-                    ...blocksToAdd,
-                  ],
+                  blocks: appendThinkingLog(
+                    upsertStatus(
+                      [...turn.blocks, ...blocksToAdd],
+                      hasSafeActions
+                        ? `Ready for review: ${pendingActions.actions.length} change(s) — Accept to apply`
+                        : 'Could not prepare applyable changes for this step',
+                      false,
+                      true,
+                    ),
+                    hasSafeActions
+                      ? `Preview ready (${pendingActions.actions.length} changes) — Accept when ready.`
+                      : blockedGuardMessage ?? 'No applyable changes for this package.',
+                    { loading: false, expanded: true },
+                  ),
                 };
               });
             }
@@ -1237,7 +1351,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             updateTurn(turnId, (turn) => ({
               ...turn,
               phase: 'error',
-              error: event.data.message,
+              // Map here too: this path rendered raw engine/host strings like
+              // Office.js "The requested resource doesn't exist." straight into
+              // chat. The mapper passes clean short messages through unchanged.
+              error: toUserFacingApplyError(event.data.message),
               blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
             }));
             runtimeRef.current.get(turnId)!.aborted = true;
@@ -1514,18 +1631,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       );
       if (!block || block.proposalStatus !== 'pending') return;
 
-      applyingActionsRef.current = true;
+      // Defense in depth: the Accept button is disabled while a dependency is
+      // unmet (see TurnRenderer), but never apply a staged wave out of order
+      // even if something else calls acceptActions directly.
+      const siblingActionBlocks = (turn?.blocks.filter((b) => b.type === 'actions') ??
+        []) as ActionBlock[];
+      if (!isWaveDependencySatisfied(block, siblingActionBlocks)) {
+        console.warn(
+          '[Cellix] Refused to accept a staged wave before its dependency was accepted:',
+          { blockId, dependsOnChangeSetId: block.dependsOnChangeSetId },
+        );
+        return;
+      }
 
-      // Mark accepted immediately so Accept / preview controls disappear.
-      updateTurn(turnId, (t) => ({
-        ...t,
-        error: undefined,
-        blocks: t.blocks.map((b) =>
-          b.id === blockId && b.type === 'actions'
-            ? { ...b, proposalStatus: 'accepted' }
-            : b,
-        ),
-      }));
+      applyingActionsRef.current = true;
 
       try {
         if (onActions) {
@@ -1535,14 +1654,27 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           });
         }
 
+        // Spec 22 Bug 3: only mark Applied after the apply path succeeds.
+        updateTurn(turnId, (t) => ({
+          ...t,
+          error: undefined,
+          blocks: t.blocks.map((b) =>
+            b.id === blockId && b.type === 'actions'
+              ? { ...b, proposalStatus: 'accepted' }
+              : b,
+          ),
+        }));
+
         if (block.changeSetId) {
           onChangeSetApplied?.(block.changeSetId);
         }
 
         setActiveClarification(null);
       } catch (error) {
-        const messageText =
+        const rawMessage =
           error instanceof Error ? error.message : 'Failed to apply changes';
+        const messageText = toUserFacingApplyError(rawMessage);
+        console.error('[Cellix] Accept apply failed:', rawMessage);
         updateTurn(turnId, (t) => ({
           ...t,
           error: messageText,
@@ -1563,14 +1695,23 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const rejectActions = useCallback(
     async (turnId: string, blockId: string) => {
       await onClearPreview?.();
-      updateTurn(turnId, (t) => ({
-        ...t,
-        blocks: t.blocks.map((b) =>
-          b.id === blockId && b.type === 'actions'
-            ? { ...b, proposalStatus: 'rejected' }
-            : b,
-        ),
-      }));
+      updateTurn(turnId, (t) => {
+        const siblingActionBlocks = t.blocks.filter((b) => b.type === 'actions') as ActionBlock[];
+        // A pending wave that depends on the one being rejected (directly or
+        // transitively) targets sheets/ranges that wave would have created — its
+        // actions can no longer succeed, so leaving it "pending" would be a dead
+        // end the user can never resolve. Reject it too.
+        const cascadeIds = collectCascadeRejectIds(siblingActionBlocks, blockId);
+
+        return {
+          ...t,
+          blocks: t.blocks.map((b) =>
+            b.type === 'actions' && cascadeIds.has(b.id)
+              ? { ...b, proposalStatus: 'rejected' as const }
+              : b,
+          ),
+        };
+      });
     },
     [onClearPreview, updateTurn],
   );

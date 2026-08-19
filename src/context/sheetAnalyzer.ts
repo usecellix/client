@@ -31,17 +31,34 @@ export function detectSheetStructure(
   return 'report';
 }
 
-export function detectHeaders(values: unknown[][]): string[] {
-  for (const row of values.slice(0, 5)) {
+export interface DetectedHeaders {
+  headers: string[];
+  /** 0-based row index within `values` the headers came from (0 when nothing matched). */
+  headerRowIndex: number;
+}
+
+/**
+ * A row only qualifies as headers if it is BOTH mostly text AND uses a
+ * meaningful share of the sheet's width. Ratio alone misfires on a lone title
+ * cell (e.g. a merged "ABC Corp — Purchase Register" cell) — one non-empty cell
+ * that is 100% text satisfies a bare ratio check instantly, picking the title
+ * row before the scan ever reaches the real headers underneath it.
+ */
+export function detectHeaders(values: unknown[][]): DetectedHeaders {
+  const columnCount = values.reduce((max, row) => Math.max(max, row.length), 0);
+  const minWidth = Math.max(2, Math.ceil(columnCount * 0.5));
+
+  for (let rowIndex = 0; rowIndex < Math.min(values.length, 5); rowIndex += 1) {
+    const row = values[rowIndex];
     const nonEmpty = row.filter((v) => v !== null && v !== '');
-    if (nonEmpty.length === 0) continue;
+    if (nonEmpty.length === 0 || nonEmpty.length < minWidth) continue;
 
     const stringCount = nonEmpty.filter(
       (v) => typeof v === 'string' && Number.isNaN(Number(v)),
     ).length;
     if (stringCount / nonEmpty.length > 0.6) {
-      return row.map((v) => String(v ?? ''));
+      return { headers: row.map((v) => String(v ?? '')), headerRowIndex: rowIndex };
     }
   }
-  return [];
+  return { headers: [], headerRowIndex: 0 };
 }

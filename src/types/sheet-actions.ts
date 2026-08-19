@@ -33,6 +33,10 @@ export type SheetActionType =
   | 'SET_COLUMN_WIDTH'
   | 'FREEZE_PANES'
   | 'UNFREEZE_PANES'
+  | 'AUTO_FILTER'
+  // Rich-only forms produced by legacyConverter and the local shortcuts.
+  | 'CLEAR_RANGE'
+  | 'APPEND_ROW'
   | 'SET_ZOOM'
   | 'PROTECT_SHEET'
   | 'UNPROTECT_SHEET'
@@ -65,6 +69,7 @@ export type SheetActionType =
   | 'SORT_RANGE'
   | 'COPY_FILTERED_RANGE'
   | 'FORMAT_MATCHING_ROWS'
+  | 'SET_MATCHING_ROWS'
   | 'MOVE_RANGE'
   | 'AGGREGATE_TABLE'
   | 'UPDATE_CHART';
@@ -141,6 +146,8 @@ export interface SheetAction {
   afterColumn?: string;
   columns?: string[];
   oldName?: string;
+  /** RENAME_SHEET / COPY_SHEET target name — the backend payload sends this. */
+  newName?: string;
   sourceName?: string;
   name?: string;
   tableName?: string;
@@ -153,17 +160,21 @@ export interface SheetAction {
   key?: number;
   ascending?: boolean;
   columnName?: string;
-  /** COPY_FILTERED_RANGE / MOVE_RANGE */
+  /** SET_MATCHING_ROWS — column to write into */
+  targetColumn?: string;
+  /** COPY_FILTERED_RANGE / MOVE_RANGE / FORMAT_MATCHING_ROWS / SET_MATCHING_ROWS */
   sourceSheet?: string;
   destSheet?: string;
   destStartCell?: string;
   filter?: RangeFilterSpec;
-  mode?: 'copy' | 'move';
+  /** MOVE_RANGE / COPY_FILTERED_RANGE use copy|move; CLEAR_RANGE uses the clear modes. */
+  mode?: 'copy' | 'move' | 'contents' | 'formats' | 'all';
   groupByColumn?: string;
   groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
   aggregations?: Array<{
     column: string;
-    fn: 'sum' | 'count' | 'average' | 'max' | 'min';
+    /** 'first' passes through a label column 1:1 with the group key (e.g. Supplier Name alongside a GSTIN group-by) — not a numeric reduction. */
+    fn: 'sum' | 'count' | 'average' | 'max' | 'min' | 'first';
     outputLabel: string;
   }>;
   sortBy?: { column: string; direction: 'asc' | 'desc' };

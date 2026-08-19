@@ -1,6 +1,7 @@
 import { RichAction } from '@/action.types';
-import { columnIndexToLetter, parseCellAddress } from './addressUtils';
+import { columnIndexToLetter, parseCellAddress, stripSheetPrefix } from './addressUtils';
 import { resolveWorksheet } from './handlers/resolveWorksheet';
+import { findMatchingRowOffsets, resolveFilterColumnIndex } from './rangeFilter';
 
 /* global Excel */
 
@@ -54,6 +55,7 @@ export const OVERWRITE_GUARDED_ACTION_TYPES = new Set<RichAction['type']>([
   'COPY_FILTERED_RANGE',
   'MOVE_RANGE',
   'AGGREGATE_TABLE',
+  'SET_MATCHING_ROWS',
 ]);
 
 export function isOverwriteGuardedAction(action: RichAction): boolean {
@@ -160,6 +162,7 @@ export function resolveWriteTarget(action: RichAction): ResolvedWriteTarget | nu
 function buildOverwriteMessage(
   targetRange: string,
   sample: unknown[][],
+  actionType?: RichAction['type'],
 ): string {
   const flat = sample
     .flat()
@@ -167,6 +170,20 @@ function buildOverwriteMessage(
     .filter((v): v is string => Boolean(v))
     .slice(0, 3);
   const sampleText = flat.length ? ` Existing values include: ${flat.join(', ')}.` : '';
+  const isDestWrite =
+    actionType === 'COPY_FILTERED_RANGE' ||
+    actionType === 'MOVE_RANGE' ||
+    actionType === 'AGGREGATE_TABLE';
+
+  if (isDestWrite) {
+    return (
+      `Write blocked: destination ${targetRange} already contains data.` +
+      `${sampleText} ` +
+      `Clear the destination sheet first, choose an empty start cell, or confirm overwrite ` +
+      `if you meant to replace the existing contents.`
+    );
+  }
+
   return (
     `Write blocked: target range ${targetRange} already contains data. ` +
     `This action would overwrite existing values.${sampleText} ` +
@@ -181,6 +198,7 @@ async function assertRangeEmpty(
   address: string,
   getRange: (sheet: Excel.Worksheet) => Excel.Range,
   ctx: Excel.RequestContext,
+  actionType?: RichAction['type'],
 ): Promise<void> {
   const range = getRange(sheet);
   range.load('values');
@@ -189,7 +207,7 @@ async function assertRangeEmpty(
   if (!rangeHasExistingData(values)) return;
 
   throw new OverwriteGuardError({
-    message: buildOverwriteMessage(address, values.slice(0, 3)),
+    message: buildOverwriteMessage(address, values.slice(0, 3), actionType),
     targetRange: address,
     sampleExistingValues: values.slice(0, 3),
   });
@@ -207,6 +225,13 @@ export async function guardAgainstOverwrite(
   if (hasExplicitOverwriteConfirmed(action)) return;
 
   if (action.type === 'BATCH_SET') {
+    // The backend now rejects a BATCH_SET with no operations array before it
+    // ever reaches here (normalize-executor-output.util.ts), but this guarded
+    // check stays as defense in depth — an unguarded `for...of` on a missing
+    // array here previously threw "action.operations is not iterable" and
+    // aborted the entire apply, including every other already-verified action
+    // in the same batch.
+    if (!Array.isArray(action.operations) || action.operations.length === 0) return;
     const sheet = resolveWorksheet(ctx, action.sheetName);
     for (const op of action.operations) {
       await assertRangeEmpty(
@@ -238,6 +263,55 @@ export async function guardAgainstOverwrite(
     return;
   }
 
+  if (action.type === 'SET_MATCHING_ROWS') {
+    // Blanking cells is a clear operation — allow replacing existing values.
+    if (
+      action.value === null ||
+      action.value === undefined ||
+      String(action.value).trim() === ''
+    ) {
+      return;
+    }
+
+    const sheet = resolveWorksheet(ctx, action.sheetName);
+    const localRange = stripSheetPrefix(action.range);
+    const range = sheet.getRange(localRange);
+    range.load(['values', 'rowIndex', 'columnIndex']);
+    await ctx.sync();
+    const rows = (range.values ?? []) as unknown[][];
+    if (rows.length === 0) return;
+    const hasHeaders = action.hasHeaders !== false;
+    const headerRow = hasHeaders ? rows[0] : null;
+    if (!headerRow) return;
+    let targetIdx: number;
+    try {
+      targetIdx = resolveFilterColumnIndex(headerRow, action.targetColumn);
+    } catch {
+      return;
+    }
+    const offsets = action.filter
+      ? findMatchingRowOffsets(rows, hasHeaders, action.filter)
+      : Array.from({ length: Math.max(rows.length - (hasHeaders ? 1 : 0), 0) }, (_, i) =>
+          hasHeaders ? i + 1 : i,
+        );
+    const occupiedSamples: unknown[][] = [];
+    for (const offset of offsets) {
+      const cellVal = rows[offset]?.[targetIdx];
+      if (rangeHasExistingData([[cellVal]])) {
+        occupiedSamples.push([cellVal]);
+      }
+    }
+    if (occupiedSamples.length === 0) return;
+    const sampleAddress = `${columnIndexToLetter(range.columnIndex + targetIdx)}${
+      range.rowIndex + (offsets[0] ?? 0) + 1
+    }`;
+    throw new OverwriteGuardError({
+      message: buildOverwriteMessage(sampleAddress, occupiedSamples.slice(0, 3), action.type),
+      targetRange: sampleAddress,
+      sampleExistingValues: occupiedSamples.slice(0, 3),
+    });
+  }
+
   if (
     action.type === 'COPY_FILTERED_RANGE' ||
     action.type === 'MOVE_RANGE' ||
@@ -260,6 +334,7 @@ export async function guardAgainstOverwrite(
       destStart,
       (s) => s.getRange(destStart),
       ctx,
+      action.type,
     );
     return;
   }
@@ -304,7 +379,75 @@ export async function guardAgainstOverwrite(
   if (!target) return;
 
   const sheet = resolveWorksheet(ctx, target.sheetName);
-  await assertRangeEmpty(sheet, target.address, target.getRange, ctx);
+  await assertRangeEmpty(sheet, target.address, target.getRange, ctx, action.type);
+}
+
+/**
+ * When a proposal creates a sheet and then COPY/MOVE/AGGREGATE into it, the write
+ * is the intended fill of that destination — not accidental overwrite of user data.
+ * Mark those dest writes so Accept can complete even if a prior attempt already
+ * populated the sheet (or ADD_SHEET no-op'd because the tab already existed).
+ */
+export function annotateDestOverwriteForCreatedSheets<T extends { type: string; name?: string; sheetName?: string; destSheet?: string; explicitOverwriteConfirmed?: boolean }>(
+  actions: T[],
+): T[] {
+  const created = new Set<string>();
+  for (const action of actions) {
+    if (action.type === 'ADD_SHEET' || action.type === 'CREATE_SHEET') {
+      const name = String(action.name ?? action.sheetName ?? '').trim().toLowerCase();
+      if (name && !/^sheet\d*$/i.test(name)) created.add(name);
+    }
+  }
+  if (created.size === 0) return actions;
+
+  return actions.map((action) => {
+    if (
+      action.type !== 'COPY_FILTERED_RANGE' &&
+      action.type !== 'MOVE_RANGE' &&
+      action.type !== 'AGGREGATE_TABLE'
+    ) {
+      return action;
+    }
+    const dest = String(action.destSheet ?? '').trim().toLowerCase();
+    if (!dest || !created.has(dest)) return action;
+    return { ...action, explicitOverwriteConfirmed: true };
+  });
+}
+
+/** Drop placeholder Sheet2/SheetN creates when a real named sheet is also in the batch. */
+export function pruneSpuriousAddSheets<T extends { type: string; name?: string; sheetName?: string; destSheet?: string }>(
+  actions: T[],
+): T[] {
+  if (actions.length < 2) return actions;
+  const namedCreates = new Set(
+    actions
+      .filter((a) => a.type === 'ADD_SHEET' || a.type === 'CREATE_SHEET')
+      .map((a) => String(a.name ?? a.sheetName ?? '').trim().toLowerCase())
+      .filter((n) => n && !/^sheet\d*$/i.test(n)),
+  );
+  if (namedCreates.size === 0) return actions;
+
+  const destSheets = new Set(
+    actions
+      .filter(
+        (a) =>
+          a.type === 'COPY_FILTERED_RANGE' ||
+          a.type === 'MOVE_RANGE' ||
+          a.type === 'AGGREGATE_TABLE',
+      )
+      .map((a) => String(a.destSheet ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  return actions.filter((action) => {
+    if (action.type !== 'ADD_SHEET' && action.type !== 'CREATE_SHEET') return true;
+    const name = String(action.name ?? action.sheetName ?? '').trim();
+    if (!name) return false;
+    if (/^sheet\d*$/i.test(name) && (namedCreates.size > 0 || destSheets.size > 0)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** Pure helper for tests — describe whether a SheetAction-like write would be guarded. */

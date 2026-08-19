@@ -184,6 +184,7 @@ async function extractSheetContext(
       numberFormats: [],
       structure: 'unknown',
       headers: [],
+      headerRowIndex: 0,
       formulaSummary: '',
       isHidden: true,
     };
@@ -201,8 +202,8 @@ async function extractSheetContext(
       'address',
       'rowCount',
       'columnCount',
-      'row',
-      'column',
+      'rowIndex',
+      'columnIndex',
     ]);
     await ctx.sync();
   } catch {
@@ -211,27 +212,30 @@ async function extractSheetContext(
 
   const values = asValueMatrix(usedRange.values);
   const formulas = asStringMatrix(usedRange.formulas as unknown[][]);
+  const { headers, headerRowIndex } = detectHeaders(values);
 
   let numberFormats: string[][] = [];
   try {
-    const headerRow = sheet.getRangeByIndexes(
-      usedRange.row ?? 0,
-      usedRange.column ?? 0,
+    // Fetch formats for the DETECTED header row, not always the sheet's first
+    // row — sheets with a title row above the table have their real header
+    // formats several rows down.
+    const headerRowRange = sheet.getRangeByIndexes(
+      (usedRange.rowIndex ?? 0) + headerRowIndex,
+      usedRange.columnIndex ?? 0,
       1,
       usedRange.columnCount,
     );
-    headerRow.load('numberFormat');
+    headerRowRange.load('numberFormat');
     await ctx.sync();
-    const headerFormats = asStringMatrix(headerRow.numberFormat as unknown[][])[0] ?? [];
+    const headerFormats = asStringMatrix(headerRowRange.numberFormat as unknown[][])[0] ?? [];
     numberFormats = values.map((row, rowIdx) =>
-      rowIdx === 0 ? headerFormats : Array(row.length).fill(''),
+      rowIdx === headerRowIndex ? headerFormats : Array(row.length).fill(''),
     );
   } catch {
     numberFormats = values.map((row) => Array(row.length).fill(''));
   }
 
   const structure = detectSheetStructure(values, formulas);
-  const headers = detectHeaders(values);
   const { humanReadable: formulaSummary } = summarizeFormulas(formulas);
 
   return {
@@ -244,6 +248,7 @@ async function extractSheetContext(
     numberFormats,
     structure,
     headers,
+    headerRowIndex,
     formulaSummary,
     isHidden: false,
   };
@@ -260,6 +265,7 @@ function emptySheetContext(name: string): SheetContext {
     numberFormats: [],
     structure: 'unknown',
     headers: [],
+    headerRowIndex: 0,
     formulaSummary: '',
     isHidden: false,
   };

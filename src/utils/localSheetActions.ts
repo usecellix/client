@@ -209,6 +209,27 @@ export function detectDeleteSheetIntent(message: string): boolean {
   );
 }
 
+/**
+ * "Delete all sheets except X" / "keep X remove the rest" — named sheets are preserves, not targets.
+ */
+export function isPreserveOtherSheetsDelete(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (/\b(except|except for|apart from|other than)\b/.test(lower)) return true;
+  if (
+    /\b(keep|keeping|leave|leaving)\b/.test(lower) &&
+    /\b(all|other|every|rest|remaining)\b/.test(lower)
+  ) {
+    return true;
+  }
+  if (
+    /\b(delete|remove|drop)\s+(all|every)\b/.test(lower) &&
+    /\b(keep|except|but)\b/.test(lower)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function extractQuotedNames(message: string): string[] {
   const names: string[] = [];
   const pattern = /["']([^"']+)["']/g;
@@ -237,7 +258,8 @@ function resolveSheetNames(candidates: string[], availableSheets: string[]): str
   return resolved;
 }
 
-export function extractDeleteSheetNames(
+/** Sheets named in the message (mentions, quotes, active-sheet phrase, or workbook name scan). */
+export function extractReferencedSheetNames(
   message: string,
   availableSheets: string[],
   activeSheet?: string,
@@ -278,6 +300,45 @@ export function extractDeleteSheetNames(
     return mentioned;
   }
 
+  const exceptClause =
+    /\b(?:except(?:\s+for)?|apart\s+from|other\s+than|keep(?:ing)?|leave(?:ing)?)\s+(.+?)(?:[.!?]|$)/i.exec(
+      cleaned,
+    );
+  if (exceptClause?.[1]) {
+    const part = exceptClause[1]
+      .replace(/\b(?:sheet|tab)s?\b/gi, ' ')
+      .replace(/\b(?:named|called)\b/gi, ' ')
+      .trim();
+    const parts = part
+      .split(/\s*,\s*|\s+and\s+/i)
+      .map((p) => p.replace(/^["']|["']$/g, '').trim())
+      .filter(Boolean);
+    const resolved = resolveSheetNames(parts, availableSheets);
+    if (resolved.length > 0) return resolved;
+  }
+
+  return [];
+}
+
+export function extractDeleteSheetNames(
+  message: string,
+  availableSheets: string[],
+  activeSheet?: string,
+): string[] {
+  if (isPreserveOtherSheetsDelete(message)) {
+    if (availableSheets.length === 0) return [];
+    const preserve = extractReferencedSheetNames(message, availableSheets, activeSheet);
+    if (preserve.length === 0) {
+      return [];
+    }
+    const preserveSet = new Set(preserve.map((name) => name.toLowerCase()));
+    return availableSheets.filter((name) => !preserveSet.has(name.toLowerCase()));
+  }
+
+  const referenced = extractReferencedSheetNames(message, availableSheets, activeSheet);
+  if (referenced.length > 0) return referenced;
+
+  const cleaned = stripSheetMentions(message);
   const listMatch =
     /\b(?:delete|remove|drop)\s+(?:the\s+)?sheets?\s+(?:named\s+)?(.+?)(?:[.!?]|$)/i.exec(
       cleaned,
@@ -323,6 +384,10 @@ export function tryLocalDeleteSheetActions(
 
   const hasMentions = extractSheetMentions(message).length > 0;
   if (availableSheets.length === 0 && !hasMentions) return null;
+
+  if (isPreserveOtherSheetsDelete(message) && availableSheets.length === 0) {
+    return null;
+  }
 
   const sheetNames = extractDeleteSheetNames(
     message,

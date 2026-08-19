@@ -88,7 +88,14 @@ const App: React.FC = () => {
             await markChangeSetApplied(meta.changeSetId);
             setRefinementChangeSetId(meta.changeSetId);
           } catch (error) {
-            console.warn('[Cellix] Failed to mark change set applied:', error);
+            // Spec 22 Bug 3: do not swallow apply failures — UI must not show Applied.
+            appliedChangeSetIdsRef.current.delete(meta.changeSetId);
+            const message =
+              error instanceof Error
+                ? error.message
+                : 'This change could not be applied — audit sync failed. Try again?';
+            frontendTelemetry.logAcceptFail(error, actions, { changeSetId: meta.changeSetId });
+            throw new Error(message);
           }
         }
 
@@ -249,8 +256,15 @@ const App: React.FC = () => {
         await previewManager.accept();
         if (pendingChangeSetId) {
           appliedChangeSetIdsRef.current.add(pendingChangeSetId);
-          await markChangeSetApplied(pendingChangeSetId);
-          setRefinementChangeSetId(pendingChangeSetId);
+          try {
+            await markChangeSetApplied(pendingChangeSetId);
+            setRefinementChangeSetId(pendingChangeSetId);
+          } catch (error) {
+            // Same pattern as applyActionsWithAudit (spec 22 Bug 3): do not
+            // leave a failed apply marked as applied — UI must not show Applied.
+            appliedChangeSetIdsRef.current.delete(pendingChangeSetId);
+            throw error;
+          }
         }
         applied = true;
         frontendTelemetry.logAcceptSuccess([], {

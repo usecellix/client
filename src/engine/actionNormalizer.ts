@@ -17,6 +17,7 @@ function isRichAction(action: SheetAction): boolean {
     'SORT_RANGE',
     'COPY_FILTERED_RANGE',
     'FORMAT_MATCHING_ROWS',
+    'SET_MATCHING_ROWS',
     'MOVE_RANGE',
     'CREATE_CHART',
     'UPDATE_CHART',
@@ -330,6 +331,46 @@ export function toRichAction(action: SheetAction): RichAction | null {
               ...format,
               fillColor: format.fillColor ?? '#FFC7CE',
             },
+      };
+    }
+    case 'SET_MATCHING_ROWS': {
+      const filter =
+        r.filter && typeof r.filter === 'object'
+          ? (r.filter as {
+              column: string;
+              operator:
+                | 'equals'
+                | 'contains'
+                | 'greaterThan'
+                | 'lessThan'
+                | 'notEquals'
+                | 'lengthEquals'
+                | 'lengthNotEquals'
+                | 'matchesRegex'
+                | 'notMatchesRegex';
+              value: string | number;
+            })
+          : undefined;
+      if (filter && !filter.column) return null;
+      const targetColumn = String(r.targetColumn ?? r.columnName ?? '').trim();
+      if (!targetColumn) return null;
+      if (
+        r.value === undefined ||
+        (typeof r.value !== 'string' &&
+          typeof r.value !== 'number' &&
+          typeof r.value !== 'boolean')
+      ) {
+        return null;
+      }
+      return {
+        type: 'SET_MATCHING_ROWS',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        hasHeaders: r.hasHeaders !== false,
+        ...(filter?.column ? { filter } : {}),
+        targetColumn,
+        value: r.value,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       };
     }
     case 'MOVE_RANGE':

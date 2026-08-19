@@ -9,6 +9,7 @@ import {
 } from '@/types/conversationTurn';
 import { generateSuggestedFollowUps } from '@/utils/suggestedFollowUps';
 import { shortenActionPreviewCopy } from '@/utils/actionPreviewCopy';
+import { describeBlockedReason } from '@/utils/actionWaveGating';
 import StepIndicator from './StepIndicator';
 import ThinkingBlockView from './ThinkingBlockView';
 import AnswerReveal from './AnswerReveal';
@@ -130,13 +131,21 @@ function BlockRenderer({
   }
 
   if (block.type === 'status') {
+    // Keep latest status while processing; hide after terminal phase.
     if (hideProgress) {
       return null;
     }
+    return (
+      <div className={`cellix-status cellix-block-enter ${block.pulsing ? 'cellix-status-pulse' : ''}`}>
+        {block.pulsing ? <span className="cellix-spinner cellix-spinner-inline" /> : <div className="cellix-status-dot" />}
+        <span className={block.pulsing ? 'cellix-shimmer-text' : ''}>{block.label}</span>
+      </div>
+    );
   }
 
   if (block.type === 'thinking') {
-    if (hideProgress) {
+    // Always show agent thought log when it has content (Blocked / progress lines).
+    if (hideProgress && !block.content?.trim()) {
       return null;
     }
     return (
@@ -144,15 +153,6 @@ function BlockRenderer({
         block={block}
         onToggle={() => onToggleThinking(turn.id, block.id)}
       />
-    );
-  }
-
-  if (block.type === 'status') {
-    return (
-      <div className={`cellix-status cellix-block-enter ${block.pulsing ? 'cellix-status-pulse' : ''}`}>
-        {block.pulsing ? <span className="cellix-spinner cellix-spinner-inline" /> : <div className="cellix-status-dot" />}
-        <span className={block.pulsing ? 'cellix-shimmer-text' : ''}>{block.label}</span>
-      </div>
     );
   }
 
@@ -194,12 +194,16 @@ function BlockRenderer({
 
   if (block.type === 'actions') {
     const actionBlock = block as ActionBlock;
+    const siblingActionBlocks = turn.blocks.filter((b) => b.type === 'actions') as ActionBlock[];
+    const blockedReason = describeBlockedReason(actionBlock, siblingActionBlocks);
+
     return (
       <ActionResponseCard
         block={actionBlock}
         previewEnabled={previewEnabled}
         isApplying={isApplying}
         showActionButtons={showActionButtons}
+        blockedReason={blockedReason}
         onAccept={() => onAcceptActions(turn.id, block.id)}
         onReject={() => onRejectActions(turn.id, block.id)}
       />
@@ -242,7 +246,14 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   }, [turn.blocks, turn.userMessage, onFollowUp, isWaiting, isActive]);
 
   const hasVisibleBlocks = turn.blocks.some((b) => {
-    if (hideProgress && (b.type === 'step' || b.type === 'status' || b.type === 'thinking')) {
+    if (hideProgress && b.type === 'step') {
+      return false;
+    }
+    if (hideProgress && b.type === 'status') {
+      return false;
+    }
+    // Keep thinking visible after complete when the agent left a log (Blocked etc.).
+    if (hideProgress && b.type === 'thinking' && !b.content?.trim()) {
       return false;
     }
     if (b.type === 'step' && b.phase === 'hidden') return false;

@@ -58,8 +58,17 @@ export function computeSheetLayout(sheetData: unknown[][]): SheetLayout {
   };
 }
 
+/** Cosmetic header paints — never treat as "overwrite headers with data". */
+const HEADER_COSMETIC_TYPES = new Set<SheetAction['type']>([
+  'FORMAT_RANGE',
+  'HIGHLIGHT_CELL',
+  'MERGE_CELLS',
+]);
+
 function isHeaderMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   if (action.type === 'ADD_ROW' || action.type === 'WRITE_TABLE') return false;
+  // Spec 24: bold/fill/highlight the header row must not be blocked as a "new row" write.
+  if (HEADER_COSMETIC_TYPES.has(action.type)) return false;
   if (sheetIsEmpty) {
     const allowedOnHeader = new Set(['SET_CELL', 'SET_FORMULA', 'FORMAT_RANGE', 'MERGE_CELLS']);
     if (action.row === HEADER_ROW && allowedOnHeader.has(action.type)) return false;
@@ -95,6 +104,8 @@ function convertHeaderWritesToAddRow(headerActions: SheetAction[]): SheetAction 
 
 function guardCellMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   if (action.type === 'ADD_ROW' || action.type === 'WRITE_TABLE') return false;
+  // Cosmetic format on header/body is always allowed (fill, bold, highlight).
+  if (HEADER_COSMETIC_TYPES.has(action.type)) return false;
   if (action.row === undefined) return false;
   if (sheetIsEmpty && action.row === HEADER_ROW) {
     return !['SET_CELL', 'SET_FORMULA', 'FORMAT_RANGE', 'MERGE_CELLS'].includes(action.type);
@@ -163,16 +174,48 @@ export const CLARIFY_ROW_PLACEMENT = {
   ],
 } as const;
 
+/** True when sanitize blocked value-writes (not cosmetic header fill). Safe to ask row-placement. */
+export function blockedActionsAreDataWrites(blocked: SheetAction[]): boolean {
+  if (blocked.length === 0) return false;
+  return blocked.some(
+    (a) =>
+      a.type === 'SET_CELL' ||
+      a.type === 'SET_FORMULA' ||
+      a.type === 'CLEAR_CELL' ||
+      a.type === 'CLEAR_CONTENT' ||
+      a.type === 'DELETE_ROW' ||
+      a.type === 'ADD_ROW' ||
+      a.type === 'INSERT_ROW' ||
+      a.type === 'WRITE_TABLE' ||
+      a.type === 'BATCH_SET',
+  );
+}
+
+/** User free-text rejecting the "new row" clarification and asking for header format instead. */
+export function isHeaderFormatCorrectionMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  const rejectsNewRow =
+    /\bnot\s+(a\s+)?new\s+row\b|\bno\s+new\s+row\b|\bexisting\s+row\b|\bnot\s+insert/i.test(
+      lower,
+    );
+  const wantsHeaderFormat =
+    /\b(header|headers)\b/.test(lower) &&
+    /\b(bg|background|fill|color|colour|highlight|bold|green|red)\b/.test(lower);
+  return (rejectsNewRow && wantsHeaderFormat) || wantsHeaderFormat;
+}
+
 export function buildActionRulesPrompt(layout?: SheetLayout): string {
   const nextRowHuman = layout ? layout.nextDataRow + 1 : 'last row + 1';
   const headerList = layout?.headers.filter(Boolean).join(', ') || '(see preview)';
 
   return `
 SPREADSHEET ACTION RULES (0-indexed rows in JSON; row 0 = Excel row 1):
-- Row ${HEADER_ROW} (Excel row 1) is the HEADER row: [${headerList}]. NEVER use SET_CELL, CLEAR_CELL, SET_FORMULA, or DELETE_ROW on row ${HEADER_ROW} unless the user explicitly asks to rename headers.
+- Row ${HEADER_ROW} (Excel row 1) is the HEADER row: [${headerList}].
+- NEVER use SET_CELL, CLEAR_CELL, SET_FORMULA, or DELETE_ROW on row ${HEADER_ROW} unless the user explicitly asks to rename headers.
+- FORMAT_RANGE and HIGHLIGHT_CELL on row ${HEADER_ROW} ARE allowed when the user wants to style/bold/fill the headers (not add data).
 - To ADD a new data row, ALWAYS use: {"type":"ADD_ROW","data":["col1","col2",...]} — do NOT set row index; it appends automatically at row ${nextRowHuman}.
 - Do NOT write dummy/data values into row ${HEADER_ROW} when the user asks to "add a row".
-- If placement, values, or target row are unclear, respond with a clarifying QUESTION only (no actions JSON). Ask: where to insert, what values, how many rows.
+- If placement, values, or target row are unclear for adding data, respond with a clarifying QUESTION only (no actions JSON). Ask: where to insert, what values, how many rows — never when the user only asked to format/color headers.
 - Prefer ADD_ROW over multiple SET_CELL actions when adding a full row.
 
 Example — add dummy row (correct):

@@ -19,9 +19,16 @@ function detectColumnType(
   return 'unknown';
 }
 
-function buildHeadTailSample(values: unknown[][], head = 5, tail = 5): (string | number | null)[][] {
-  if (values.length <= 1) return [];
-  const dataRows = values.slice(1);
+/** Data rows start immediately after the header row — not always index 1. */
+function buildHeadTailSample(
+  values: unknown[][],
+  headerRowIndex: number,
+  head = 5,
+  tail = 5,
+): (string | number | null)[][] {
+  const dataStart = headerRowIndex + 1;
+  if (values.length <= dataStart) return [];
+  const dataRows = values.slice(dataStart);
   const selected =
     dataRows.length <= head + tail
       ? dataRows
@@ -33,20 +40,21 @@ function buildHeadTailSample(values: unknown[][], head = 5, tail = 5): (string |
 }
 
 function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
+  const headerRowIndex = sheet.headerRowIndex ?? 0;
   const headers =
     sheet.headers.length > 0
       ? sheet.headers
-      : (sheet.values[0] ?? []).map((v) => String(v ?? ''));
-  const sampleData = buildHeadTailSample(sheet.values);
+      : (sheet.values[headerRowIndex] ?? []).map((v) => String(v ?? ''));
+  const sampleData = buildHeadTailSample(sheet.values, headerRowIndex);
   const truncated = sheet.rowCount > sampleData.length + 1;
 
   const columnMeta: ColumnMeta[] = Array.from(
     { length: Math.max(sheet.columnCount, 1) },
     (_, colIdx) => {
       const header = headers[colIdx] ?? '';
-      const colValues = sheet.values.slice(1).map((row) => row[colIdx] ?? null);
+      const colValues = sheet.values.slice(headerRowIndex + 1).map((row) => row[colIdx] ?? null);
       const nonEmpty = colValues.filter((v) => !isBlankCell(v));
-      const fmt = String(sheet.numberFormats[0]?.[colIdx] ?? '');
+      const fmt = String(sheet.numberFormats[headerRowIndex]?.[colIdx] ?? '');
 
       return {
         index: colIdx,
@@ -66,6 +74,7 @@ function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
     rowCount: sheet.rowCount,
     colCount: Math.max(sheet.columnCount, 1),
     headers,
+    headerRowIndex,
     sampleData,
     columnMeta,
     structure: sheet.structure,

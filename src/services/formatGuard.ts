@@ -29,8 +29,10 @@ export interface CellFormat {
     color?: string;
   };
   borders?: BorderSet;
-  horizontalAlignment?: Excel.HorizontalAlignment;
-  verticalAlignment?: Excel.VerticalAlignment;
+  // Index off RangeFormat: Office.js widens these to the enum plus its string
+  // aliases, and we round-trip values read straight back off a range.
+  horizontalAlignment?: Excel.RangeFormat['horizontalAlignment'];
+  verticalAlignment?: Excel.RangeFormat['verticalAlignment'];
   wrapText?: boolean;
 }
 
@@ -52,6 +54,43 @@ function isBlankCell(value: unknown): boolean {
 function isDateNumberFormat(numberFormat?: string): boolean {
   if (!numberFormat) return false;
   return detectDateFormat(numberFormat) !== null;
+}
+
+/** True when Excel will treat the cell as unformatted / General. */
+export function isGeneralOrEmptyFormat(numberFormat?: string): boolean {
+  if (!numberFormat) return true;
+  const lower = normalizeNumberFormat(numberFormat).toLowerCase();
+  return !lower || lower === 'general';
+}
+
+/**
+ * Prefer an explicit format, else the cell's current format, else a
+ * non-General format from the column cell above (sheet convention).
+ */
+export function resolvePreservedNumberFormat(
+  existingFormat?: string,
+  aboveFormat?: string,
+  explicitFormat?: string,
+): string {
+  if (explicitFormat && !isGeneralOrEmptyFormat(explicitFormat)) {
+    return explicitFormat;
+  }
+  if (existingFormat && !isGeneralOrEmptyFormat(existingFormat)) {
+    return existingFormat;
+  }
+  if (aboveFormat && !isGeneralOrEmptyFormat(aboveFormat)) {
+    return aboveFormat;
+  }
+  return existingFormat ?? explicitFormat ?? aboveFormat ?? 'General';
+}
+
+/** Coerce date-like text to Date/serial when the target format is a date format. */
+export function coerceValueForNumberFormat(
+  value: unknown,
+  numberFormat?: string,
+): unknown {
+  if (!isDateNumberFormat(numberFormat)) return value ?? '';
+  return parseDateValue(value, numberFormat);
 }
 
 function isMonthFirstDateFormat(numberFormat: string): boolean {
@@ -202,13 +241,13 @@ function formatSpecToCellFormat(spec?: FormatSpec): CellFormat | undefined {
         }
       : undefined;
 
-  const hAlignMap: Record<string, Excel.HorizontalAlignment> = {
+  const hAlignMap: Record<string, Excel.RangeFormat['horizontalAlignment']> = {
     left: 'Left',
     center: 'Center',
     right: 'Right',
   };
 
-  const vAlignMap: Record<string, Excel.VerticalAlignment> = {
+  const vAlignMap: Record<string, Excel.RangeFormat['verticalAlignment']> = {
     top: 'Top',
     middle: 'Center',
     bottom: 'Bottom',
@@ -385,12 +424,15 @@ export async function applyFormat(
   }
 
   if (format.borders) {
-    const applyBorder = (side: keyof BorderSet, excelSide: Excel.BorderSide) => {
+    // Office.js names these BorderIndex / BorderLineStyle — BorderSide and
+    // BorderStyle do not exist in the Excel namespace.
+    type BorderEdge = Parameters<Excel.RangeBorderCollection['getItem']>[0];
+    const applyBorder = (side: keyof BorderSet, excelSide: BorderEdge) => {
       const b = format.borders![side];
       if (!b) return;
       const border = fmt.borders.getItem(excelSide);
       if (b.style && b.style !== 'None') {
-        border.style = b.style as Excel.BorderStyle;
+        border.style = b.style as Excel.RangeBorder['style'];
         border.color = b.color ?? '#000000';
       }
     };
@@ -439,12 +481,8 @@ export async function applyFormatGuard(
 
   const explicit = formatSpecToCellFormat(action.format);
 
-  if (action.type === 'SET_CELL' || action.type === 'SET_FORMULA') {
-    const cellRange = worksheet.getRangeByIndexes(row, col, 1, 1);
-    cellRange.load('values');
-    await context.sync();
-    if (!isBlankCell(cellRange.values?.[0]?.[0])) return;
-  }
+  // SET_CELL / SET_FORMULA always re-apply column format after write so Excel
+  // does not replace sheet date formats with a locale default.
 
   if (action.type === 'ADD_ROW' || action.type === 'INSERT_ROW') {
     try {
@@ -514,4 +552,92 @@ export function detectDateFormat(numberFormat: string): string | null {
 
 function normalizeNumberFormat(numberFormat: string): string {
   return numberFormat.split(';')[0]?.replace(/\[[^\]]*\]/g, '').trim() ?? '';
+}
+
+/**
+ * Write values while keeping each cell's sheet numberFormat (especially dates).
+ * Call AFTER obtaining `range`; does not call context.sync() after the write
+ * (caller should sync). Loads + syncs once (or twice if inheriting from above).
+ */
+export async function writeRangeValuesPreservingNumberFormat(
+  context: Excel.RequestContext,
+  worksheet: Excel.Worksheet,
+  range: Excel.Range,
+  values: unknown[][],
+  options?: { explicitNumberFormat?: string },
+): Promise<void> {
+  range.load(['numberFormat', 'rowIndex', 'columnIndex', 'rowCount', 'columnCount']);
+  await context.sync();
+
+  const rowCount = range.rowCount;
+  const colCount = range.columnCount;
+  const existing = (range.numberFormat as string[][]) ?? [];
+
+  let aboveFormats: string[] | null = null;
+  if (range.rowIndex > 0) {
+    const above = worksheet.getRangeByIndexes(
+      range.rowIndex - 1,
+      range.columnIndex,
+      1,
+      colCount,
+    );
+    above.load('numberFormat');
+    await context.sync();
+    const aboveMatrix = (above.numberFormat as string[][]) ?? [];
+    aboveFormats = Array.from({ length: colCount }, (_, c) =>
+      String(aboveMatrix[0]?.[c] ?? ''),
+    );
+  }
+
+  const formats: string[][] = [];
+  const coerced: (string | number | boolean | Date)[][] = [];
+
+  for (let r = 0; r < rowCount; r += 1) {
+    formats[r] = [];
+    coerced[r] = [];
+    for (let c = 0; c < colCount; c += 1) {
+      const fmt = resolvePreservedNumberFormat(
+        String(existing[r]?.[c] ?? ''),
+        aboveFormats?.[c],
+        options?.explicitNumberFormat,
+      );
+      formats[r]![c] = fmt;
+      const raw = values[r]?.[c];
+      const next = coerceValueForNumberFormat(raw, fmt);
+      if (
+        next === null ||
+        next === undefined ||
+        typeof next === 'string' ||
+        typeof next === 'number' ||
+        typeof next === 'boolean' ||
+        next instanceof Date
+      ) {
+        coerced[r]![c] = (next ?? '') as string | number | boolean | Date;
+      } else {
+        coerced[r]![c] = String(next);
+      }
+    }
+  }
+
+  range.values = coerced as (string | number | boolean)[][];
+  range.numberFormat = formats;
+}
+
+/**
+ * Snapshot numberFormat, run a write, then restore formats (optionally after
+ * permuting the format matrix the same way as values — e.g. sort).
+ */
+export async function preserveNumberFormatsAroundWrite(
+  range: Excel.Range,
+  context: Excel.RequestContext,
+  write: () => void | Promise<void>,
+  remapFormats?: (formats: string[][]) => string[][],
+): Promise<void> {
+  range.load('numberFormat');
+  await context.sync();
+  const snapshot = ((range.numberFormat as string[][]) ?? []).map((row) =>
+    row.map((cell) => String(cell ?? '')),
+  );
+  await write();
+  range.numberFormat = remapFormats ? remapFormats(snapshot) : snapshot;
 }

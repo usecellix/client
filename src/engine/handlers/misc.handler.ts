@@ -99,11 +99,14 @@ export async function handleInsertRow(
   ctx: Excel.RequestContext,
 ): Promise<void> {
   const worksheet = resolveWorksheet(ctx, action.sheetName);
-  const row = action.row;
   const count = action.count ?? 1;
   const colCount = await getUsedColumnCount(worksheet, ctx);
+  // InsertShiftDirection is only Down|Right — "Up" was invalid and threw. Inserting
+  // at index N always shifts down, which places the new rows ABOVE row N, so
+  // "below" is expressed by inserting one row further down instead.
+  const row = action.position === 'below' ? action.row + 1 : action.row;
   const range = worksheet.getRangeByIndexes(row, 0, count, colCount);
-  range.getEntireRow().insert(action.position === 'above' ? 'Up' : 'Down');
+  range.getEntireRow().insert('Down');
   await applyFormatGuard(
     ctx,
     worksheet,

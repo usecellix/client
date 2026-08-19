@@ -4,6 +4,7 @@ import {
   buildWorkbookContext as buildDeepWorkbookContext,
   readActiveSheetMinimal,
 } from '@/context/workbookReader';
+import { detectHeaders } from '@/context/sheetAnalyzer';
 import { getCompareEndpoint } from '@/lib/apiConfig';
 
 /* global Excel */
@@ -48,7 +49,7 @@ async function buildMinimalWorkbookContext(): Promise<{
   promptContext: string;
 }> {
   const minimal = await readActiveSheetMinimal();
-  const headers = (minimal.values[0] ?? []).map((cell) => String(cell ?? '').trim());
+  const { headers, headerRowIndex } = detectHeaders(minimal.values);
 
   const deep = {
     activeSheetName: minimal.name,
@@ -64,6 +65,7 @@ async function buildMinimalWorkbookContext(): Promise<{
         numberFormats: [],
         structure: 'unknown' as const,
         headers,
+        headerRowIndex,
         formulaSummary: '',
         isHidden: false,
       },

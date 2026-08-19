@@ -58,7 +58,12 @@ function signInWithOfficeDialog(provider: SocialProvider): Promise<void> {
 
         const dialog = asyncResult.value;
 
-        const onMessage = (arg: { message: string; origin: string | undefined }) => {
+        // Office types both dialog events with one handler signature taking the
+        // union of payloads, so each handler must accept it and narrow.
+        type DialogArg = { message: string; origin: string | undefined } | { error: number };
+
+        const onMessage = (arg: DialogArg) => {
+          if (!('message' in arg)) return;
           dialog.close();
           try {
             const data = JSON.parse(arg.message) as { type?: string; ok?: boolean };
@@ -73,7 +78,8 @@ function signInWithOfficeDialog(provider: SocialProvider): Promise<void> {
           }
         };
 
-        const onEvent = (arg: { error: number }) => {
+        const onEvent = (arg: DialogArg) => {
+          if (!('error' in arg)) return;
           if (arg.error === 12006) {
             reject(new Error('Sign-in was cancelled'));
             return;

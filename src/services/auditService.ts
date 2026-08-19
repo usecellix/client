@@ -42,7 +42,8 @@ async function auditFetch<T>(url: string, init?: RequestInit): Promise<T> {
 export async function markChangeSetApplied(changeSetId: string): Promise<ChangeSetSummary> {
   const result = await auditFetch<{ changeSet: ChangeSetSummary }>(
     getAuditApplyEndpoint(changeSetId),
-    { method: 'POST' },
+    // Fastify rejects Content-Type: application/json with an empty body (400).
+    { method: 'POST', body: '{}' },
   );
   return result.changeSet;
 }
@@ -50,7 +51,10 @@ export async function markChangeSetApplied(changeSetId: string): Promise<ChangeS
 export async function revertChangeSet(
   changeSetId: string,
 ): Promise<{ changeSet: ChangeSetSummary; inverseActions: SheetAction[] }> {
-  return auditFetch(getAuditRevertEndpoint(changeSetId), { method: 'POST' });
+  return auditFetch(getAuditRevertEndpoint(changeSetId), {
+    method: 'POST',
+    body: '{}',
+  });
 }
 
 export async function fetchChangeSetHistory(

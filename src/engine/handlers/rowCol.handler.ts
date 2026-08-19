@@ -275,7 +275,39 @@ export async function handleDeleteColumn(
   ctx: Excel.RequestContext,
 ): Promise<void> {
   const sheet = resolveWorksheet(ctx, action.sheetName);
-  const sorted = [...action.columns].sort().reverse();
+  const used = sheet.getUsedRangeOrNullObject();
+  used.load(['values', 'columnCount', 'isNullObject']);
+  await ctx.sync();
+
+  const headerRow: unknown[] =
+    !used.isNullObject && Array.isArray(used.values?.[0]) ? (used.values[0] as unknown[]) : [];
+
+  const letterCols: string[] = [];
+  for (const raw of action.columns) {
+    const token = String(raw ?? '').trim();
+    if (!token) continue;
+    if (/^[A-Za-z]{1,3}$/.test(token)) {
+      letterCols.push(token.toUpperCase());
+      continue;
+    }
+    const idx = headerRow.findIndex(
+      (cell) =>
+        String(cell ?? '')
+          .trim()
+          .toLowerCase() === token.toLowerCase(),
+    );
+    if (idx >= 0) {
+      letterCols.push(columnIndexToLetter(idx));
+    }
+  }
+
+  if (letterCols.length === 0) {
+    throw new Error(
+      `DELETE_COLUMN could not resolve columns: ${JSON.stringify(action.columns)}`,
+    );
+  }
+
+  const sorted = [...new Set(letterCols)].sort((a, b) => columnLetterToIndex(b) - columnLetterToIndex(a));
   for (const col of sorted) {
     sheet.getRange(`${col}:${col}`).delete('Left');
   }

@@ -33,6 +33,8 @@ export interface SheetSnapshot {
   rowCount: number;
   colCount: number;
   headers: string[];
+  /** 0-based row index within the original sheet where `headers` was detected. */
+  headerRowIndex?: number;
   sampleData: (string | number | null)[][];
   columnMeta: ColumnMeta[];
   structure?: SheetStructure;

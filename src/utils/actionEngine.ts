@@ -1,11 +1,13 @@
 import { partitionActions } from '../engine/actionNormalizer';
 import { richActionEngine } from '../engine/actionEngine';
 import { isOverwriteGuardError } from '../engine/overwriteGuard';
+import {
+  annotateDestOverwriteForCreatedSheets,
+  pruneSpuriousAddSheets,
+} from '../engine/overwriteGuard';
 import { selectActionRanges } from '../engine/selectRanges';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
-import { applyFormatGuard, coerceRowDataToReferenceFormats } from '../services/formatGuard';
 import { sanitizeActions } from './actionGuard';
-import { sanitizeExcelSheetName } from './sheetName.util';
 
 /* global Excel */
 
@@ -17,10 +19,11 @@ type PreviewRange = {
   values: unknown[][];
   formulas: unknown[][];
   fillColor: string | null;
-  fillPattern: Excel.FillPattern;
+  // Office.js widens this to the enum plus its string-literal aliases; mirror that
+  // so a captured pattern can be written straight back on revert.
+  fillPattern: Excel.RangeFill['pattern'];
 };
 
-const PREVIEW_FILL = '#DCFCE7';
 
 function detectPopulateEmptySheet(actions: SheetAction[]): boolean {
   const hasHeaderCells = actions.some((a) => a.type === 'SET_CELL' && a.row === 0);
@@ -40,16 +43,6 @@ function guardActions(actions: SheetAction[], sheetIsEmpty = false): SheetAction
 export class ActionEngine {
   private static previewRanges: PreviewRange[] = [];
 
-  private static resolveWorksheet(
-    context: Excel.RequestContext,
-    action: SheetAction,
-  ): Excel.Worksheet {
-    if (action.sheetName) {
-      return context.workbook.worksheets.getItem(action.sheetName);
-    }
-    return context.workbook.worksheets.getActiveWorksheet();
-  }
-
   static async applyActions(actions: SheetAction[]): Promise<void> {
     const result = await this.applyActionsWithReport(actions);
     if (result.errors.length > 0 && result.applied === 0) {
@@ -65,7 +58,9 @@ export class ActionEngine {
     let applied = 0;
 
     try {
-      const safeInput = guardActions(actions);
+      const safeInput = annotateDestOverwriteForCreatedSheets(
+        pruneSpuriousAddSheets(guardActions(actions)),
+      );
       const { rich, unsupported } = partitionActions(safeInput);
       if (unsupported.length > 0) {
         errors.push(
@@ -207,480 +202,12 @@ export class ActionEngine {
     }
   }
 
-  private static async applySingleAction(
-    context: Excel.RequestContext,
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-  ): Promise<void> {
-    switch (action.type) {
-      case 'SET_CELL':
-        await this.setCell(worksheet, action, context);
-        break;
-      case 'CLEAR_CELL':
-        this.clearCell(worksheet, action);
-        break;
-      case 'HIGHLIGHT_CELL':
-        this.highlightCell(worksheet, action);
-        break;
-      case 'SET_FORMULA':
-        await this.setFormula(worksheet, action, context);
-        break;
-      case 'ADD_ROW':
-        await this.addRow(worksheet, action, context);
-        break;
-      case 'DELETE_ROW':
-        await this.deleteRow(worksheet, action, context);
-        break;
-      case 'INSERT_ROW':
-        await this.insertRow(worksheet, action, context);
-        break;
-      case 'INSERT_COLUMN':
-        await this.insertColumn(worksheet, action, context);
-        break;
-      case 'DELETE_COLUMN':
-        await this.deleteColumn(worksheet, action, context);
-        break;
-      case 'HIDE_ROW':
-        this.hideRow(worksheet, action);
-        break;
-      case 'UNHIDE_ROW':
-      case 'SHOW_ROW':
-        this.showRow(worksheet, action);
-        break;
-      case 'HIDE_COLUMN':
-        this.hideColumn(worksheet, action);
-        break;
-      case 'UNHIDE_COLUMN':
-      case 'SHOW_COLUMN':
-        this.showColumn(worksheet, action);
-        break;
-      case 'SET_ROW_HEIGHT':
-        this.setRowHeight(worksheet, action);
-        break;
-      case 'SET_COLUMN_WIDTH':
-        this.setColumnWidth(worksheet, action);
-        break;
-      case 'FREEZE_PANES':
-        this.freezePanes(worksheet, action);
-        break;
-      case 'UNFREEZE_PANES':
-        worksheet.freezePanes.unfreeze();
-        break;
-      case 'SET_ZOOM':
-        this.setZoom(worksheet, action);
-        break;
-      case 'PROTECT_SHEET':
-        worksheet.protection.protect();
-        break;
-      case 'UNPROTECT_SHEET':
-        worksheet.protection.unprotect();
-        break;
-      case 'MERGE_CELLS':
-        this.mergeCells(worksheet, action);
-        break;
-      case 'UNMERGE_CELLS':
-        this.unmergeCells(worksheet, action);
-        break;
-      case 'CLEAR_CONTENT':
-        this.clearRange(worksheet, action, Excel.ClearApplyTo.contents);
-        break;
-      case 'CLEAR_FORMAT':
-        this.clearRange(worksheet, action, Excel.ClearApplyTo.formats);
-        break;
-      case 'CLEAR_ALL':
-        this.clearRange(worksheet, action, Excel.ClearApplyTo.all);
-        break;
-      case 'FORMAT_RANGE':
-        this.formatRange(worksheet, action);
-        break;
-      case 'FILL_DOWN':
-        await this.fillDown(worksheet, action, context);
-        break;
-      case 'FILL_RIGHT':
-        await this.fillRight(worksheet, action, context);
-        break;
-      case 'CREATE_SHEET':
-        await this.createSheet(context, action);
-        break;
-      case 'DELETE_SHEET':
-        await this.deleteSheet(context, action);
-        break;
-      case 'RENAME_SHEET':
-        worksheet.name = action.newSheetName ?? action.sheetName ?? worksheet.name;
-        break;
-      case 'COPY_SHEET':
-        await this.copySheet(context, action);
-        break;
-      case 'HIDE_SHEET':
-        await this.setSheetVisibility(context, action.sheetName, Excel.SheetVisibility.hidden);
-        break;
-      case 'SHOW_SHEET':
-        await this.setSheetVisibility(context, action.sheetName, Excel.SheetVisibility.visible);
-        break;
-      case 'SET_SHEET_COLOR':
-        await this.setSheetColor(context, action);
-        break;
-      case 'ADD_COMMENT':
-        this.addComment(worksheet, action);
-        break;
-      case 'DELETE_COMMENT':
-        this.deleteComment(worksheet, action);
-        break;
-      case 'WRITE_TABLE':
-        this.writeTable(worksheet, action);
-        break;
-      case 'CLARIFY':
-      case 'CHECKPOINT':
-        break;
-      case 'BATCH_SET':
-      case 'CREATE_TABLE':
-      case 'DEFINE_NAMED_RANGE':
-      case 'AUTOFIT_COLUMNS':
-      case 'ADD_SHEET':
-        await this.createSheet(context, {
-          ...action,
-          sheetName: sanitizeExcelSheetName(action.name ?? action.sheetName ?? 'New Sheet'),
-        });
-        break;
-      default:
-        console.warn(`Unknown action type: ${(action as SheetAction).type}`);
-    }
-  }
-
   private static getRange(worksheet: Excel.Worksheet, action: SheetAction): Excel.Range {
     const row = action.row ?? 0;
     const col = action.col ?? 0;
     const rowCount = action.rowCount ?? 1;
     const colCount = action.colCount ?? 1;
     return worksheet.getRangeByIndexes(row, col, rowCount, colCount);
-  }
-
-  private static async setCell(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.row === undefined || action.col === undefined || action.value === undefined) {
-      throw new Error('SET_CELL action requires row, col, and value');
-    }
-    const range = this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 });
-    range.values = [[action.value]];
-    await applyFormatGuard(context, worksheet, action, action.row, action.col, 1, 1);
-  }
-
-  private static clearCell(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined || action.col === undefined) {
-      throw new Error('CLEAR_CELL action requires row and col');
-    }
-    this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 }).values = [['']];
-  }
-
-  private static highlightCell(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined || action.col === undefined) {
-      throw new Error('HIGHLIGHT_CELL action requires row and col');
-    }
-    this.applyFillColor(
-      this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 }),
-      action.color || PREVIEW_FILL,
-    );
-  }
-
-  private static async setFormula(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.row === undefined || action.col === undefined || action.formula === undefined) {
-      throw new Error('SET_FORMULA action requires row, col, and formula');
-    }
-    const range = this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 });
-    range.formulas = [[action.formula]];
-    await applyFormatGuard(context, worksheet, action, action.row, action.col, 1, 1);
-  }
-
-  private static writeTable(worksheet: Excel.Worksheet, action: SheetAction): void {
-    const headers = action.headers ?? [];
-    const rows = action.rows ?? [];
-    if (!headers.length) {
-      throw new Error('WRITE_TABLE requires headers');
-    }
-
-    const tableRows = [headers, ...rows];
-    const rowCount = tableRows.length;
-    const colCount = Math.max(
-      headers.length,
-      ...rows.map((row) => (Array.isArray(row) ? row.length : 0)),
-      1,
-    );
-
-    const range = worksheet.getRangeByIndexes(0, 0, rowCount, colCount);
-    range.values = tableRows.map((row) =>
-      Array.from({ length: colCount }, (_, index) =>
-        Array.isArray(row) ? (row[index] ?? '') : '',
-      ),
-    );
-  }
-
-  private static async addRow(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (!Array.isArray(action.data)) {
-      throw new Error('ADD_ROW action requires data array');
-    }
-
-    const targetRow = await this.getAppendRowIndex(worksheet, context);
-    const colCount = Math.max(action.data.length, await this.getUsedColumnCount(worksheet, context));
-    const rowRange = worksheet.getRangeByIndexes(targetRow, 0, 1, colCount);
-    // Append only: targetRow is already the first empty row after data — do not insert,
-    // or Excel shifts the range down and values land one row too low with a blank row above.
-    const coercedData = await coerceRowDataToReferenceFormats(
-      context,
-      worksheet,
-      targetRow,
-      'above',
-      action.data!,
-      0,
-      colCount,
-    );
-    rowRange.values = [coercedData];
-    await applyFormatGuard(context, worksheet, action, targetRow, 0, 1, colCount);
-  }
-
-  private static async insertRow(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    const row = action.row ?? (await this.getAppendRowIndex(worksheet, context));
-    const count = action.count ?? 1;
-    const colCount = await this.getUsedColumnCount(worksheet, context);
-    const range = worksheet.getRangeByIndexes(row, 0, count, colCount);
-    range.getEntireRow().insert(action.position === 'above' ? 'Up' : 'Down');
-
-    await applyFormatGuard(context, worksheet, action, row, 0, count, colCount);
-  }
-
-  private static async deleteRow(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.row === undefined) throw new Error('DELETE_ROW action requires row');
-    const columnCount = await this.getUsedColumnCount(worksheet, context);
-    worksheet.getRangeByIndexes(action.row, 0, 1, columnCount).delete('Up');
-  }
-
-  private static async insertColumn(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.col === undefined) throw new Error('INSERT_COLUMN action requires col');
-    const count = action.count ?? 1;
-    const rowCount = await this.getUsedRowCount(worksheet, context);
-    const range = worksheet.getRangeByIndexes(0, action.col, rowCount, count);
-    range.getEntireColumn().insert(action.position === 'left' ? 'Left' : 'Right');
-  }
-
-  private static async deleteColumn(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.col === undefined) throw new Error('DELETE_COLUMN action requires col');
-    const rowCount = await this.getUsedRowCount(worksheet, context);
-    worksheet.getRangeByIndexes(0, action.col, rowCount, 1).delete('Left');
-  }
-
-  private static hideRow(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined) return;
-    worksheet.getRangeByIndexes(action.row, 0, action.rowCount ?? 1, 1).rowHidden = true;
-  }
-
-  private static showRow(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined) return;
-    worksheet.getRangeByIndexes(action.row, 0, action.rowCount ?? 1, 1).rowHidden = false;
-  }
-
-  private static hideColumn(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.col === undefined) return;
-    worksheet.getRangeByIndexes(0, action.col, 1, action.colCount ?? 1).columnHidden = true;
-  }
-
-  private static showColumn(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.col === undefined) return;
-    worksheet.getRangeByIndexes(0, action.col, 1, action.colCount ?? 1).columnHidden = false;
-  }
-
-  private static setRowHeight(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined || action.height === undefined) return;
-    worksheet.getRangeByIndexes(action.row, 0, 1, 1).format.rowHeight = action.height;
-  }
-
-  private static setColumnWidth(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.col === undefined || action.width === undefined) return;
-    worksheet.getRangeByIndexes(0, action.col, 1, 1).format.columnWidth = action.width;
-  }
-
-  private static freezePanes(worksheet: Excel.Worksheet, action: SheetAction): void {
-    const rows = action.freezeRows ?? 1;
-    const cols = action.freezeColumns ?? 0;
-    if (rows > 0) worksheet.freezePanes.freezeRows(rows);
-    if (cols > 0) worksheet.freezePanes.freezeColumns(cols);
-  }
-
-  private static setZoom(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (typeof action.zoomPercent !== 'number') return;
-    const clamped = Math.max(10, Math.min(400, Math.round(action.zoomPercent)));
-    worksheet.sheetView.zoom = clamped;
-  }
-
-  private static mergeCells(worksheet: Excel.Worksheet, action: SheetAction): void {
-    this.getRange(worksheet, action).merge(action.mergeAcross ?? false);
-  }
-
-  private static unmergeCells(worksheet: Excel.Worksheet, action: SheetAction): void {
-    this.getRange(worksheet, action).unmerge();
-  }
-
-  private static clearRange(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    applyTo: Excel.ClearApplyTo,
-  ): void {
-    this.getRange(worksheet, action).clear(applyTo);
-  }
-
-  private static formatRange(worksheet: Excel.Worksheet, action: SheetAction): void {
-    const range = this.getRange(worksheet, action);
-    const fmt = action.format;
-    if (!fmt) return;
-
-    if (fmt.bold !== undefined) range.format.font.bold = fmt.bold;
-    if (fmt.italic !== undefined) range.format.font.italic = fmt.italic;
-    if (fmt.underline !== undefined) range.format.font.underline = fmt.underline ? 'Single' : 'None';
-    if (fmt.fontSize !== undefined) range.format.font.size = fmt.fontSize;
-    if (fmt.fontColor !== undefined) range.format.font.color = fmt.fontColor;
-    if (fmt.clearFill) {
-      range.format.fill.clear();
-    } else if (fmt.fillColor !== undefined) {
-      range.format.fill.pattern = 'Solid';
-      range.format.fill.color = fmt.fillColor;
-    }
-    if (fmt.horizontalAlignment !== undefined) {
-      const map: Record<string, Excel.HorizontalAlignment> = {
-        left: 'Left',
-        center: 'Center',
-        right: 'Right',
-      };
-      range.format.horizontalAlignment = map[fmt.horizontalAlignment] ?? 'General';
-    }
-    if (fmt.verticalAlignment !== undefined) {
-      const map: Record<string, Excel.VerticalAlignment> = {
-        top: 'Top',
-        middle: 'Center',
-        bottom: 'Bottom',
-      };
-      range.format.verticalAlignment = map[fmt.verticalAlignment] ?? 'Bottom';
-    }
-    if (fmt.wrapText !== undefined) range.format.wrapText = fmt.wrapText;
-    if (fmt.numberFormat !== undefined) range.numberFormat = [[fmt.numberFormat]];
-
-    if (fmt.borders) {
-      const borders = range.format.borders;
-      const style = 'Continuous' as Excel.BorderStyle;
-      if (fmt.borders === 'all' || fmt.borders === 'outer') {
-        (['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'] as Excel.BorderSide[]).forEach((edge) => {
-          borders.getItem(edge).style = style;
-        });
-      }
-      if (fmt.borders === 'bottom') {
-        borders.getItem('EdgeBottom').style = style;
-      }
-      if (fmt.borders === 'none') {
-        (['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'] as Excel.BorderSide[]).forEach((edge) => {
-          borders.getItem(edge).style = 'None';
-        });
-      }
-    }
-  }
-
-  private static async fillDown(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.col === undefined || action.row === undefined) return;
-    const endRow = action.endRow ?? (await this.getUsedRowCount(worksheet, context)) - 1;
-    if (endRow <= action.row) return;
-
-    const source = worksheet.getRangeByIndexes(action.row, action.col, 1, 1);
-    const dest = worksheet.getRangeByIndexes(action.row, action.col, endRow - action.row + 1, 1);
-    source.autoFill(dest, Excel.AutoFillType.fillDefault);
-  }
-
-  private static async fillRight(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<void> {
-    if (action.row === undefined || action.col === undefined) return;
-    const endCol = action.endCol ?? (await this.getUsedColumnCount(worksheet, context)) - 1;
-    if (endCol <= action.col) return;
-
-    const source = worksheet.getRangeByIndexes(action.row, action.col, 1, 1);
-    const dest = worksheet.getRangeByIndexes(action.row, action.col, 1, endCol - action.col + 1);
-    source.autoFill(dest, Excel.AutoFillType.fillDefault);
-  }
-
-  private static async createSheet(context: Excel.RequestContext, action: SheetAction): Promise<void> {
-    const sheets = context.workbook.worksheets;
-    const sheetName = sanitizeExcelSheetName(action.sheetName ?? action.name ?? 'New Sheet');
-    const newSheet = sheets.add(sheetName);
-
-    if (action.relativeTo && action.position) {
-      const refSheet = sheets.getItem(action.relativeTo);
-      refSheet.load('position');
-      await context.sync();
-      newSheet.position = action.position === 'before' ? refSheet.position : refSheet.position + 1;
-    }
-  }
-
-  private static async deleteSheet(context: Excel.RequestContext, action: SheetAction): Promise<void> {
-    if (!action.sheetName) return;
-    context.workbook.worksheets.getItem(action.sheetName).delete();
-  }
-
-  private static async copySheet(context: Excel.RequestContext, action: SheetAction): Promise<void> {
-    if (!action.sheetName) return;
-    const copy = context.workbook.worksheets.getItem(action.sheetName).copy();
-    if (action.newSheetName) copy.name = action.newSheetName;
-  }
-
-  private static async setSheetVisibility(
-    context: Excel.RequestContext,
-    sheetName: string | undefined,
-    visibility: Excel.SheetVisibility,
-  ): Promise<void> {
-    if (!sheetName) return;
-    context.workbook.worksheets.getItem(sheetName).visibility = visibility;
-  }
-
-  private static async setSheetColor(context: Excel.RequestContext, action: SheetAction): Promise<void> {
-    if (!action.sheetName || !action.color) return;
-    context.workbook.worksheets.getItem(action.sheetName).tabColor = action.color;
-  }
-
-  private static addComment(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined || action.col === undefined || !action.comment) return;
-    this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 }).getComment().add(action.comment);
-  }
-
-  private static deleteComment(worksheet: Excel.Worksheet, action: SheetAction): void {
-    if (action.row === undefined || action.col === undefined) return;
-    this.getRange(worksheet, { ...action, rowCount: 1, colCount: 1 }).getComment().delete();
   }
 
   private static async getPreviewTarget(
@@ -774,14 +301,6 @@ export class ActionEngine {
     return bounds.columnCount;
   }
 
-  private static async getUsedRowCount(
-    worksheet: Excel.Worksheet,
-    context: Excel.RequestContext,
-  ): Promise<number> {
-    const bounds = await this.getRealUsedBounds(worksheet, context);
-    return bounds.nextRow;
-  }
-
   private static async getRealUsedBounds(
     worksheet: Excel.Worksheet,
     context: Excel.RequestContext,
@@ -789,11 +308,11 @@ export class ActionEngine {
     const usedRange = worksheet.getUsedRange();
     if (!usedRange) return { nextRow: 0, columnCount: 1 };
 
-    usedRange.load(['values', 'row', 'column', 'rowCount', 'columnCount']);
+    usedRange.load(['values', 'rowIndex', 'columnIndex', 'rowCount', 'columnCount']);
     await context.sync();
 
     const values = usedRange.values ?? [];
-    const baseRow = usedRange.row ?? 0;
+    const baseRow = usedRange.rowIndex ?? 0;
     let lastRelativeRow = -1;
     let lastRelativeColumn = -1;
 
@@ -832,10 +351,15 @@ export class ActionEngine {
 
   private static restoreFill(
     range: Excel.Range,
-    pattern: Excel.FillPattern,
+    pattern: Excel.RangeFill['pattern'],
     color: string | null,
   ): void {
     range.format.fill.pattern = pattern;
+    // A cell with no fill reports a null colour; clear() is how that is restored.
+    if (color === null) {
+      range.format.fill.clear();
+      return;
+    }
     range.format.fill.color = color;
   }
 

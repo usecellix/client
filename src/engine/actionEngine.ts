@@ -23,7 +23,7 @@ import {
   handleAutofitColumns,
 } from './handlers/table.handler';
 import { handleSortRange } from './handlers/sort.handler';
-import { handleCopyFilteredRange, handleMoveRange, handleFormatMatchingRows } from './handlers/range.handler';
+import { handleCopyFilteredRange, handleMoveRange, handleFormatMatchingRows, handleSetMatchingRows } from './handlers/range.handler';
 import { handleAggregateTable } from './handlers/aggregate.handler';
 import {
   handleAppendRow,
@@ -38,9 +38,11 @@ import { applyRichFormat } from './handlers/format.handler';
 import { handleWorksheetAction } from './handlers/worksheet.handler';
 import { handleCreateChart, handleUpdateChart } from './handlers/chart.handler';
 import {
+  annotateDestOverwriteForCreatedSheets,
   guardAgainstOverwrite,
   isOverwriteGuardError,
   OverwriteGuardError,
+  pruneSpuriousAddSheets,
 } from './overwriteGuard';
 import { selectActionRanges } from './selectRanges';
 import { resolveWorksheet } from './sheetResolve';
@@ -51,14 +53,17 @@ export class RichActionEngine {
   async applyActions(actions: RichAction[]): Promise<{ applied: number; errors: string[] }> {
     const errors: string[] = [];
     let applied = 0;
+    const prepared = annotateDestOverwriteForCreatedSheets(
+      pruneSpuriousAddSheets(actions),
+    );
 
-    if (actions.length === 0) {
+    if (prepared.length === 0) {
       return { applied, errors };
     }
 
     try {
       await Excel.run(async (ctx) => {
-        for (const action of actions) {
+        for (const action of prepared) {
           try {
             await this.dispatch(action, ctx);
             applied += 1;
@@ -76,7 +81,7 @@ export class RichActionEngine {
         // Mouse-select edited area (no fill colors) after successful writes.
         if (applied > 0) {
           try {
-            await selectActionRanges(actions, ctx);
+            await selectActionRanges(prepared, ctx);
           } catch (selectErr) {
             console.warn('[Cellix] Failed to select applied ranges:', selectErr);
           }
@@ -182,6 +187,9 @@ export class RichActionEngine {
         return;
       case 'FORMAT_MATCHING_ROWS':
         await handleFormatMatchingRows(action, ctx);
+        return;
+      case 'SET_MATCHING_ROWS':
+        await handleSetMatchingRows(action, ctx);
         return;
       case 'MOVE_RANGE':
         await handleMoveRange(action, ctx);

@@ -16,6 +16,12 @@ export interface ActionResponseCardProps {
   onReject: () => void;
   /** For tests — start with details expanded. */
   defaultDetailsExpanded?: boolean;
+  /**
+   * Staged accept waves: set when this block's dependency (e.g. the sheet-
+   * creation wave) has not been accepted yet. Disables Accept and explains why
+   * instead of letting the user apply writes that would fail or land wrong.
+   */
+  blockedReason?: string;
 }
 
 export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
@@ -26,6 +32,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   onAccept,
   onReject,
   defaultDetailsExpanded = false,
+  blockedReason,
 }) => {
   const [detailsOpen, setDetailsOpen] = useState(defaultDetailsExpanded);
   const summary = resolveActionBlockCopy({
@@ -113,7 +120,8 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
           type="button"
           className="cellix-btn-accept"
           onClick={onAccept}
-          disabled={isApplying}
+          disabled={isApplying || Boolean(blockedReason)}
+          title={blockedReason}
         >
           {isApplying ? 'Applying…' : 'Accept'}
         </button>
@@ -125,6 +133,17 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
         >
           Reject
         </button>
+      </div>
+    ) : null;
+
+  const blockedNotice =
+    isPending && blockedReason ? (
+      <div
+        className="cellix-action-blocked-notice"
+        data-testid="action-blocked-notice"
+        style={{ fontSize: 11.5, color: 'var(--cx-gray-500)', marginTop: 4 }}
+      >
+        {blockedReason}
       </div>
     ) : null;
 
@@ -157,6 +176,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
         <div className="cellix-changes-link" style={{ marginTop: 6 }}>
           <span style={{ fontSize: 12, color: 'var(--cx-gray-500)' }}>Pending review</span>
         </div>
+        {blockedNotice}
         {acceptReject}
         {detailsSection}
       </div>
@@ -167,6 +187,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     <div className="cellix-action-card cellix-block-enter">
       <div className="cellix-action-card-title">Cellix will make these changes:</div>
       {summaryBody}
+      {blockedNotice}
       {acceptReject}
       {detailsSection}
     </div>

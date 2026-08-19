@@ -13,6 +13,7 @@ function makeSheet(values: unknown[][], rowCount = values.length): SheetContext 
     numberFormats: values.map(() => ['', '', '', '']),
     structure: 'data_table',
     headers: ['Item', 'Qty', 'Rate', 'Amount'],
+    headerRowIndex: 0,
     formulaSummary: '',
     isHidden: false,
   };

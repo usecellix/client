@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
 import { MatchResult } from '@/types/conversationTurn';
-import { navigateToCell } from '@/services/rangeFetchService';
 import ResponseOutput from './ResponseOutput';
 
 interface AnswerRevealProps {

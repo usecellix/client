@@ -124,6 +124,59 @@ describe('ActionResponseCard', () => {
   });
 });
 
+describe('ActionResponseCard — staged accept wave gating', () => {
+  it('disables Accept and shows the reason when blockedReason is set', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock(),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+        blockedReason: 'Accept the earlier step first.',
+      }),
+    );
+
+    expect(html).toContain('Accept the earlier step first.');
+    expect(html).toContain('data-testid="action-blocked-notice"');
+    // The Accept button itself must be disabled, not just annotated.
+    const acceptButtonHtml = html.slice(html.indexOf('cellix-btn-accept') - 40, html.indexOf('cellix-btn-accept') + 200);
+    expect(acceptButtonHtml).toContain('disabled');
+  });
+
+  it('leaves Reject enabled while blocked, so a stuck wave can still be dismissed', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock(),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+        blockedReason: 'Accept the earlier step first.',
+      }),
+    );
+
+    const rejectButtonHtml = html.slice(html.indexOf('cellix-btn-reject') - 40, html.indexOf('cellix-btn-reject') + 200);
+    expect(rejectButtonHtml).not.toContain('disabled');
+  });
+
+  it('renders no blocked notice and an enabled Accept when blockedReason is unset', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock(),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).not.toContain('data-testid="action-blocked-notice"');
+    const acceptButtonHtml = html.slice(html.indexOf('cellix-btn-accept') - 40, html.indexOf('cellix-btn-accept') + 200);
+    expect(acceptButtonHtml).not.toContain('disabled');
+  });
+});
+
 describe('resolveActionBlockCopy', () => {
   it('falls back without leaking tier jargon from legacy explanation', () => {
     const copy = resolveActionBlockCopy({

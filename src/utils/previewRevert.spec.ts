@@ -4,6 +4,7 @@ import {
   buildStructuralRevertActions,
   partitionPreviewActions,
 } from './previewRevert';
+import type { SheetAction } from '@/types/sheet-actions';
 
 describe('previewRevert', () => {
   it('partitions sheet create from cell writes', () => {
@@ -44,7 +45,7 @@ describe('previewRevert', () => {
   });
 
   it('builds full reject list when structural preview was applied', () => {
-    const actions = [
+    const actions: SheetAction[] = [
       { type: 'ADD_SHEET', name: 'Cellix' },
       { type: 'SET_CELL', sheetName: 'Cellix', row: 0, col: 0, value: 'Hi' },
     ];
@@ -53,7 +54,7 @@ describe('previewRevert', () => {
   });
 
   it('defers DELETE_SHEET until accept (reject is a no-op on workbook)', () => {
-    const actions = [{ type: 'DELETE_SHEET', sheetName: 'Cellix' }];
+    const actions: SheetAction[] = [{ type: 'DELETE_SHEET', sheetName: 'Cellix' }];
     const { structural, deferred } = partitionPreviewActions(actions);
     expect(structural).toHaveLength(0);
     expect(deferred).toHaveLength(1);

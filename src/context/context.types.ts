@@ -10,6 +10,12 @@ export interface SheetContext {
   numberFormats: string[][];
   structure: SheetStructure;
   headers: string[];
+  /**
+   * 0-based index into `values` where `headers` was actually found. Sheets
+   * exported from other tools often have title/preamble rows above the real
+   * header row — code must key off this instead of assuming headers are row 0.
+   */
+  headerRowIndex: number;
   formulaSummary: string;
   isHidden: boolean;
 }

@@ -263,6 +263,10 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
     case 'UNFREEZE_PANES':
       return { type: 'UNFREEZE_PANES', sheetName } as unknown as RichAction;
 
+    case 'AUTO_FILTER':
+      if (typeof action.range !== 'string' || !action.range) return null;
+      return { type: 'AUTO_FILTER', sheetName, range: action.range } as unknown as RichAction;
+
     case 'SET_ZOOM':
       if (typeof action.zoomPercent !== 'number') return null;
       return { type: 'SET_ZOOM', sheetName, zoomPercent: action.zoomPercent } as unknown as RichAction;

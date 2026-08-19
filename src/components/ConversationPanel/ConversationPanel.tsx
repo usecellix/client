@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, KeyboardEvent } from 'react';
+import React, { useRef, useEffect, KeyboardEvent } from 'react';
 import {
   ArrowRight,
   AtSign,
@@ -741,7 +741,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onRejectActions,
   onAnswerQuestion,
   onClarificationAnswer,
-  onClarificationDismiss,
+  // onClarificationDismiss is supplied by App but no control invokes it yet —
+  // the dismiss affordance is unimplemented, so it is intentionally not bound.
   onToggleThinking,
   onAnswerComplete,
   onFollowUp,

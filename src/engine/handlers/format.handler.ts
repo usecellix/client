@@ -43,8 +43,10 @@ export function applyFormat(range: Excel.Range, format: FormatSpec): void {
     range.format.fill.color = format.fillColor;
   }
   if (format.numberFormat !== undefined) range.numberFormat = [[format.numberFormat]];
+  // Office.js types these as the enum widened with its string-literal aliases —
+  // index off the property so the literals below stay assignable.
   if (format.horizontalAlignment !== undefined) {
-    const map: Record<string, Excel.HorizontalAlignment> = {
+    const map: Record<string, Excel.RangeFormat['horizontalAlignment']> = {
       left: 'Left',
       center: 'Center',
       right: 'Right',
@@ -52,7 +54,7 @@ export function applyFormat(range: Excel.Range, format: FormatSpec): void {
     range.format.horizontalAlignment = map[format.horizontalAlignment] ?? 'General';
   }
   if (format.verticalAlignment !== undefined) {
-    const map: Record<string, Excel.VerticalAlignment> = {
+    const map: Record<string, Excel.RangeFormat['verticalAlignment']> = {
       top: 'Top',
       middle: 'Center',
       bottom: 'Bottom',
@@ -63,9 +65,12 @@ export function applyFormat(range: Excel.Range, format: FormatSpec): void {
 
   if (format.borders) {
     const borders = range.format.borders;
-    const style = 'Continuous' as Excel.BorderStyle;
+    // Office.js names these BorderLineStyle / BorderIndex — there is no BorderStyle
+    // or BorderSide. `as const` keeps the edge literals matching getItem's overload.
+    const style: Excel.RangeBorder['style'] = 'Continuous';
+    const edges = ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'] as const;
     if (format.borders === 'all' || format.borders === 'outer') {
-      (['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'] as Excel.BorderSide[]).forEach((edge) => {
+      edges.forEach((edge) => {
         borders.getItem(edge).style = style;
       });
     }
@@ -73,7 +78,7 @@ export function applyFormat(range: Excel.Range, format: FormatSpec): void {
       borders.getItem('EdgeBottom').style = style;
     }
     if (format.borders === 'none') {
-      (['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'] as Excel.BorderSide[]).forEach((edge) => {
+      edges.forEach((edge) => {
         borders.getItem(edge).style = 'None';
       });
     }

@@ -2,6 +2,7 @@ import {
   CopyFilteredRangeAction,
   FormatMatchingRowsAction,
   MoveRangeAction,
+  SetMatchingRowsAction,
 } from '@/action.types';
 import {
   isLocalRangeAddress,
@@ -13,6 +14,7 @@ import {
   buildOutputRows,
   filterDataRows,
   findMatchingRowOffsets,
+  resolveFilterColumnIndex,
   type RangeFilterSpec,
 } from '../rangeFilter';
 import { applyRichFormat } from './format.handler';
@@ -91,7 +93,8 @@ async function clearMatchedSourceRows(
   }
 
   const colIndex = headerRow.findIndex(
-    (cell) => String(cell ?? '').trim().toLowerCase() === filter.column.trim().toLowerCase(),
+    (cell) =>
+      String(cell ?? '').trim().toLowerCase() === String(filter.column).trim().toLowerCase(),
   );
   if (colIndex === -1) {
     throw new Error(`Column "${filter.column}" not found in source range`);
@@ -144,8 +147,9 @@ export async function handleCopyFilteredRange(
       const colCount = Math.max(...outputRows.map((row) => row.length), 1);
       const formatsCopyType = (Excel as any)?.RangeCopyType?.formats;
       if (formatsCopyType) {
-        // Copy header formatting.
-        const sourceHeaderRange = sourceRange.getRangeByIndexes(0, 0, 1, colCount);
+        // Copy header formatting. getRangeByIndexes is a Worksheet method — the
+        // Range-relative equivalent is getCell() widened with getResizedRange().
+        const sourceHeaderRange = sourceRange.getCell(0, 0).getResizedRange(0, colCount - 1);
         const destHeaderRange = destSheet.getRangeByIndexes(start.row, start.col, 1, colCount);
         destHeaderRange.copyFrom(sourceHeaderRange, formatsCopyType);
 
@@ -154,7 +158,9 @@ export async function handleCopyFilteredRange(
         for (let i = 0; i < matchedOffsets.length; i++) {
           const sourceRowIndex = matchedOffsets[i]!;
           const destRowIndex = i + 1; // outputRows: [header, ...matchedDataRows]
-          const sourceRowRange = sourceRange.getRangeByIndexes(sourceRowIndex, 0, 1, colCount);
+          const sourceRowRange = sourceRange
+            .getCell(sourceRowIndex, 0)
+            .getResizedRange(0, colCount - 1);
           const destRowRange = destSheet.getRangeByIndexes(start.row + destRowIndex, start.col, 1, colCount);
           destRowRange.copyFrom(sourceRowRange, formatsCopyType);
         }
@@ -224,6 +230,50 @@ export async function handleFormatMatchingRows(
   }
 
   return { rowsFormatted: offsets.length };
+}
+
+export async function handleSetMatchingRows(
+  action: SetMatchingRowsAction,
+  ctx: Excel.RequestContext,
+): Promise<{ rowsUpdated: number }> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const rangeAddress = resolveSourceRangeAddress(action.range);
+  const range = sheet.getRange(rangeAddress);
+  range.load(['values', 'rowIndex', 'columnIndex', 'columnCount']);
+  await ctx.sync();
+
+  const rows = (range.values ?? []) as unknown[][];
+  if (rows.length === 0) return { rowsUpdated: 0 };
+
+  const hasHeaders = action.hasHeaders !== false;
+  const headerRow = hasHeaders ? rows[0] : null;
+  if (!headerRow) {
+    throw new Error('SET_MATCHING_ROWS requires hasHeaders: true to resolve targetColumn');
+  }
+
+  const targetColOffset = resolveFilterColumnIndex(headerRow, action.targetColumn);
+  const absoluteTargetCol = range.columnIndex + targetColOffset;
+  const offsets = action.filter
+    ? findMatchingRowOffsets(rows, hasHeaders, action.filter)
+    : Array.from({ length: Math.max(rows.length - (hasHeaders ? 1 : 0), 0) }, (_, i) =>
+        hasHeaders ? i + 1 : i,
+      );
+
+  for (const offset of offsets) {
+    const cell = sheet.getRangeByIndexes(
+      range.rowIndex + offset,
+      absoluteTargetCol,
+      1,
+      1,
+    );
+    cell.values = [[action.value]];
+  }
+
+  if (offsets.length > 0) {
+    await ctx.sync();
+  }
+
+  return { rowsUpdated: offsets.length };
 }
 
 /** Re-export for unit tests */

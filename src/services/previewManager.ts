@@ -2,6 +2,10 @@ import { SheetAction, SheetActionType } from '@/types/sheet-actions';
 import { CellChange } from '@/types/changeSet';
 import { ActionEngine } from '@/utils/actionEngine';
 import {
+  annotateDestOverwriteForCreatedSheets,
+  pruneSpuriousAddSheets,
+} from '@/engine/overwriteGuard';
+import {
   buildPreviewRejectActions,
   DEFERRED_PREVIEW_ACTION_TYPES,
   partitionPreviewActions,
@@ -66,8 +70,21 @@ export class PreviewManager {
       await ctx.sync();
 
       for (const action of payload.actions) {
-        const sheetName = action.sheetName ?? activeSheet.name;
-        const ws = ctx.workbook.worksheets.getItem(sheetName);
+        // COPY/sort natives use sourceSheet/destSheet — skip if no cell target.
+        const sheetName =
+          action.sheetName ??
+          (action as { destSheet?: string }).destSheet ??
+          activeSheet.name;
+        if (!sheetName) continue;
+
+        const ws = ctx.workbook.worksheets.getItemOrNullObject(String(sheetName));
+        ws.load('isNullObject,name');
+        await ctx.sync();
+        if (ws.isNullObject) {
+          // Sheet may only exist after Accept if create soft-preview failed — skip cell probe.
+          continue;
+        }
+
         const target = await this.resolveTarget(ws, action, ctx);
         if (!target) continue;
 
@@ -78,7 +95,7 @@ export class PreviewManager {
         await ctx.sync();
 
         diffItems.push({
-          sheetName,
+          sheetName: String(sheetName),
           address: resolvedAddress,
           actionType: action.type,
           before: this.serializeValues(range.values),
@@ -97,7 +114,9 @@ export class PreviewManager {
     if (!this.isActive || this.applying) return;
     this.applying = true;
 
-    const actions = [...this.pendingActions];
+    const actions = annotateDestOverwriteForCreatedSheets(
+      pruneSpuriousAddSheets([...this.pendingActions]),
+    );
     const { structural, deferred } = partitionPreviewActions(actions);
     const hardDeferred = deferred.filter((action) =>
       DEFERRED_PREVIEW_ACTION_TYPES.has(action.type),
@@ -315,11 +334,11 @@ export class PreviewManager {
     const usedRange = worksheet.getUsedRange();
     if (!usedRange) return { nextRow: 0, columnCount: 1 };
 
-    usedRange.load(['values', 'row', 'column', 'rowCount', 'columnCount']);
+    usedRange.load(['values', 'rowIndex', 'columnIndex', 'rowCount', 'columnCount']);
     await context.sync();
 
     const values = usedRange.values ?? [];
-    const baseRow = usedRange.row ?? 0;
+    const baseRow = usedRange.rowIndex ?? 0;
     let lastRelativeRow = -1;
     let lastRelativeColumn = -1;
 
