@@ -31,6 +31,24 @@ export function applyRichFormat(range: Excel.Range, format: RichFormatSpec): voi
   applyFormat(range, toLegacyFormat(format));
 }
 
+/**
+ * `Excel.ConditionalRangeFormat` (used by CONDITIONAL_FORMAT) is a distinct,
+ * narrower API from `Excel.RangeFormat` — no `numberFormat` as a 2D array (it's
+ * a plain string), no alignment/wrapText, `underline` is a string enum rather
+ * than boolean. Deliberately not unified with `applyFormat` above.
+ */
+export function applyConditionalRangeFormat(
+  target: Excel.ConditionalRangeFormat,
+  format: RichFormatSpec,
+): void {
+  if (format.bold !== undefined) target.font.bold = format.bold;
+  if (format.italic !== undefined) target.font.italic = format.italic;
+  if (format.underline !== undefined) target.font.underline = format.underline ? 'Single' : 'None';
+  if (format.fontColor !== undefined) target.font.color = format.fontColor;
+  if (format.fillColor !== undefined) target.fill.color = format.fillColor;
+  if (format.numberFormat !== undefined) target.numberFormat = format.numberFormat;
+}
+
 export function applyFormat(range: Excel.Range, format: FormatSpec): void {
   if (format.bold !== undefined) range.format.font.bold = format.bold;
   if (format.italic !== undefined) range.format.font.italic = format.italic;

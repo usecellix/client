@@ -147,6 +147,19 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       </div>
     ) : null;
 
+  const hasIrreversibleActions = Boolean(block.irreversibleActionTypes?.length);
+  const irreversibleNotice =
+    isPending && hasIrreversibleActions ? (
+      <div
+        className="cellix-action-irreversible-notice"
+        data-testid="action-irreversible-notice"
+        style={{ fontSize: 11.5, color: 'var(--warning-amber)', marginTop: 4 }}
+      >
+        Not fully undoable: {block.irreversibleActionTypes!.join(', ')} — this change cannot be
+        automatically reverted once applied.
+      </div>
+    ) : null;
+
   if (isAccepted) {
     return (
       <div className="cellix-changes-card cellix-block-enter">
@@ -177,6 +190,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
           <span style={{ fontSize: 12, color: 'var(--cx-gray-500)' }}>Pending review</span>
         </div>
         {blockedNotice}
+        {irreversibleNotice}
         {acceptReject}
         {detailsSection}
       </div>
@@ -188,6 +202,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       <div className="cellix-action-card-title">Cellix will make these changes:</div>
       {summaryBody}
       {blockedNotice}
+      {irreversibleNotice}
       {acceptReject}
       {detailsSection}
     </div>

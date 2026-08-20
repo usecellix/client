@@ -5,7 +5,7 @@ import { ALL_FRONTEND_SHEET_ACTION_TYPES } from './sheetActionCatalog';
 // (Object.keys of its Record<SheetActionType, CatalogEntry>), not a
 // hand-copied list, so it can never itself drift from what the backend
 // actually declares.
-import { ALL_SHEET_ACTION_TYPES } from '../../../cellix_backend/src/excel-ai/types/action-catalog';
+import { ALL_SHEET_ACTION_TYPES } from '../../../Server/src/excel-ai/types/action-catalog';
 
 // Compared as plain strings, not the two packages' distinct SheetActionType
 // literal unions — those two types are legitimately different (frontend's

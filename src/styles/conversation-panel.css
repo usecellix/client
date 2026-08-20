@@ -2744,6 +2744,126 @@
   background: var(--cx-gray-50);
 }
 
+.cellix-checkpoint-panel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--cx-border);
+  background: var(--cx-gray-50);
+}
+
+.cellix-checkpoint-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  color: var(--cx-gray-600);
+  cursor: pointer;
+}
+
+.cellix-checkpoint-body {
+  padding: 0 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cellix-checkpoint-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 4px 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.cellix-checkpoint-create:hover:not(:disabled) {
+  background: var(--cx-gray-50);
+}
+
+.cellix-checkpoint-error {
+  font-size: 11px;
+  color: #991b1b;
+  background: #fee2e2;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0;
+}
+
+.cellix-checkpoint-item {
+  padding: 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--cx-gray-100);
+}
+
+.cellix-checkpoint-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.cellix-checkpoint-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cx-gray-800);
+  flex: 1 1 100%;
+}
+
+.cellix-checkpoint-trigger {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.cellix-checkpoint-trigger-auto {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.cellix-checkpoint-trigger-manual {
+  background: var(--cx-brand-50, #ecfdf5);
+  color: var(--cx-brand-700, #047857);
+}
+
+.cellix-checkpoint-status {
+  font-size: 10px;
+  color: var(--cx-gray-500);
+  text-transform: uppercase;
+}
+
+.cellix-checkpoint-time {
+  font-size: 10px;
+  color: var(--cx-gray-400);
+  margin-bottom: 6px;
+}
+
+.cellix-checkpoint-restore {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.cellix-checkpoint-restore:hover:not(:disabled) {
+  background: var(--cx-gray-50);
+}
+
 .cellix-cost-dashboard {
   border-top: 1px solid var(--cx-border);
   background: var(--cx-gray-50);

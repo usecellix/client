@@ -72,6 +72,7 @@ async function buildMinimalWorkbookContext(): Promise<{
     ],
     namedRanges: [],
     tables: [],
+    conditionalFormats: [],
     prompt_context: `Active sheet: ${minimal.name}\nRows: ${minimal.rowCount}\nHeaders: ${headers.join(' | ')}`,
   };
 

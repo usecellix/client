@@ -1,5 +1,8 @@
 import {
+  ConditionalFormatAction,
+  ConditionalFormatOperator,
   CopyFilteredRangeAction,
+  DeleteConditionalFormatAction,
   FormatMatchingRowsAction,
   MoveRangeAction,
   SetMatchingRowsAction,
@@ -17,7 +20,7 @@ import {
   resolveFilterColumnIndex,
   type RangeFilterSpec,
 } from '../rangeFilter';
-import { applyRichFormat } from './format.handler';
+import { applyConditionalRangeFormat, applyRichFormat } from './format.handler';
 import { resolveWorksheet } from './resolveWorksheet';
 
 /* global Excel */
@@ -274,6 +277,125 @@ export async function handleSetMatchingRows(
   }
 
   return { rowsUpdated: offsets.length };
+}
+
+const CONDITIONAL_FORMAT_OPERATOR_MAP: Record<
+  ConditionalFormatOperator,
+  Excel.ConditionalCellValueRule['operator']
+> = {
+  greaterThan: 'GreaterThan',
+  greaterThanOrEqual: 'GreaterThanOrEqual',
+  lessThan: 'LessThan',
+  lessThanOrEqual: 'LessThanOrEqual',
+  equalTo: 'EqualTo',
+  notEqualTo: 'NotEqualTo',
+  between: 'Between',
+  notBetween: 'NotBetween',
+};
+
+/** Office.js's ConditionalCellValueRule.formula1/2 take a formula string — quote text values. */
+function toConditionalFormatFormula(value: number | string): string {
+  return typeof value === 'number' ? String(value) : `"${String(value).replace(/"/g, '""')}"`;
+}
+
+const CONDITIONAL_FORMAT_RULE_KIND_TO_OFFICE_TYPE: Record<
+  ConditionalFormatAction['rule']['kind'],
+  Excel.ConditionalFormatType | 'CellValue' | 'Custom' | 'TopBottom' | 'ColorScale'
+> = {
+  cellValue: 'CellValue',
+  formula: 'Custom',
+  topBottom: 'TopBottom',
+  colorScale: 'ColorScale',
+};
+
+/**
+ * Applies a live, re-evaluating Excel conditional-format rule — never a
+ * one-shot computed fill (PRD M7). When `action.existingRuleId` is set
+ * (TASKS.md #38), resolves the already-existing rule via
+ * `conditionalFormats.getItem(id)` and mutates it in place instead of
+ * `.add(...)`-ing a duplicate — `rule.kind` must match the existing rule's
+ * own kind; Office.js throws if the wrong sub-object (`cellValue`/`custom`/
+ * `topBottom`/`colorScale`) is written for the retrieved rule's actual type.
+ *
+ * On a plain create, reads back the real Excel-assigned rule `.id` and
+ * returns it — this is the apply-time id capture TASKS.md #40 needs to make
+ * revert possible: the backend can't know this id at preview time (Office.js
+ * only assigns it once `.add()` actually runs), so `RichActionEngine`
+ * collects it here and reports it to `POST /audit/apply/:changeSetId` on
+ * accept, which patches it into the change set's `structuralOps`.
+ */
+export async function handleConditionalFormat(
+  action: ConditionalFormatAction,
+  ctx: Excel.RequestContext,
+): Promise<{ createdConditionalFormatId?: string } | void> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+
+  const conditionalFormat = action.existingRuleId
+    ? sheet.getUsedRange().conditionalFormats.getItem(action.existingRuleId)
+    : sheet
+        .getRange(resolveSourceRangeAddress(action.range))
+        .conditionalFormats.add(
+          CONDITIONAL_FORMAT_RULE_KIND_TO_OFFICE_TYPE[action.rule.kind] as Excel.ConditionalFormatType,
+        );
+
+  if (action.rule.kind === 'formula') {
+    conditionalFormat.custom.rule.formula = action.rule.formula;
+    applyConditionalRangeFormat(conditionalFormat.custom.format, action.rule.format);
+  } else if (action.rule.kind === 'topBottom') {
+    const type: Excel.ConditionalTopBottomRule['type'] = action.rule.isPercent
+      ? action.rule.side === 'top'
+        ? 'TopPercent'
+        : 'BottomPercent'
+      : action.rule.side === 'top'
+        ? 'TopItems'
+        : 'BottomItems';
+    conditionalFormat.topBottom.rule = { type, rank: action.rule.rank };
+    applyConditionalRangeFormat(conditionalFormat.topBottom.format, action.rule.format);
+  } else if (action.rule.kind === 'colorScale') {
+    const { colors } = action.rule;
+    const criteria: Excel.ConditionalColorScaleCriteria = {
+      minimum: { type: 'LowestValue', color: colors[0] },
+      maximum: { type: 'HighestValue', color: colors[colors.length - 1]! },
+    };
+    if (colors.length === 3) {
+      criteria.midpoint = { formula: '50', type: 'Percentile', color: colors[1] };
+    }
+    conditionalFormat.colorScale.criteria = criteria;
+  } else {
+    conditionalFormat.cellValue.rule = {
+      operator: CONDITIONAL_FORMAT_OPERATOR_MAP[action.rule.operator],
+      formula1: toConditionalFormatFormula(action.rule.value),
+      ...(action.rule.value2 !== undefined
+        ? { formula2: toConditionalFormatFormula(action.rule.value2) }
+        : {}),
+    };
+    applyConditionalRangeFormat(conditionalFormat.cellValue.format, action.rule.format);
+  }
+
+  if (!action.existingRuleId) {
+    conditionalFormat.load('id');
+  }
+  await ctx.sync();
+
+  if (!action.existingRuleId) {
+    return { createdConditionalFormatId: conditionalFormat.id };
+  }
+}
+
+/**
+ * Revert-only inverse of a CONDITIONAL_FORMAT create (TASKS.md #40) — deletes
+ * a specific rule by its real Excel-assigned id, resolved via the sheet's
+ * used range (the same range CONDITIONAL_FORMAT rules were originally read
+ * back from in `workbookReader.ts`).
+ */
+export async function handleDeleteConditionalFormat(
+  action: DeleteConditionalFormatAction,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const conditionalFormat = sheet.getUsedRange().conditionalFormats.getItem(action.ruleId);
+  conditionalFormat.delete();
+  await ctx.sync();
 }
 
 /** Re-export for unit tests */

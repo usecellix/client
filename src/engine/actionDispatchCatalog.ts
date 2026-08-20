@@ -31,8 +31,10 @@ const DISPATCH_CATALOG: Record<RichAction['type'], true> = {
   RENAME_SHEET: true,
   COPY_SHEET: true,
   CREATE_TABLE: true,
+  DELETE_TABLE: true,
   CREATE_CHART: true,
   UPDATE_CHART: true,
+  DELETE_CHART: true,
   AGGREGATE_TABLE: true,
   DEFINE_NAMED_RANGE: true,
   AUTOFIT_COLUMNS: true,
@@ -61,6 +63,8 @@ const DISPATCH_CATALOG: Record<RichAction['type'], true> = {
   SET_SHEET_COLOR: true,
   ADD_COMMENT: true,
   DELETE_COMMENT: true,
+  CONDITIONAL_FORMAT: true,
+  DELETE_CONDITIONAL_FORMAT: true,
 };
 
 /** Every RichAction type the frontend can dispatch, derived from the catalog above. */

@@ -59,6 +59,12 @@ export interface ActionBlock {
    * actions (e.g. sheet creates) must actually exist first.
    */
   dependsOnChangeSetId?: string;
+  /**
+   * Action types in this batch with no defined inverse (per the backend's
+   * reversibility-catalog.ts). Surfaced here so the user is warned before
+   * Accept, not only discovered later when a revert fails.
+   */
+  irreversibleActionTypes?: string[];
 }
 
 export interface StatusBlock {

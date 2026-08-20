@@ -54,7 +54,16 @@ function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
       const header = headers[colIdx] ?? '';
       const colValues = sheet.values.slice(headerRowIndex + 1).map((row) => row[colIdx] ?? null);
       const nonEmpty = colValues.filter((v) => !isBlankCell(v));
-      const fmt = String(sheet.numberFormats[headerRowIndex]?.[colIdx] ?? '');
+      // Prefer the real per-column read (TASKS.md #64, from the first data row) —
+      // fall back to the header row's numberFormat only for a minimal/legacy
+      // context that never populated columnFormats (e.g. buildMinimalWorkbookContext).
+      const columnFormat = sheet.columnFormats?.[colIdx];
+      const fmt = columnFormat?.numberFormat ?? String(sheet.numberFormats[headerRowIndex]?.[colIdx] ?? '');
+      const hasFontOrFill =
+        columnFormat?.bold !== undefined ||
+        columnFormat?.italic !== undefined ||
+        columnFormat?.fontColor !== undefined ||
+        columnFormat?.fillColor !== undefined;
 
       return {
         index: colIdx,
@@ -64,6 +73,16 @@ function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
         numberFormat:
           detectDateFormat(fmt) ??
           (fmt && fmt !== 'General' && fmt !== '@' ? fmt : undefined),
+        ...(hasFontOrFill
+          ? {
+              format: {
+                bold: columnFormat?.bold,
+                italic: columnFormat?.italic,
+                fontColor: columnFormat?.fontColor,
+                fillColor: columnFormat?.fillColor,
+              },
+            }
+          : {}),
       };
     },
   );
@@ -99,6 +118,7 @@ export function deepToApiWorkbookContext(deep: DeepWorkbookContext): WorkbookCon
     sheets: deep.sheets.map(sheetToSnapshot),
     namedRanges: deep.namedRanges,
     tables: deep.tables,
+    conditionalFormats: deep.conditionalFormats,
     prompt_context: deep.prompt_context,
   };
 }

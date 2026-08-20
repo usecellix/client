@@ -177,6 +177,54 @@ describe('ActionResponseCard — staged accept wave gating', () => {
   });
 });
 
+describe('ActionResponseCard — irreversibility warning', () => {
+  it('warns before Accept when the batch includes an action with no defined inverse', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({ irreversibleActionTypes: ['RENAME_SHEET'] }),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).toContain('data-testid="action-irreversible-notice"');
+    expect(html).toContain('RENAME_SHEET');
+    // Warning only, not a block — Accept must stay enabled.
+    const acceptButtonHtml = html.slice(html.indexOf('cellix-btn-accept') - 40, html.indexOf('cellix-btn-accept') + 200);
+    expect(acceptButtonHtml).not.toContain('disabled');
+  });
+
+  it('renders no irreversibility notice when the batch is fully revertible', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({ irreversibleActionTypes: [] }),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).not.toContain('data-testid="action-irreversible-notice"');
+  });
+
+  it('renders no irreversibility notice once accepted, even if the batch had irreversible actions', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({ irreversibleActionTypes: ['RENAME_SHEET'], proposalStatus: 'accepted' }),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).not.toContain('data-testid="action-irreversible-notice"');
+  });
+});
+
 describe('resolveActionBlockCopy', () => {
   it('falls back without leaking tier jargon from legacy explanation', () => {
     const copy = resolveActionBlockCopy({

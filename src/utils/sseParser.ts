@@ -38,6 +38,11 @@ export interface SseActionsData {
    * actions can safely apply.
    */
   dependsOnChangeSetId?: string;
+  /**
+   * Action types in this batch with no defined inverse (per the backend's
+   * reversibility-catalog.ts) — surfaced to warn the user before Accept.
+   */
+  irreversibleActionTypes?: string[];
 }
 
 export interface SseToolRequestData {
@@ -146,6 +151,9 @@ function normalizeActionsData(p: Record<string, unknown>): SseActionsData {
     userFacingSummary: parseUserFacingSummary(p.userFacingSummary),
     internalDetails: parseInternalDetails(p.internalDetails),
     dependsOnChangeSetId: typeof p.dependsOnChangeSetId === 'string' ? p.dependsOnChangeSetId : undefined,
+    irreversibleActionTypes: Array.isArray(p.irreversibleActionTypes)
+      ? (p.irreversibleActionTypes as string[])
+      : undefined,
   };
 }
 

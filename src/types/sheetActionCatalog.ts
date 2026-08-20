@@ -56,6 +56,7 @@ const SHEET_ACTION_CATALOG: Record<SheetActionType, true> = {
   WRITE_TABLE: true,
   BATCH_SET: true,
   CREATE_TABLE: true,
+  DELETE_TABLE: true,
   CREATE_CHART: true,
   DEFINE_NAMED_RANGE: true,
   AUTOFIT_COLUMNS: true,
@@ -69,6 +70,9 @@ const SHEET_ACTION_CATALOG: Record<SheetActionType, true> = {
   MOVE_RANGE: true,
   AGGREGATE_TABLE: true,
   UPDATE_CHART: true,
+  DELETE_CHART: true,
+  CONDITIONAL_FORMAT: true,
+  DELETE_CONDITIONAL_FORMAT: true,
 };
 
 /** Every wire-level action type the frontend recognizes, derived from the catalog above. */

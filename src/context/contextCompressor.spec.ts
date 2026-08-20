@@ -41,3 +41,18 @@ describe('buildPromptContext TOON compression', () => {
     expect(prompt).toContain('sheetDataFormat: JSON');
   });
 });
+
+describe('buildPromptContext — conditional-format rules (TASKS.md #38)', () => {
+  it('lists existing rules with id/sheet/range/kind/summary', () => {
+    const prompt = buildPromptContext('Sheet1', [makeSheet([['a']], 1)], [], [], undefined, [
+      { id: 'cf-1', sheetName: 'Sheet1', range: 'B2:B50', ruleKind: 'cellValue', summary: 'greaterThan 1000' },
+    ]);
+    expect(prompt).toContain('Conditional format rules');
+    expect(prompt).toContain('[cf-1] Sheet1!B2:B50 (cellValue: greaterThan 1000)');
+  });
+
+  it('omits the section entirely when there are no rules', () => {
+    const prompt = buildPromptContext('Sheet1', [makeSheet([['a']], 1)], [], []);
+    expect(prompt).not.toContain('Conditional format rules');
+  });
+});

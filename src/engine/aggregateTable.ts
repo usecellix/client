@@ -5,4 +5,4 @@ export {
   type AggregateSpec,
   type AggregateTableParams,
   type GroupByTransform,
-} from '../shared/aggregateTable';
+} from '../../../Root/shared/aggregateTable';

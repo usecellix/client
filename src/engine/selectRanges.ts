@@ -69,7 +69,8 @@ export function resolveActionSelectBounds(
     }
     case 'FORMAT_RANGE':
     case 'CLEAR_RANGE':
-    case 'MERGE_CELLS': {
+    case 'MERGE_CELLS':
+    case 'CONDITIONAL_FORMAT': {
       if (typeof rich.range === 'string') {
         const parsed = parseRangeAddress(rich.range);
         if (parsed) return { sheetName, ...parsed };

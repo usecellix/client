@@ -136,3 +136,107 @@ describe('handleSortRange — format follows its row after sorting', () => {
     expect(numberFormatIndex).toBeGreaterThan(valuesIndex);
   });
 });
+
+/**
+ * Regression: spec 10 Bug 1 — "sort the data based on tax amount" reported
+ * "1 Direct Change Applied" while the sheet was never actually reordered.
+ * Root cause: the SORT action's `range` was a stale single-cell selection
+ * (e.g. "K13", left over from before the request). That address parses
+ * successfully as a 1x1 range, so the handler's old "unparseable → fall back
+ * to used range" check never triggered; it loaded a 1-row range, saw
+ * `values.length < 2`, and returned silently — no error, no sort, but the
+ * caller (actionEngine.dispatch resolving without throwing) counted it as a
+ * successful apply. This test targets a real, undersized-but-parseable
+ * address and confirms the handler now recovers via the sheet's used range
+ * instead of silently no-opping.
+ */
+describe('handleSortRange — recovers from a stale/undersized range instead of silently no-opping', () => {
+  function makeMockRange(values: unknown[][], numberFormat: string[][], address: string) {
+    return {
+      values,
+      numberFormat,
+      rowCount: values.length,
+      columnCount: values[0]?.length ?? 0,
+      rowIndex: 0,
+      columnIndex: 0,
+      address,
+      load: vi.fn(),
+    } as unknown as Excel.Range;
+  }
+
+  it('falls back to the used range when the given address resolves to a single stale cell', async () => {
+    // The real data: header + 3 rows, Amount-sortable.
+    const usedRangeValues = [
+      ['Date', 'Amount'],
+      [45543, 300],
+      [45544, 100],
+      [45545, 200],
+    ];
+    const usedRangeFormats = [
+      ['General', 'General'],
+      ['dd/mm/yyyy', 'General'],
+      ['dd/mm/yyyy', 'General'],
+      ['dd/mm/yyyy', 'General'],
+    ];
+    const usedRange = makeMockRange(usedRangeValues, usedRangeFormats, 'A1:B4');
+
+    // The stale single-cell selection the action actually targets — a real,
+    // parseable 1x1 range with no sortable data of its own.
+    const staleRange = makeMockRange([[300]], [['General']], 'K13');
+
+    const getRange = vi.fn((addr: string) => (addr === 'K13' ? staleRange : usedRange));
+    const getUsedRange = vi.fn(() => usedRange);
+    const ctx = {
+      workbook: {
+        worksheets: {
+          getItem: vi.fn(() => ({ getRange, getUsedRange })),
+          getActiveWorksheet: vi.fn(() => ({ getRange, getUsedRange })),
+        },
+      },
+      sync: vi.fn(async () => undefined),
+    } as unknown as Excel.RequestContext;
+
+    const action: SortRangeAction = {
+      type: 'SORT_RANGE',
+      sheetName: 'Sheet1',
+      range: 'K13',
+      key: 1, // Amount column
+      ascending: true,
+      hasHeaders: true,
+    };
+
+    await handleSortRange(action, ctx);
+
+    // The used range must have actually been sorted — not silently skipped.
+    const finalValues = usedRange.values as unknown[][];
+    expect(finalValues[1]).toEqual([45544, 100]);
+    expect(finalValues[2]).toEqual([45545, 200]);
+    expect(finalValues[3]).toEqual([45543, 300]);
+  });
+
+  it('throws rather than silently succeeding when even the used range has no sortable data', async () => {
+    const emptyRange = makeMockRange([], [], 'A1');
+    const getRange = vi.fn(() => emptyRange);
+    const getUsedRange = vi.fn(() => emptyRange);
+    const ctx = {
+      workbook: {
+        worksheets: {
+          getItem: vi.fn(() => ({ getRange, getUsedRange })),
+          getActiveWorksheet: vi.fn(() => ({ getRange, getUsedRange })),
+        },
+      },
+      sync: vi.fn(async () => undefined),
+    } as unknown as Excel.RequestContext;
+
+    const action: SortRangeAction = {
+      type: 'SORT_RANGE',
+      sheetName: 'Sheet1',
+      range: 'A1',
+      key: 0,
+      ascending: true,
+      hasHeaders: true,
+    };
+
+    await expect(handleSortRange(action, ctx)).rejects.toThrow(/No data to sort/);
+  });
+});

@@ -1,4 +1,4 @@
-import { CreateChartAction, UpdateChartAction } from '@/action.types';
+import { CreateChartAction, DeleteChartAction, UpdateChartAction } from '@/action.types';
 import { stripSheetPrefix } from '../addressUtils';
 
 /* global Excel */
@@ -113,5 +113,16 @@ export async function handleUpdateChart(
 
   await applyChartColorScheme(chart, ctx, action.colorScheme);
 
+  await ctx.sync();
+}
+
+/** Revert-only inverse of CREATE_CHART (TASKS.md #15) — mirrors handleDeleteConditionalFormat's shape. */
+export async function handleDeleteChart(
+  action: DeleteChartAction,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const chart = sheet.charts.getItem(action.chartId);
+  chart.delete();
   await ctx.sync();
 }

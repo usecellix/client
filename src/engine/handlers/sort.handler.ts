@@ -13,7 +13,7 @@ export async function handleSortRange(
   const sheet = resolveWorksheet(ctx, action.sheetName);
   let rangeAddress = stripSheetPrefix(action.range);
 
-  if (!parseRangeAddress(rangeAddress)) {
+  const expandToUsedRange = async (): Promise<void> => {
     const used = sheet.getUsedRange();
     if (!used) {
       throw new Error(`No data to sort on sheet "${action.sheetName}"`);
@@ -21,18 +21,40 @@ export async function handleSortRange(
     used.load('address');
     await ctx.sync();
     rangeAddress = stripSheetPrefix(used.address ?? '');
+  };
+
+  if (!parseRangeAddress(rangeAddress)) {
+    await expandToUsedRange();
   }
 
   if (!isLocalRangeAddress(rangeAddress)) {
     throw new Error(`Invalid sort range "${action.range}"`);
   }
 
-  const range = sheet.getRange(rangeAddress);
+  let range = sheet.getRange(rangeAddress);
   range.load(['values', 'rowCount', 'columnCount']);
   await ctx.sync();
 
-  const values = (range.values ?? []) as unknown[][];
-  if (values.length < 2) return;
+  let values = (range.values ?? []) as unknown[][];
+
+  // A parsed-but-too-small target (e.g. a stale single-cell selection like
+  // "K13" left over from before the request) is not a legitimate sort range —
+  // sorting fewer than 2 rows is a no-op. Silently returning here previously
+  // reported false success ("1 Direct Change Applied") with the sheet never
+  // touched. Expand to the sheet's used range once, same fallback already
+  // used for an unparseable address, before concluding there's really
+  // nothing to sort.
+  if (values.length < 2) {
+    await expandToUsedRange();
+    range = sheet.getRange(rangeAddress);
+    range.load(['values', 'rowCount', 'columnCount']);
+    await ctx.sync();
+    values = (range.values ?? []) as unknown[][];
+  }
+
+  if (values.length < 2) {
+    throw new Error(`No data to sort on sheet "${action.sheetName}"`);
+  }
 
   const hasHeaders = action.hasHeaders ?? true;
   const headerRow = hasHeaders ? values[0] : null;

@@ -253,6 +253,7 @@ export function prepareConversationRequestPayload(
   sheetData: any[][],
   options?: {
     conversationId?: string | null;
+    workbookId?: string | null;
     previousMessages?: ConversationHistoryMessage[];
     workbookContext?: WorkbookContext | WorkbookContextPayload;
     promptContext?: string;
@@ -262,6 +263,7 @@ export function prepareConversationRequestPayload(
   },
 ): {
   conversationId?: string;
+  workbookId?: string;
   message: string;
   sheetData: any[][];
   sheetCompression?: Omit<CompressedSheetPayload, 'sheetData'>;
@@ -325,6 +327,7 @@ export function prepareConversationRequestPayload(
 
   return {
     ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
+    ...(options?.workbookId ? { workbookId: options.workbookId } : {}),
     message,
     sheetData: compressed.sheetData,
     sheetCompression: {

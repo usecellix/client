@@ -20,7 +20,9 @@ import { ClarificationPayload } from '@/types/cellix.types';
 import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
 import { isTurnPresentationComplete } from '@/utils/turnPresentation';
 import { ChangeHistoryPanel } from '@/components/ChangeHistoryPanel/ChangeHistoryPanel';
+import { CheckpointPanel } from '@/components/CheckpointPanel/CheckpointPanel';
 import { CellChange, formatCellValue } from '@/types/changeSet';
+import { RestoreResult } from '@/types/checkpoint';
 import { DiffItem } from '@/services/previewManager';
 import { SheetAction } from '@/types/sheet-actions';
 import { useSession } from '@/auth/auth-client';
@@ -776,6 +778,8 @@ interface ConversationPanelProps {
   onFollowUp: (text: string) => void;
   conversationId: string | null;
   onRevertHistoryEntry: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
+  workbookId?: string;
+  onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
   isApplyingActions?: boolean;
   pendingPreview?: {
     changes: CellChange[];
@@ -822,6 +826,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onFollowUp,
   conversationId,
   onRevertHistoryEntry,
+  workbookId,
+  onRestoreCheckpoint,
   isApplyingActions = false,
   pendingPreview = null,
   refinementChangeSetId = null,
@@ -938,6 +944,12 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       )}
 
       <ChangeHistoryPanel conversationId={conversationId} onRevert={onRevertHistoryEntry} />
+
+      <CheckpointPanel
+        workbookId={workbookId}
+        conversationId={conversationId}
+        onRestore={onRestoreCheckpoint}
+      />
 
       {refinementChangeSetId && !quickEditMode && onStartQuickEdit && (
         <div className="cellix-quick-edit-banner">

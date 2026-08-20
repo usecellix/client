@@ -45,8 +45,8 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       strictPort: true,
       https: httpsConfig,
-      // Allow serving the repo-root `shared/` package (action.types.ts re-export) —
-      // it lives outside this project's own root, one level up.
+      // Allow serving the repo-root `Root/shared/` package (action.types.ts re-export) —
+      // it lives outside this project's own root, under Root/.
       fs: {
         allow: [path.resolve(__dirname, '..')],
       },

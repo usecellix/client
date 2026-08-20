@@ -19,11 +19,19 @@ import {
 } from './handlers/sheet.handler';
 import {
   handleCreateTable,
+  handleDeleteTable,
   handleDefineNamedRange,
   handleAutofitColumns,
 } from './handlers/table.handler';
 import { handleSortRange } from './handlers/sort.handler';
-import { handleCopyFilteredRange, handleMoveRange, handleFormatMatchingRows, handleSetMatchingRows } from './handlers/range.handler';
+import {
+  handleCopyFilteredRange,
+  handleMoveRange,
+  handleFormatMatchingRows,
+  handleSetMatchingRows,
+  handleConditionalFormat,
+  handleDeleteConditionalFormat,
+} from './handlers/range.handler';
 import { handleAggregateTable } from './handlers/aggregate.handler';
 import {
   handleAppendRow,
@@ -36,7 +44,7 @@ import {
 } from './handlers/misc.handler';
 import { applyRichFormat } from './handlers/format.handler';
 import { handleWorksheetAction } from './handlers/worksheet.handler';
-import { handleCreateChart, handleUpdateChart } from './handlers/chart.handler';
+import { handleCreateChart, handleDeleteChart, handleUpdateChart } from './handlers/chart.handler';
 import {
   annotateDestOverwriteForCreatedSheets,
   guardAgainstOverwrite,
@@ -49,10 +57,42 @@ import { resolveWorksheet } from './sheetResolve';
 
 /* global Excel */
 
+/**
+ * The real Excel-assigned id a CONDITIONAL_FORMAT create just got, keyed by
+ * the sheet/range it was applied to — TASKS.md #40's apply-time id capture.
+ * `sheetName`/`range` (not array index) are the correlation key reported
+ * back to the backend, since `pruneSpuriousAddSheets`/
+ * `annotateDestOverwriteForCreatedSheets` can drop/reorder unrelated
+ * ADD_SHEET entries in `prepared`, making a positional index unreliable.
+ */
+export interface CreatedConditionalFormatId {
+  sheetName: string;
+  range: string;
+  ruleId: string;
+}
+
+/**
+ * The real Excel-assigned chart name a CREATE_CHART create just got, keyed by
+ * sheetName+sourceRange — TASKS.md #15's apply-time id capture, reusing #40's
+ * mechanism (`CreatedConditionalFormatId`'s sibling).
+ */
+export interface CreatedChartId {
+  sheetName: string;
+  sourceRange: string;
+  chartId: string;
+}
+
 export class RichActionEngine {
-  async applyActions(actions: RichAction[]): Promise<{ applied: number; errors: string[] }> {
+  async applyActions(actions: RichAction[]): Promise<{
+    applied: number;
+    errors: string[];
+    createdConditionalFormatIds?: CreatedConditionalFormatId[];
+    createdChartIds?: CreatedChartId[];
+  }> {
     const errors: string[] = [];
     let applied = 0;
+    const createdConditionalFormatIds: CreatedConditionalFormatId[] = [];
+    const createdChartIds: CreatedChartId[] = [];
     const prepared = annotateDestOverwriteForCreatedSheets(
       pruneSpuriousAddSheets(actions),
     );
@@ -65,7 +105,31 @@ export class RichActionEngine {
       await Excel.run(async (ctx) => {
         for (const action of prepared) {
           try {
-            await this.dispatch(action, ctx);
+            const result = await this.dispatch(action, ctx);
+            if (
+              result &&
+              'createdConditionalFormatId' in result &&
+              result.createdConditionalFormatId &&
+              action.type === 'CONDITIONAL_FORMAT'
+            ) {
+              createdConditionalFormatIds.push({
+                sheetName: action.sheetName,
+                range: action.range,
+                ruleId: result.createdConditionalFormatId,
+              });
+            }
+            if (
+              result &&
+              'createdChartId' in result &&
+              result.createdChartId &&
+              action.type === 'CREATE_CHART'
+            ) {
+              createdChartIds.push({
+                sheetName: action.sheetName,
+                sourceRange: action.sourceRange,
+                chartId: result.createdChartId,
+              });
+            }
             applied += 1;
           } catch (err: unknown) {
             // Overwrite guard is a hard stop — do not continue writing after a block.
@@ -106,10 +170,18 @@ export class RichActionEngine {
       errors.push(message);
     }
 
-    return { applied, errors };
+    return {
+      applied,
+      errors,
+      ...(createdConditionalFormatIds.length > 0 ? { createdConditionalFormatIds } : {}),
+      ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
+    };
   }
 
-  private async dispatch(action: RichAction, ctx: Excel.RequestContext): Promise<void> {
+  private async dispatch(
+    action: RichAction,
+    ctx: Excel.RequestContext,
+  ): Promise<{ createdConditionalFormatId?: string; createdChartId?: string } | void> {
     // Last line of defense: never silently overwrite occupied cells.
     await guardAgainstOverwrite(action, ctx);
 
@@ -156,15 +228,20 @@ export class RichActionEngine {
         return handleCopySheet(action, ctx);
       case 'CREATE_TABLE':
         return handleCreateTable(action, ctx);
+      case 'DELETE_TABLE':
+        return handleDeleteTable(action, ctx);
       case 'CREATE_CHART': {
         const result = await handleCreateChart(action, ctx);
         if (result.chartId && !(action as { chartId?: string }).chartId) {
           (action as { chartId?: string }).chartId = result.chartId;
         }
-        return;
+        return { createdChartId: result.chartId };
       }
       case 'UPDATE_CHART':
         return handleUpdateChart(action, ctx);
+      case 'DELETE_CHART':
+        await handleDeleteChart(action, ctx);
+        return;
       case 'AGGREGATE_TABLE':
         await handleAggregateTable(action, ctx);
         return;
@@ -193,6 +270,11 @@ export class RichActionEngine {
         return;
       case 'MOVE_RANGE':
         await handleMoveRange(action, ctx);
+        return;
+      case 'CONDITIONAL_FORMAT':
+        return handleConditionalFormat(action, ctx);
+      case 'DELETE_CONDITIONAL_FORMAT':
+        await handleDeleteConditionalFormat(action, ctx);
         return;
       case 'CLARIFY':
       case 'CHECKPOINT':

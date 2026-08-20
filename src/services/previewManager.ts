@@ -1,6 +1,7 @@
 import { SheetAction, SheetActionType } from '@/types/sheet-actions';
 import { CellChange } from '@/types/changeSet';
 import { ActionEngine } from '@/utils/actionEngine';
+import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
 import {
   annotateDestOverwriteForCreatedSheets,
   pruneSpuriousAddSheets,
@@ -110,7 +111,10 @@ export class PreviewManager {
     return diffItems;
   }
 
-  async accept(): Promise<void> {
+  async accept(): Promise<
+    | { createdConditionalFormatIds?: CreatedConditionalFormatId[]; createdChartIds?: CreatedChartId[] }
+    | void
+  > {
     if (!this.isActive || this.applying) return;
     this.applying = true;
 
@@ -134,10 +138,24 @@ export class PreviewManager {
     ];
 
     try {
+      let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
+      let createdChartIds: CreatedChartId[] | undefined;
       if (toApply.length > 0) {
-        await ActionEngine.applyActions(toApply);
+        // applyActionsWithReport (not the void applyActions) — TASKS.md #40/#15 need
+        // their createdConditionalFormatIds/createdChartIds. Same "errors present +
+        // nothing applied = throw" behavior as applyActions, replicated here so
+        // Accept's error handling is unchanged.
+        const result = await ActionEngine.applyActionsWithReport(toApply);
+        if (result.errors.length > 0 && result.applied === 0) {
+          throw new Error(result.errors.join('; '));
+        }
+        createdConditionalFormatIds = result.createdConditionalFormatIds;
+        createdChartIds = result.createdChartIds;
       }
       this.reset();
+      return createdConditionalFormatIds || createdChartIds
+        ? { createdConditionalFormatIds, createdChartIds }
+        : undefined;
     } catch (error) {
       // Keep pending + applied flags so a retry does not double-write.
       throw error;

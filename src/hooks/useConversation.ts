@@ -109,8 +109,10 @@ interface UseConversationReturn {
   markAnswerComplete: (turnId: string, blockId: string) => void;
 }
 
-interface UseConversationOptions {
+export interface UseConversationOptions {
   workbookKey?: string;
+  /** Durable per-workbook identity (TASKS.md #22-23), distinct from workbookKey above. */
+  workbookId?: string;
   onActions?: (
     actions: SheetAction[],
     explanation: string,
@@ -150,6 +152,7 @@ interface PendingActions {
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
   dependsOnChangeSetId?: string;
+  irreversibleActionTypes?: string[];
 }
 
 export interface PreviewActionsMeta {
@@ -157,6 +160,7 @@ export interface PreviewActionsMeta {
   changes?: CellChange[];
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
+  irreversibleActionTypes?: string[];
 }
 
 interface TurnRuntime {
@@ -327,6 +331,7 @@ function createActionBlock(
     userFacingSummary: pending.userFacingSummary,
     internalDetails: pending.internalDetails,
     dependsOnChangeSetId: pending.dependsOnChangeSetId,
+    irreversibleActionTypes: pending.irreversibleActionTypes,
   };
 }
 
@@ -420,6 +425,7 @@ async function preflightOverwriteBlockedActions(
 export const useConversation = (options: UseConversationOptions = {}): UseConversationReturn => {
   const {
     workbookKey = 'workbook',
+    workbookId,
     onActions,
     onPreviewActions,
     onClearPreview,
@@ -500,6 +506,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const conversationIdRef = useRef<string | null>(null);
+  // workbookId is minted asynchronously (client-side, TASKS.md #22) and passed
+  // in as a prop that may change after mount without a re-render of sendMessage's
+  // closure — a ref keeps sendMessage reading the latest value without pulling
+  // workbookId into its (already large) dependency array.
+  const workbookIdRef = useRef<string | undefined>(workbookId);
+  useEffect(() => {
+    workbookIdRef.current = workbookId;
+  }, [workbookId]);
   const sessionsRef = useRef<ChatSession[]>([]);
   const activeSessionIdRef = useRef<string | null>(null);
   const historyRef = useRef<ConversationHistoryMessage[]>([]);
@@ -1233,6 +1247,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               userFacingSummary: event.data.userFacingSummary,
               internalDetails: event.data.internalDetails,
               dependsOnChangeSetId: event.data.dependsOnChangeSetId,
+              irreversibleActionTypes: event.data.irreversibleActionTypes,
             };
 
             if (runtime && isActionMode && pendingActions.actions.length > 0) {
@@ -1263,6 +1278,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 changes: pendingActions.changes,
                 userFacingSummary: event.data.userFacingSummary,
                 internalDetails: event.data.internalDetails,
+                irreversibleActionTypes: pendingActions.irreversibleActionTypes,
               });
             }
 
@@ -1502,6 +1518,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       const requestPayload = prepareConversationRequestPayload(trimmed, resolvedSheetData, {
         conversationId: conversationIdRef.current,
+        workbookId: workbookIdRef.current,
         previousMessages: historyRef.current.slice(0, -1),
         workbookContext: resolvedWorkbookContext,
         promptContext: resolvedPromptContext,

@@ -47,4 +47,18 @@ describe('prepareConversationRequestPayload', () => {
     expect(payload.sheetData.length).toBe(100);
     expect(payload.sheetData[25]?.[1]).toBe('1868.41 Dr');
   });
+
+  it('includes workbookId on the payload when provided (TASKS.md #23)', () => {
+    const payload = prepareConversationRequestPayload('Add a total column', [['A'], ['1']], {
+      workbookId: 'wb_abc123',
+    });
+
+    expect(payload.workbookId).toBe('wb_abc123');
+  });
+
+  it('omits workbookId entirely when not provided (backward compatible)', () => {
+    const payload = prepareConversationRequestPayload('Add a total column', [['A'], ['1']]);
+
+    expect(payload).not.toHaveProperty('workbookId');
+  });
 });

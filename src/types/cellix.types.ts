@@ -15,6 +15,17 @@ export interface ColumnMeta {
   sampleValues: (string | number | null)[];
   detectedType: 'date' | 'number' | 'currency' | 'text' | 'boolean' | 'unknown';
   numberFormat?: string;
+  /**
+   * Bold/italic/fontColor/fillColor read from the column's first data row
+   * (TASKS.md #64) — column-level granularity, same as `numberFormat` above,
+   * not a genuine per-cell snapshot. Feeds revert's format restoration.
+   */
+  format?: {
+    bold?: boolean;
+    italic?: boolean;
+    fontColor?: string;
+    fillColor?: string;
+  };
 }
 
 export type SheetStructure = 'financial_model' | 'data_table' | 'report' | 'unknown';
@@ -56,6 +67,14 @@ export interface TableInfo {
   columnNames: string[];
 }
 
+export interface ConditionalFormatRuleInfo {
+  id: string;
+  sheetName: string;
+  range: string;
+  ruleKind: 'cellValue' | 'formula' | 'topBottom' | 'colorScale' | 'other';
+  summary: string;
+}
+
 export interface WorkbookContext {
   sheets: SheetSnapshot[];
   activeSheet: string;
@@ -63,6 +82,7 @@ export interface WorkbookContext {
   selectedValues?: (string | number | null)[][];
   namedRanges?: NamedRangeInfo[];
   tables?: TableInfo[];
+  conditionalFormats?: ConditionalFormatRuleInfo[];
   prompt_context?: string;
 }
 

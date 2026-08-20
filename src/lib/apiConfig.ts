@@ -76,3 +76,15 @@ export function getAuditExportEndpoint(format: 'json' | 'csv', from?: string, to
   return `${getApiBaseUrl()}/audit/export?${params.toString()}`;
 }
 
+export function getCheckpointCreateEndpoint(): string {
+  return `${getApiBaseUrl()}/audit/checkpoint`;
+}
+
+export function getCheckpointListEndpoint(workbookId: string): string {
+  return `${getApiBaseUrl()}/audit/checkpoint/${encodeURIComponent(workbookId)}`;
+}
+
+export function getCheckpointRestoreEndpoint(checkpointId: string): string {
+  return `${getApiBaseUrl()}/audit/checkpoint/restore/${encodeURIComponent(checkpointId)}`;
+}
+

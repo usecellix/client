@@ -1,5 +1,5 @@
 import { partitionActions } from '../engine/actionNormalizer';
-import { richActionEngine } from '../engine/actionEngine';
+import { richActionEngine, CreatedConditionalFormatId, CreatedChartId } from '../engine/actionEngine';
 import { isOverwriteGuardError } from '../engine/overwriteGuard';
 import {
   annotateDestOverwriteForCreatedSheets,
@@ -53,9 +53,13 @@ export class ActionEngine {
   static async applyActionsWithReport(actions: SheetAction[]): Promise<{
     applied: number;
     errors: string[];
+    createdConditionalFormatIds?: CreatedConditionalFormatId[];
+    createdChartIds?: CreatedChartId[];
   }> {
     const errors: string[] = [];
     let applied = 0;
+    let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
+    let createdChartIds: CreatedChartId[] | undefined;
 
     try {
       const safeInput = annotateDestOverwriteForCreatedSheets(
@@ -78,6 +82,8 @@ export class ActionEngine {
       const richResult = await richActionEngine.applyActions(rich);
       applied += richResult.applied;
       errors.push(...richResult.errors);
+      createdConditionalFormatIds = richResult.createdConditionalFormatIds;
+      createdChartIds = richResult.createdChartIds;
       if (richResult.errors.some((e) => e.includes('Write blocked:'))) {
         throw new Error(richResult.errors.find((e) => e.includes('Write blocked:')) ?? richResult.errors[0]);
       }
@@ -91,7 +97,12 @@ export class ActionEngine {
       );
     }
 
-    return { applied, errors };
+    return {
+      applied,
+      errors,
+      ...(createdConditionalFormatIds ? { createdConditionalFormatIds } : {}),
+      ...(createdChartIds ? { createdChartIds } : {}),
+    };
   }
 
   /** Select (no fill) the ranges touched by these actions. */

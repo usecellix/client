@@ -3,6 +3,7 @@ import ConversationPanel from '@/components/ConversationPanel/ConversationPanel'
 import { CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { useConversation, PreviewActionsMeta } from '@/hooks/useConversation';
 import { ActionEngine } from '@/utils/actionEngine';
+import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
 import { CellChange } from '@/types/changeSet';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
@@ -12,8 +13,10 @@ import {
   markPendingWorkbookContextStale,
 } from '@/utils/pendingWorkbookContext';
 import { SheetAction } from '@/types/sheet-actions';
+import { RestoreResult } from '@/types/checkpoint';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE, isAssistantMode } from '@/types/mode';
 import { resolveWorkbookKey, loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
+import { resolveWorkbookId } from '@/utils/workbookIdentity';
 import '@/styles/conversation-panel.css';
 import './taskpane.css';
 
@@ -35,6 +38,10 @@ const App: React.FC = () => {
   const applyInProgressRef = useRef(false);
   const appliedChangeSetIdsRef = useRef<Set<string>>(new Set());
   const [workbookKey, setWorkbookKey] = useState('workbook');
+  // Durable per-workbook identity (TASKS.md #22-23), minted/persisted via
+  // Office.js document.settings — threaded into useConversation below so it
+  // rides along on every conversation-creating request.
+  const [workbookId, setWorkbookId] = useState<string | undefined>(undefined);
 
   const isChangeSetApplied = useCallback((changeSetId?: string) => {
     return Boolean(changeSetId && appliedChangeSetIdsRef.current.has(changeSetId));
@@ -70,14 +77,25 @@ const App: React.FC = () => {
         source: 'applyActionsWithAudit',
       });
 
+      let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
+      let createdChartIds: CreatedChartId[] | undefined;
       try {
         if (previewManager.active) {
-          await previewManager.accept();
+          const result = await previewManager.accept();
+          createdConditionalFormatIds = result?.createdConditionalFormatIds;
+          createdChartIds = result?.createdChartIds;
         } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
           // Already applied earlier — do not re-run INSERT_COLUMN / writes.
         } else {
-          // Preview never started or was cleared — apply directly.
-          await ActionEngine.applyActions(actions);
+          // Preview never started or was cleared — apply directly. Report (not
+          // throw) errors, matching applyActions' own throw condition below —
+          // TASKS.md #40/#15 need the created-id lists from this path too.
+          const result = await ActionEngine.applyActionsWithReport(actions);
+          if (result.errors.length > 0 && result.applied === 0) {
+            throw new Error(result.errors.join('; '));
+          }
+          createdConditionalFormatIds = result.createdConditionalFormatIds;
+          createdChartIds = result.createdChartIds;
         }
 
         clearPreviewState();
@@ -85,7 +103,7 @@ const App: React.FC = () => {
         if (meta?.changeSetId) {
           appliedChangeSetIdsRef.current.add(meta.changeSetId);
           try {
-            await markChangeSetApplied(meta.changeSetId);
+            await markChangeSetApplied(meta.changeSetId, createdConditionalFormatIds, createdChartIds);
             setRefinementChangeSetId(meta.changeSetId);
           } catch (error) {
             // Spec 22 Bug 3: do not swallow apply failures — UI must not show Applied.
@@ -168,6 +186,10 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    void resolveWorkbookId().then(setWorkbookId);
+  }, []);
+
+  useEffect(() => {
     if (workbookKey) {
       frontendTelemetry.setContext({ workbookKey });
     }
@@ -203,6 +225,7 @@ const App: React.FC = () => {
     markAnswerComplete,
   } = useConversation({
     workbookKey,
+    workbookId,
     onActions: applyActionsWithAudit,
     onPreviewActions: previewActions,
     onClearPreview: clearActionPreview,
@@ -253,11 +276,15 @@ const App: React.FC = () => {
         await acceptActions(pending.turnId, pending.blockId);
         applied = true;
       } else if (previewManager.active) {
-        await previewManager.accept();
+        const result = await previewManager.accept();
         if (pendingChangeSetId) {
           appliedChangeSetIdsRef.current.add(pendingChangeSetId);
           try {
-            await markChangeSetApplied(pendingChangeSetId);
+            await markChangeSetApplied(
+              pendingChangeSetId,
+              result?.createdConditionalFormatIds,
+              result?.createdChartIds,
+            );
             setRefinementChangeSetId(pendingChangeSetId);
           } catch (error) {
             // Same pattern as applyActionsWithAudit (spec 22 Bug 3): do not
@@ -466,6 +493,22 @@ const App: React.FC = () => {
     [clearPreviewState],
   );
 
+  const handleRestoreCheckpoint = useCallback(
+    async (result: RestoreResult) => {
+      // TASKS.md #29/#31 — AD-1: the backend never writes to the live workbook.
+      // restoreCheckpoint() only computed and verified the inverse actions;
+      // applying them for real happens here, the same Office.js write path
+      // every other accept/revert goes through.
+      if (result.inverseActions.length > 0) {
+        await ActionEngine.applyActions(result.inverseActions);
+      }
+      clearPreviewState();
+      setQuickEditMode(false);
+      setRefinementChangeSetId(null);
+    },
+    [clearPreviewState],
+  );
+
   return (
     <ConversationPanel
       sessions={sessions}
@@ -497,6 +540,8 @@ const App: React.FC = () => {
       onAnswerComplete={markAnswerComplete}
       onFollowUp={handleSend}
       onRevertHistoryEntry={handleRevertHistoryEntry}
+      workbookId={workbookId}
+      onRestoreCheckpoint={handleRestoreCheckpoint}
       isApplyingActions={isApplying}
       pendingPreview={pendingPreview}
       refinementChangeSetId={refinementChangeSetId}
