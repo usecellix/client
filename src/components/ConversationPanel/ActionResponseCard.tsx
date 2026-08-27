@@ -7,6 +7,14 @@ import {
   resolveActionBlockCopy,
 } from '@/utils/userFacingResponse';
 
+function normalizeCopy(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[.…]+$/g, '')
+    .replace(/\s+/g, ' ');
+}
+
 export interface ActionResponseCardProps {
   block: ActionBlock;
   previewEnabled?: boolean;
@@ -22,6 +30,11 @@ export interface ActionResponseCardProps {
    * instead of letting the user apply writes that would fail or land wrong.
    */
   blockedReason?: string;
+  /**
+   * Answer text already shown above this card. When it matches the action
+   * headline, omit the repeated line so the user does not see the same sentence twice.
+   */
+  priorAnswerText?: string;
 }
 
 export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
@@ -33,6 +46,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   onReject,
   defaultDetailsExpanded = false,
   blockedReason,
+  priorAnswerText,
 }) => {
   const [detailsOpen, setDetailsOpen] = useState(defaultDetailsExpanded);
   const summary = resolveActionBlockCopy({
@@ -41,6 +55,11 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     actions: block.actions,
     changes: block.changes,
   });
+  const hideDuplicateHeadline = Boolean(
+    priorAnswerText &&
+      summary.headline &&
+      normalizeCopy(priorAnswerText) === normalizeCopy(summary.headline),
+  );
   const showDetails = hasInternalDetails(block.internalDetails);
   const detailLines = block.internalDetails
     ? formatInternalDetailsLines(block.internalDetails)
@@ -92,12 +111,14 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
           {summary.contextLine}
         </div>
       )}
-      <div
-        className="cellix-changes-summary"
-        style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--cx-gray-700)' }}
-      >
-        {summary.headline}
-      </div>
+      {!hideDuplicateHeadline && summary.headline && (
+        <div
+          className="cellix-changes-summary"
+          style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--cx-gray-700)' }}
+        >
+          {summary.headline}
+        </div>
+      )}
       {summary.bullets && summary.bullets.length > 0 && (
         <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--cx-gray-600)' }}>
           {summary.bullets.map((b, i) => (

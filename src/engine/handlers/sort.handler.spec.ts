@@ -135,6 +135,66 @@ describe('handleSortRange — format follows its row after sorting', () => {
     expect(valuesIndex).toBeGreaterThanOrEqual(0);
     expect(numberFormatIndex).toBeGreaterThan(valuesIndex);
   });
+
+  it('syncs BETWEEN the value write and the format restore, so they are not one batch', async () => {
+    // Assignment order alone is not enough, and asserting only that is why the
+    // "12-09-26" -> "120926" regression shipped despite a test named for it.
+    // Office.js queues property assignments: values and numberFormat set in the
+    // same batch flush together, Excel applies the values, re-detects the cell
+    // as a date, stamps a locale format, and the same-batch numberFormat never
+    // takes. A sync must separate them.
+    const values = [['Date'], [45543]];
+    const numberFormat = [['General'], ['dd/mm/yyyy']];
+    const range = makeMockRange(values, numberFormat);
+    const ctx = makeCtx(range);
+
+    // One interleaved timeline of writes and syncs.
+    const timeline: string[] = [];
+    ctx.sync = (async <T>(passThroughValue?: T): Promise<T> => {
+      timeline.push('sync');
+      return passThroughValue as T;
+    }) as Excel.RequestContext['sync'];
+
+    let currentValues = range.values;
+    let currentFormat = range.numberFormat;
+    Object.defineProperty(range, 'values', {
+      get: () => currentValues,
+      set: (v) => {
+        timeline.push('values');
+        currentValues = v;
+      },
+    });
+    Object.defineProperty(range, 'numberFormat', {
+      get: () => currentFormat,
+      set: (v) => {
+        timeline.push('numberFormat');
+        currentFormat = v;
+      },
+    });
+
+    await handleSortRange(
+      {
+        type: 'SORT_RANGE',
+        sheetName: 'Sheet1',
+        range: 'A1:A2',
+        key: 0,
+        ascending: true,
+        hasHeaders: true,
+      } as SortRangeAction,
+      ctx,
+    );
+
+    const valuesAt = timeline.indexOf('values');
+    const formatAt = timeline.lastIndexOf('numberFormat');
+    expect(valuesAt).toBeGreaterThanOrEqual(0);
+    expect(formatAt).toBeGreaterThan(valuesAt);
+
+    // The load-bearing assertion: at least one sync strictly between them.
+    const syncsBetween = timeline
+      .slice(valuesAt + 1, formatAt)
+      .filter((entry) => entry === 'sync');
+    expect(syncsBetween.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 /**

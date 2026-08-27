@@ -24,10 +24,13 @@ describe('RichActionEngine.applyActions — createdChartIds (TASKS.md #15)', () 
     const targetSheet = { charts: { add, getItem: vi.fn(() => chart) }, name: 'Dashboard' };
     const sourceSheet = { getRange: vi.fn(() => ({ load: vi.fn(), values: [] })), name: 'Sheet1' };
     const getItem = vi.fn((name: string) => (name === 'Dashboard' ? targetSheet : sourceSheet));
+    // getItemOrNullObject existence-check pattern (see chart.handler.ts) — both
+    // sheets used in these tests are real, so isNullObject is always false.
+    const getItemOrNullObject = vi.fn(() => ({ isNullObject: false, load: vi.fn() }));
     const run = vi.fn(async (fn: (ctx: unknown) => Promise<void>) => {
       const ctx = {
         workbook: {
-          worksheets: { getItem, getActiveWorksheet: vi.fn(() => targetSheet) },
+          worksheets: { getItem, getItemOrNullObject, getActiveWorksheet: vi.fn(() => targetSheet) },
         },
         sync: vi.fn(async () => {
           // Office.js assigns a real chart name on the first sync after .add() —

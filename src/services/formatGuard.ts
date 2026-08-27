@@ -626,6 +626,19 @@ export async function writeRangeValuesPreservingNumberFormat(
 /**
  * Snapshot numberFormat, run a write, then restore formats (optionally after
  * permuting the format matrix the same way as values — e.g. sort).
+ *
+ * The `context.sync()` between the value write and the numberFormat write is
+ * load-bearing, not a tidiness detail. Office.js property assignments are
+ * QUEUED, not applied: without a sync separating them, `range.values = ...` and
+ * `range.numberFormat = ...` flush in the SAME batch. Excel then applies the
+ * values, its smart-entry parsing re-detects a cell like "12-09-26" as a date
+ * and stamps a locale-default format on it, and the numberFormat queued in that
+ * same batch is applied against a cell Excel has already reinterpreted — so the
+ * original format does not survive. Syncing first makes the restore a genuinely
+ * separate operation against the post-write state, which is what "re-assert the
+ * format AFTER the write completes" actually requires.
+ *
+ * Regression: sorting a sheet turned dates from "12-09-26" into "120926".
  */
 export async function preserveNumberFormatsAroundWrite(
   range: Excel.Range,
@@ -639,5 +652,8 @@ export async function preserveNumberFormatsAroundWrite(
     row.map((cell) => String(cell ?? '')),
   );
   await write();
+  // Flush the value write on its own so the format restore below lands after
+  // Excel has finished reinterpreting the written cells.
+  await context.sync();
   range.numberFormat = remapFormats ? remapFormats(snapshot) : snapshot;
 }

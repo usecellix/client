@@ -13,6 +13,8 @@ import {
   markPendingWorkbookContextStale,
 } from '@/utils/pendingWorkbookContext';
 import { SheetAction } from '@/types/sheet-actions';
+import type { ActionBlock } from '@/types/conversationTurn';
+import { isWaveDependencySatisfied } from '@/utils/actionWaveGating';
 import { RestoreResult } from '@/types/checkpoint';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE, isAssistantMode } from '@/types/mode';
 import { resolveWorkbookKey, loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
@@ -241,12 +243,20 @@ const App: React.FC = () => {
     frontendTelemetry.setContext({ conversationId });
   }, [conversationId]);
 
+  // The preview summary bar's Accept must target a block that can actually be
+  // applied. A staged later wave (dependsOnChangeSetId) is "pending" but not yet
+  // acceptable — selecting it made acceptActions refuse silently while this
+  // caller still cleared the preview, so the card vanished and nothing was
+  // written. Skip gated blocks the same way TurnRenderer disables their button.
   const findPendingActionBlock = useCallback(() => {
     for (const turn of turns) {
-      const block = turn.blocks.find(
-        (b) => b.type === 'actions' && b.proposalStatus === 'pending',
+      const actionBlocks = turn.blocks.filter(
+        (b): b is ActionBlock => b.type === 'actions',
       );
-      if (block && block.type === 'actions') {
+      const block = actionBlocks.find(
+        (b) => b.proposalStatus === 'pending' && isWaveDependencySatisfied(b, actionBlocks),
+      );
+      if (block) {
         return {
           turnId: turn.id,
           blockId: block.id,
@@ -273,8 +283,11 @@ const App: React.FC = () => {
         source: 'previewSummaryBar',
       });
       if (pending) {
-        await acceptActions(pending.turnId, pending.blockId);
-        applied = true;
+        // Only treat this as applied when acceptActions actually applied it —
+        // it returns false when it refuses (e.g. an unmet wave dependency), and
+        // clearing the preview on a refusal is what made Accept look like a
+        // silent no-op: nothing written, card gone, no error.
+        applied = await acceptActions(pending.turnId, pending.blockId);
       } else if (previewManager.active) {
         const result = await previewManager.accept();
         if (pendingChangeSetId) {

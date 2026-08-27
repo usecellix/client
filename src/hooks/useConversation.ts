@@ -96,7 +96,10 @@ interface UseConversationReturn {
     options?: SendMessageOptions,
   ) => Promise<void>;
   dismissClarification: () => void;
-  acceptActions: (turnId: string, blockId: string) => Promise<void>;
+  /** Resolves true when the actions were applied, false when the accept was
+   *  refused (block missing/not pending, or a staged wave whose dependency has
+   *  not been accepted yet). Callers must not treat a refusal as applied. */
+  acceptActions: (turnId: string, blockId: string) => Promise<boolean>;
   rejectActions: (turnId: string, blockId: string) => void;
   endConversation: () => void;
   newChat: () => void;
@@ -675,48 +678,52 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             ? thinkingExisting.content.trim()
             : buildThoughtSummary(turn.userMessage, 'final');
 
+        const finalized = finalizeSteps(
+          upsertThinking(turn.blocks, preservedThought, {
+            loading: false,
+            expanded: /blocked|cannot create|verification/i.test(preservedThought),
+            visible: true,
+          }),
+          turn.userMessage,
+        );
+        const actionBlocks = finalized.filter((b): b is ActionBlock => b.type === 'actions');
+        const withoutActions: TurnBlock[] = finalized.filter((b) => b.type !== 'actions');
+        const nextActionBlocks =
+          pendingActions && !actionBlocks.some((b) => b.id === pendingActions.id)
+            ? [...actionBlocks, createActionBlock(pendingActions, isChangeSetApplied)]
+            : actionBlocks;
+
         return {
           ...turn,
           phase:
             response.type === 'question' || response.type === 'clarification'
               ? 'awaiting_input'
               : 'complete',
-          blocks: finalizeSteps(
-            upsertThinking(turn.blocks, preservedThought, {
-              loading: false,
-              expanded: /blocked|cannot create|verification/i.test(preservedThought),
-              visible: true,
-            }),
-            turn.userMessage,
-          ).concat(
-            response.type === 'answer'
-              ? [
-                  {
-                    id: answerBlockId(turnId),
-                    type: 'answer',
-                    content: response.answer ?? '',
-                    revealState: 'typing',
-                    matches: response.matches,
-                  } satisfies AnswerBlock,
-                ]
-              : response.type === 'question' || response.type === 'clarification'
+          blocks: withoutActions
+            .concat(
+              response.type === 'answer'
                 ? [
                     {
-                      id: `question_${Date.now()}`,
-                      type: 'question',
-                      question: response.question ?? '',
-                      options: response.options,
-                      revealState: 'visible',
-                    },
+                      id: answerBlockId(turnId),
+                      type: 'answer',
+                      content: response.answer ?? '',
+                      revealState: 'typing',
+                      matches: response.matches,
+                    } satisfies AnswerBlock,
                   ]
-                : [],
-          )
-            .concat(
-              pendingActions &&
-              !turn.blocks.some((b) => b.type === 'actions' && b.id === pendingActions.id)
-                ? [createActionBlock(pendingActions, isChangeSetApplied)]
-                : [],
+                : response.type === 'question' || response.type === 'clarification'
+                  ? [
+                      {
+                        id: `question_${Date.now()}`,
+                        type: 'question',
+                        question: response.question ?? '',
+                        options: response.options,
+                        revealState: 'visible',
+                      },
+                    ]
+                  : [],
             )
+            .concat(nextActionBlocks)
             .concat(pendingPlan ? [pendingPlan] : []),
         };
       });
@@ -1639,14 +1646,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const applyingActionsRef = useRef(false);
 
   const acceptActions = useCallback(
-    async (turnId: string, blockId: string) => {
-      if (applyingActionsRef.current) return;
+    async (turnId: string, blockId: string): Promise<boolean> => {
+      if (applyingActionsRef.current) return false;
 
       const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
       const block = turn?.blocks.find(
         (b): b is ActionBlock => b.id === blockId && b.type === 'actions',
       );
-      if (!block || block.proposalStatus !== 'pending') return;
+      if (!block || block.proposalStatus !== 'pending') return false;
 
       // Defense in depth: the Accept button is disabled while a dependency is
       // unmet (see TurnRenderer), but never apply a staged wave out of order
@@ -1658,7 +1665,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           '[Cellix] Refused to accept a staged wave before its dependency was accepted:',
           { blockId, dependsOnChangeSetId: block.dependsOnChangeSetId },
         );
-        return;
+        return false;
       }
 
       applyingActionsRef.current = true;
@@ -1687,6 +1694,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         }
 
         setActiveClarification(null);
+        return true;
       } catch (error) {
         const rawMessage =
           error instanceof Error ? error.message : 'Failed to apply changes';

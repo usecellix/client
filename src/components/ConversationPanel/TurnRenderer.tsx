@@ -10,6 +10,7 @@ import {
 import { generateSuggestedFollowUps } from '@/utils/suggestedFollowUps';
 import { shortenActionPreviewCopy } from '@/utils/actionPreviewCopy';
 import { describeBlockedReason } from '@/utils/actionWaveGating';
+import { isTurnPresentationComplete } from '@/utils/turnPresentation';
 import StepIndicator from './StepIndicator';
 import ThinkingBlockView from './ThinkingBlockView';
 import AnswerReveal from './AnswerReveal';
@@ -194,8 +195,16 @@ function BlockRenderer({
 
   if (block.type === 'actions') {
     const actionBlock = block as ActionBlock;
+    if (actionBlock.proposalStatus === 'pending' && !showActionButtons) {
+      return null;
+    }
     const siblingActionBlocks = turn.blocks.filter((b) => b.type === 'actions') as ActionBlock[];
     const blockedReason = describeBlockedReason(actionBlock, siblingActionBlocks);
+    const priorAnswer = turn.blocks.find((b) => b.type === 'answer');
+    const priorAnswerText =
+      priorAnswer && priorAnswer.type === 'answer'
+        ? shortenActionPreviewCopy(priorAnswer.content) || priorAnswer.content
+        : undefined;
 
     return (
       <ActionResponseCard
@@ -204,6 +213,7 @@ function BlockRenderer({
         isApplying={isApplying}
         showActionButtons={showActionButtons}
         blockedReason={blockedReason}
+        priorAnswerText={priorAnswerText}
         onAccept={() => onAcceptActions(turn.id, block.id)}
         onReject={() => onRejectActions(turn.id, block.id)}
       />
@@ -211,6 +221,27 @@ function BlockRenderer({
   }
 
   return null;
+}
+
+function blockPresentationOrder(block: TurnBlock): number {
+  switch (block.type) {
+    case 'step':
+      return 0;
+    case 'status':
+      return 1;
+    case 'thinking':
+      return 2;
+    case 'answer':
+    case 'question':
+      return 3;
+    case 'plan':
+    case 'plan_only':
+      return 4;
+    case 'actions':
+      return 5;
+    default:
+      return 6;
+  }
 }
 
 const TurnRenderer: React.FC<TurnRendererProps> = ({
@@ -229,6 +260,19 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onRunAsAction,
 }) => {
   const hideProgress = turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
+  const actionDialogueReady = showActionButtons && isTurnPresentationComplete(turn);
+
+  const orderedBlocks = useMemo(
+    () =>
+      turn.blocks
+        .map((block, index) => ({ block, index }))
+        .sort((a, b) => {
+          const order = blockPresentationOrder(a.block) - blockPresentationOrder(b.block);
+          return order !== 0 ? order : a.index - b.index;
+        })
+        .map(({ block }) => block),
+    [turn.blocks],
+  );
 
   const { followUps, followUpHandler, followUpsDisabled } = useMemo(() => {
     const answerBlock = turn.blocks.find(
@@ -260,6 +304,9 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
     if (b.type === 'answer' && b.revealState === 'hidden') return false;
     if (b.type === 'thinking' && b.visible === false) return false;
     if (b.type === 'status' && b.visible === false) return false;
+    if (b.type === 'actions' && b.proposalStatus === 'pending' && !actionDialogueReady) {
+      return false;
+    }
     if (b.type === 'question' && turn.phase === 'awaiting_input' && b.revealState === 'visible') {
       return true;
     }
@@ -277,11 +324,11 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
         <>
           <div style={{ height: 4 }} />
           <div className="cellix-assistant-thread">
-            {turn.blocks.map((block, index) => {
+            {orderedBlocks.map((block, index) => {
               const showSep =
                 index > 0 &&
                 block.type === 'step' &&
-                turn.blocks[index - 1]?.type !== 'step';
+                orderedBlocks[index - 1]?.type !== 'step';
               return (
                 <React.Fragment key={block.id}>
                   {showSep && <div className="cellix-sep" />}
@@ -291,7 +338,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     previewEnabled={previewEnabled}
                     isApplying={isApplying}
                     isWaiting={isWaiting && isActive}
-                    showActionButtons={showActionButtons}
+                    showActionButtons={actionDialogueReady}
                     onAcceptActions={onAcceptActions}
                     onRejectActions={onRejectActions}
                     onToggleThinking={onToggleThinking}

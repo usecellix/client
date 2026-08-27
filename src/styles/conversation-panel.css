@@ -1499,7 +1499,7 @@
   line-height: 1.25;
 }
 
-.cellix-empty .cellix-input-area {
+.cellix-empty .cellix-composer-dock {
   order: 3;
   width: min(594px, calc(100% - 16px));
   align-self: center;
@@ -1507,6 +1507,18 @@
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+  z-index: 1;
+  border-top: 0;
+  background: transparent;
+}
+
+.cellix-empty .cellix-input-area {
+  width: 100%;
+  align-self: stretch;
+  position: static;
+  left: auto;
+  top: auto;
+  transform: none;
   z-index: 1;
   border-top: 0;
   background: transparent;
@@ -1644,6 +1656,116 @@
   color: var(--cx-brand-700);
 }
 
+.cellix-composer-dock {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cx-white);
+  border-top: 1px solid var(--cx-border);
+}
+
+.cellix-composer-dock .cellix-change-history,
+.cellix-composer-dock .cellix-checkpoint-panel {
+  border-top: 0;
+  border-bottom: 1px solid var(--cx-gray-100);
+}
+
+.cellix-composer-dock .cellix-change-history-body,
+.cellix-composer-dock .cellix-checkpoint-body {
+  padding: 10px 12px;
+  max-height: min(240px, 40vh);
+  overflow-y: auto;
+}
+
+.cellix-composer-tool-bar {
+  display: flex;
+  align-items: center;
+  /* Tools sit at the right edge of the composer, so the left side stays clear
+     for the prompt itself. */
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 2px 6px;
+  overflow: visible;
+}
+
+.cellix-composer-tool-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.cellix-composer-tool-wrap::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%) translateY(2px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--cx-gray-900);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 50;
+  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.18);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.cellix-composer-tool-wrap:first-child::after {
+  left: 0;
+  transform: translateX(0) translateY(2px);
+}
+
+.cellix-composer-tool-wrap:hover::after,
+.cellix-composer-tool-wrap:focus-within::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.cellix-composer-tool-wrap:first-child:hover::after,
+.cellix-composer-tool-wrap:first-child:focus-within::after {
+  transform: translateX(0) translateY(0);
+}
+
+.cellix-composer-tool-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: var(--cx-radius-sm);
+  background: transparent;
+  color: var(--cx-gray-500);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.cellix-composer-tool-btn:hover:not(:disabled) {
+  background: var(--cx-brand-50);
+  border-color: var(--cx-brand-100);
+  color: var(--cx-brand-700);
+}
+
+.cellix-composer-tool-btn.active {
+  background: var(--cx-brand-50);
+  border-color: var(--cx-brand-100);
+  color: var(--cx-brand-700);
+}
+
+.cellix-composer-tool-btn.available:not(.active) {
+  color: var(--cx-brand-600);
+}
+
+.cellix-composer-tool-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 .cellix-input-area {
   flex-shrink: 0;
   position: sticky;
@@ -1651,7 +1773,14 @@
   z-index: 40;
   border-top: 1px solid var(--cx-border);
   background: var(--cx-white);
-  padding: 10px 12px;
+  padding: 8px 12px 10px;
+}
+
+.cellix-composer-dock .cellix-input-area {
+  border-top: 0;
+  position: static;
+  padding-top: 6px;
+  overflow: visible;
 }
 
 .cellix-input-shell {
@@ -2742,6 +2871,54 @@
 
 .cellix-change-history-revert:hover:not(:disabled) {
   background: var(--cx-gray-50);
+}
+
+/* Inline "revert the last change" row at the end of the conversation. Kept
+   visually quiet — it sits in the message flow, so it must not read as another
+   assistant turn. */
+.cellix-last-change-revert {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--cx-border);
+  border-radius: 8px;
+  background: var(--cx-gray-50);
+}
+
+.cellix-last-change-revert-label {
+  font-size: 10px;
+  color: var(--cx-gray-600, #52525b);
+}
+
+.cellix-last-change-revert-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.cellix-last-change-revert-btn:hover:not(:disabled) {
+  background: var(--cx-gray-50);
+}
+
+.cellix-last-change-revert-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.cellix-last-change-revert-error {
+  flex-basis: 100%;
+  font-size: 10px;
+  color: var(--cx-danger, #b91c1c);
 }
 
 .cellix-checkpoint-panel {

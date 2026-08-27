@@ -65,6 +65,26 @@ export async function handleCreateChart(
     throw new Error('CREATE_CHART requires sheetName, sourceSheetName, and sourceRange');
   }
 
+  // Verify both sheets exist BEFORE queuing any dependent lookups (getRange/charts.add)
+  // on the shared batch RequestContext. An unresolved getItem() for a missing sheet
+  // does not throw immediately — it poisons the next ctx.sync(), which can fail the
+  // ENTIRE batch (all other actions already applied in this run) with a generic
+  // "The requested resource doesn't exist." Same class of bug worksheet.handler.ts's
+  // WORKSHEET_ACTION_TYPES gate already fixed for worksheet-level actions — charts had
+  // no equivalent guard.
+  const targetSheetCheck = ctx.workbook.worksheets.getItemOrNullObject(action.sheetName);
+  const sourceSheetCheck = ctx.workbook.worksheets.getItemOrNullObject(action.sourceSheetName);
+  targetSheetCheck.load('isNullObject');
+  sourceSheetCheck.load('isNullObject');
+  await ctx.sync();
+
+  if (targetSheetCheck.isNullObject) {
+    throw new Error(`CREATE_CHART target sheet "${action.sheetName}" does not exist`);
+  }
+  if (sourceSheetCheck.isNullObject) {
+    throw new Error(`CREATE_CHART source sheet "${action.sourceSheetName}" does not exist`);
+  }
+
   const targetSheet = ctx.workbook.worksheets.getItem(action.sheetName);
   const sourceSheet = ctx.workbook.worksheets.getItem(action.sourceSheetName);
   const dataRange = sourceSheet.getRange(stripSheetPrefix(action.sourceRange));
@@ -104,7 +124,21 @@ export async function handleUpdateChart(
     throw new Error('UPDATE_CHART requires sheetName and chartId');
   }
 
+  const sheetCheck = ctx.workbook.worksheets.getItemOrNullObject(action.sheetName);
+  sheetCheck.load('isNullObject');
+  await ctx.sync();
+  if (sheetCheck.isNullObject) {
+    throw new Error(`UPDATE_CHART sheet "${action.sheetName}" does not exist`);
+  }
+
   const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const chartCheck = sheet.charts.getItemOrNullObject(action.chartId);
+  chartCheck.load('isNullObject');
+  await ctx.sync();
+  if (chartCheck.isNullObject) {
+    throw new Error(`UPDATE_CHART chart "${action.chartId}" does not exist on "${action.sheetName}"`);
+  }
+
   const chart = sheet.charts.getItem(action.chartId);
 
   if (action.chartType) {
@@ -121,7 +155,21 @@ export async function handleDeleteChart(
   action: DeleteChartAction,
   ctx: Excel.RequestContext,
 ): Promise<void> {
+  const sheetCheck = ctx.workbook.worksheets.getItemOrNullObject(action.sheetName);
+  sheetCheck.load('isNullObject');
+  await ctx.sync();
+  if (sheetCheck.isNullObject) {
+    throw new Error(`DELETE_CHART sheet "${action.sheetName}" does not exist`);
+  }
+
   const sheet = ctx.workbook.worksheets.getItem(action.sheetName);
+  const chartCheck = sheet.charts.getItemOrNullObject(action.chartId);
+  chartCheck.load('isNullObject');
+  await ctx.sync();
+  if (chartCheck.isNullObject) {
+    throw new Error(`DELETE_CHART chart "${action.chartId}" does not exist on "${action.sheetName}"`);
+  }
+
   const chart = sheet.charts.getItem(action.chartId);
   chart.delete();
   await ctx.sync();

@@ -72,6 +72,38 @@ describe('describeBlockedReason', () => {
   });
 });
 
+describe('selecting the block a summary-bar Accept should target', () => {
+  // Regression for the silent no-op: App's findPendingActionBlock used to return
+  // the first *pending* block regardless of its wave dependency. After wave 1 is
+  // accepted, wave 2 is the first pending block — so the summary bar targeted it,
+  // acceptActions refused it (dependency unmet is not the same as satisfied), and
+  // the caller still cleared the preview. Net effect: nothing written, card gone,
+  // no error shown. The selection must skip blocks that are not yet acceptable.
+  const pick = (blocks: ActionBlock[]) =>
+    blocks.find((b) => b.proposalStatus === 'pending' && isWaveDependencySatisfied(b, blocks));
+
+  it('picks the first wave while it is still pending', () => {
+    const wave1 = block({ id: 'wave1', changeSetId: 'cs1' });
+    const wave2 = block({ id: 'wave2', changeSetId: 'cs2', dependsOnChangeSetId: 'cs1' });
+    expect(pick([wave1, wave2])?.id).toBe('wave1');
+  });
+
+  it('picks the second wave only once the first is accepted', () => {
+    const wave1 = block({ id: 'wave1', changeSetId: 'cs1', proposalStatus: 'accepted' });
+    const wave2 = block({ id: 'wave2', changeSetId: 'cs2', dependsOnChangeSetId: 'cs1' });
+    expect(pick([wave1, wave2])?.id).toBe('wave2');
+  });
+
+  it('picks nothing when the only pending block is still gated', () => {
+    // The exact silent-no-op shape: wave1 pending (e.g. its own apply failed and
+    // it was reset to pending), wave2 pending but gated behind it. Selecting
+    // wave2 here is what produced an Accept that wrote nothing.
+    const wave1 = block({ id: 'wave1', changeSetId: 'cs1', proposalStatus: 'rejected' });
+    const wave2 = block({ id: 'wave2', changeSetId: 'cs2', dependsOnChangeSetId: 'cs1' });
+    expect(pick([wave1, wave2])).toBeUndefined();
+  });
+});
+
 describe('collectCascadeRejectIds', () => {
   it('includes just the rejected block when nothing depends on it', () => {
     const b1 = block({ id: 'wave1', changeSetId: 'cs1' });
