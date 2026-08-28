@@ -10,6 +10,7 @@ import {
 import {
   isLocalRangeAddress,
   parseCellAddress,
+  parseRangeAddress,
   stripSheetPrefix,
 } from '../addressUtils';
 import {
@@ -39,6 +40,43 @@ async function resolveOrCreateSheet(
   const created = sheets.add(sheetName);
   await ctx.sync();
   return created;
+}
+
+/**
+ * Extend a filter-scan range down to the sheet's real last used row.
+ *
+ * The executor infers `range` from a token-compressed sample of the sheet, so on a
+ * 50-row register it can emit "A1:L11". Filter actions mean "every matching row",
+ * so honouring that guess silently updates 10 rows and reports success (F13).
+ *
+ * Widens rows only — never columns, so the caller's column window (and therefore
+ * targetColumn resolution) is unchanged. Falls back to the requested range if the
+ * used range is unavailable (empty sheet) or already smaller.
+ */
+async function extendRangeToUsedRows(
+  sheet: Excel.Worksheet,
+  rangeAddress: string,
+  ctx: Excel.RequestContext,
+): Promise<Excel.Range> {
+  const requested = parseRangeAddress(rangeAddress);
+  if (!requested) return sheet.getRange(rangeAddress);
+
+  const used = sheet.getUsedRange();
+  used.load(['rowIndex', 'rowCount']);
+  await ctx.sync();
+
+  const usedLastRow = (used.rowIndex ?? 0) + (used.rowCount ?? 0) - 1;
+  const requestedLastRow = requested.row + requested.rowCount - 1;
+  if (!Number.isFinite(usedLastRow) || usedLastRow <= requestedLastRow) {
+    return sheet.getRange(rangeAddress);
+  }
+
+  return sheet.getRangeByIndexes(
+    requested.row,
+    requested.col,
+    usedLastRow - requested.row + 1,
+    requested.colCount,
+  );
 }
 
 function resolveSourceRangeAddress(address: string): string {
@@ -208,10 +246,12 @@ export async function handleMoveRange(
 export async function handleFormatMatchingRows(
   action: FormatMatchingRowsAction,
   ctx: Excel.RequestContext,
-): Promise<{ rowsFormatted: number }> {
+): Promise<{ rowsFormatted: number; rowsScanned: number }> {
   const sheet = resolveWorksheet(ctx, action.sheetName);
   const rangeAddress = resolveSourceRangeAddress(action.range);
-  const range = sheet.getRange(rangeAddress);
+  // Same truncated-sample exposure as handleSetMatchingRows (F13): a filter-based
+  // format must cover every matching row, not just the ones the model sampled.
+  const range = await extendRangeToUsedRows(sheet, rangeAddress, ctx);
   range.load(['values', 'rowIndex', 'columnIndex', 'columnCount']);
   await ctx.sync();
 
@@ -232,21 +272,27 @@ export async function handleFormatMatchingRows(
     await ctx.sync();
   }
 
-  return { rowsFormatted: offsets.length };
+  // TASKS.md #93: report coverage, not just success — see handleSetMatchingRows.
+  const rowsScanned = Math.max(rows.length - (action.hasHeaders !== false ? 1 : 0), 0);
+  return { rowsFormatted: offsets.length, rowsScanned };
 }
 
 export async function handleSetMatchingRows(
   action: SetMatchingRowsAction,
   ctx: Excel.RequestContext,
-): Promise<{ rowsUpdated: number }> {
+): Promise<{ rowsUpdated: number; rowsScanned: number }> {
   const sheet = resolveWorksheet(ctx, action.sheetName);
   const rangeAddress = resolveSourceRangeAddress(action.range);
-  const range = sheet.getRange(rangeAddress);
+  // TASKS.md F13: the executor infers `range` from a COMPRESSED context sample, so a
+  // 50-row sheet can arrive as "A1:L11" and silently update only the sampled rows —
+  // reported to the user as "Applied". A filter-based action means "every matching
+  // row on the sheet", so extend the scan to the real used range before reading.
+  const range = await extendRangeToUsedRows(sheet, rangeAddress, ctx);
   range.load(['values', 'rowIndex', 'columnIndex', 'columnCount']);
   await ctx.sync();
 
   const rows = (range.values ?? []) as unknown[][];
-  if (rows.length === 0) return { rowsUpdated: 0 };
+  if (rows.length === 0) return { rowsUpdated: 0, rowsScanned: 0 };
 
   const hasHeaders = action.hasHeaders !== false;
   const headerRow = hasHeaders ? rows[0] : null;
@@ -276,7 +322,11 @@ export async function handleSetMatchingRows(
     await ctx.sync();
   }
 
-  return { rowsUpdated: offsets.length };
+  // TASKS.md #93: a partial write used to look identical to a complete one — the
+  // 10-of-50 incident reported "Applied" with no signal. Report what was actually
+  // scanned so callers (and the console) can tell coverage from success.
+  const rowsScanned = Math.max(rows.length - (hasHeaders ? 1 : 0), 0);
+  return { rowsUpdated: offsets.length, rowsScanned };
 }
 
 const CONDITIONAL_FORMAT_OPERATOR_MAP: Record<

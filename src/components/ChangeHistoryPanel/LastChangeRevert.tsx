@@ -13,6 +13,31 @@ import { SheetAction } from '@/types/sheet-actions';
  * per-entry history still lives in ChangeHistoryPanel — this is a shortcut to
  * its first row, not a replacement for it.
  */
+/**
+ * Human-readable age of the last applied change (TASKS.md #93).
+ *
+ * Returns '' for a change made moments ago — labelling the current turn's own
+ * result "just now" adds noise — and a coarse relative age otherwise, which is all
+ * that is needed to stop an older change being read as this turn's outcome.
+ */
+export function describeChangeAge(
+  timestamp: string | undefined,
+  now: number = Date.now(),
+): string {
+  if (!timestamp) return '';
+  const then = Date.parse(timestamp);
+  if (!Number.isFinite(then)) return '';
+  const seconds = Math.floor((now - then) / 1000);
+  if (seconds < 30) return '';
+  if (seconds < 90) return 'a minute ago';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+}
+
 interface LastChangeRevertProps {
   conversationId: string | null;
   onRevert: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
@@ -52,6 +77,12 @@ export const LastChangeRevert: React.FC<LastChangeRevertProps> = ({
   if (!entry) return null;
 
   const cellCount = entry.changes.length;
+  // TASKS.md #93: this label sits next to the conversation, so after a FAILED turn
+  // it read as though that turn had applied something ("Last change · 10 cells"
+  // beside "I couldn't apply those changes"). The entry is correct — it is the last
+  // applied change and must stay revertable — but it needs an age so it cannot be
+  // mistaken for the current turn's result.
+  const age = describeChangeAge(entry.appliedAt ?? entry.timestamp);
   const sheets = Array.from(new Set(entry.changes.map((c) => c.sheet).filter(Boolean)));
   const scope =
     sheets.length === 1 ? sheets[0] : sheets.length > 1 ? `${sheets.length} sheets` : '';
@@ -61,6 +92,7 @@ export const LastChangeRevert: React.FC<LastChangeRevertProps> = ({
       <span className="cellix-last-change-revert-label">
         Last change{scope ? ` on ${scope}` : ''}
         {cellCount ? ` · ${cellCount} cell${cellCount === 1 ? '' : 's'}` : ''}
+        {age ? ` · ${age}` : ''}
       </span>
       <button
         type="button"

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ChangeSetSummary } from '@/types/changeSet';
+import { describeChangeAge } from './LastChangeRevert';
 
 /**
  * LastChangeRevert renders the revert affordance for the most recent APPLIED
@@ -84,5 +85,41 @@ describe('LastChangeRevert — scope label', () => {
 
   it('collapses repeated sheet names rather than counting cells', () => {
     expect(scopeOf(entry('cs1', 'applied', ['Jan', 'Jan', 'Jan']))).toBe('Jan');
+  });
+});
+
+/**
+ * TASKS.md #93(b): after a FAILED turn the bar still read "Last change on Purchase
+ * Register · 10 cells", which looked like that turn had applied something. The entry
+ * itself is correct — it is the last applied change and must remain revertable — so
+ * the fix is an age label, not clearing it.
+ */
+describe('describeChangeAge', () => {
+  const now = Date.parse('2026-08-28T12:00:00.000Z');
+  const ago = (seconds: number) => new Date(now - seconds * 1000).toISOString();
+
+  it('stays silent for a change just applied by this turn', () => {
+    expect(describeChangeAge(ago(0), now)).toBe('');
+    expect(describeChangeAge(ago(29), now)).toBe('');
+  });
+
+  it('marks an older change so it cannot be read as this turn (the real incident)', () => {
+    // The 10-cell change was ~10 minutes before the failed turn that displayed it.
+    expect(describeChangeAge(ago(600), now)).toBe('10 min ago');
+  });
+
+  it.each([
+    [60, 'a minute ago'],
+    [300, '5 min ago'],
+    [3600, '1 hr ago'],
+    [86_400, 'yesterday'],
+    [172_800, '2 days ago'],
+  ])('describes %i seconds as %j', (seconds, expected) => {
+    expect(describeChangeAge(ago(seconds), now)).toBe(expected);
+  });
+
+  it('degrades quietly on a missing or unparseable timestamp', () => {
+    expect(describeChangeAge(undefined, now)).toBe('');
+    expect(describeChangeAge('not-a-date', now)).toBe('');
   });
 });
