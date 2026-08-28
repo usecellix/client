@@ -64,6 +64,7 @@ const SHEET_ACTION_CATALOG: Record<SheetActionType, true> = {
   CHECKPOINT: true,
   ADD_SHEET: true,
   SORT_RANGE: true,
+  SET_RANGE_VALUES: true,
   COPY_FILTERED_RANGE: true,
   FORMAT_MATCHING_ROWS: true,
   SET_MATCHING_ROWS: true,

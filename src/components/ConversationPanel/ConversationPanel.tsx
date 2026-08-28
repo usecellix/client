@@ -1,18 +1,15 @@
-import React, { useRef, useEffect, KeyboardEvent, useState } from 'react';
+import React, { useRef, useEffect, KeyboardEvent } from 'react';
 import {
   ArrowRight,
   AtSign,
   Check,
   ChevronDown,
   FileText,
-  Flag,
   Folder,
   Grid3X3,
   HelpCircle,
-  History,
   ListChecks,
   Paperclip,
-  Pencil,
   PencilLine,
   Square,
   X,
@@ -22,9 +19,7 @@ import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/S
 import { ClarificationPayload } from '@/types/cellix.types';
 import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
 import { isTurnPresentationComplete } from '@/utils/turnPresentation';
-import { ChangeHistoryPanel } from '@/components/ChangeHistoryPanel/ChangeHistoryPanel';
 import { LastChangeRevert } from '@/components/ChangeHistoryPanel/LastChangeRevert';
-import { CheckpointPanel } from '@/components/CheckpointPanel/CheckpointPanel';
 import { CellChange, formatCellValue } from '@/types/changeSet';
 import { RestoreResult } from '@/types/checkpoint';
 import { DiffItem } from '@/services/previewManager';
@@ -45,73 +40,7 @@ interface PanelInputProps {
   placeholder?: string;
   mode: AssistantMode;
   onModeChange: (mode: AssistantMode) => void;
-  tools?: React.ReactNode;
 }
-
-type ComposerPanel = 'history' | 'checkpoints';
-
-interface ComposerToolBarProps {
-  openPanel: ComposerPanel | null;
-  onTogglePanel: (panel: ComposerPanel) => void;
-  quickEditMode: boolean;
-  quickEditAvailable: boolean;
-  onToggleQuickEdit: () => void;
-}
-
-const ComposerToolBar: React.FC<ComposerToolBarProps> = ({
-  openPanel,
-  onTogglePanel,
-  quickEditMode,
-  quickEditAvailable,
-  onToggleQuickEdit,
-}) => {
-  const quickEditLabel = quickEditMode
-    ? 'Cancel quick edit'
-    : quickEditAvailable
-      ? 'Quick edit'
-      : 'Quick edit — apply a change first';
-
-  return (
-    <div className="cellix-composer-tool-bar" role="toolbar" aria-label="Workbook tools">
-      <span className="cellix-composer-tool-wrap" data-tooltip="Change history">
-        <button
-          type="button"
-          className={`cellix-composer-tool-btn ${openPanel === 'history' ? 'active' : ''}`}
-          aria-label="Change history"
-          aria-pressed={openPanel === 'history'}
-          onClick={() => onTogglePanel('history')}
-        >
-          <History size={15} />
-        </button>
-      </span>
-      <span className="cellix-composer-tool-wrap" data-tooltip="Checkpoints">
-        <button
-          type="button"
-          className={`cellix-composer-tool-btn ${openPanel === 'checkpoints' ? 'active' : ''}`}
-          aria-label="Checkpoints"
-          aria-pressed={openPanel === 'checkpoints'}
-          onClick={() => onTogglePanel('checkpoints')}
-        >
-          <Flag size={15} />
-        </button>
-      </span>
-      <span className="cellix-composer-tool-wrap" data-tooltip={quickEditLabel}>
-        <button
-          type="button"
-          className={`cellix-composer-tool-btn ${quickEditMode ? 'active' : ''} ${
-            quickEditAvailable && !quickEditMode ? 'available' : ''
-          }`}
-          aria-label={quickEditLabel}
-          aria-pressed={quickEditMode}
-          disabled={!quickEditMode && !quickEditAvailable}
-          onClick={onToggleQuickEdit}
-        >
-          <Pencil size={15} />
-        </button>
-      </span>
-    </div>
-  );
-};
 
 interface ModeSwitchProps {
   mode: AssistantMode;
@@ -351,7 +280,6 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   placeholder = 'Ask anything about your spreadsheet…',
   mode,
   onModeChange,
-  tools,
 }) => {
   const [message, setMessage] = React.useState('');
   const [attachedFiles, setAttachedFiles] = React.useState<File[]>([]);
@@ -654,7 +582,6 @@ export const PanelInput: React.FC<PanelInputProps> = ({
 
   return (
     <div className="cellix-input-area">
-      {tools}
       <div
         className={`cellix-input-shell mode-${mode} ${isProcessing ? 'processing' : ''} ${
           isWaitingClarification ? 'clarifying' : ''
@@ -848,6 +775,7 @@ interface ConversationPanelProps {
   onToggleThinking: (turnId: string, blockId: string) => void;
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onFollowUp: (text: string) => void;
+  onRegenerate?: (turnId: string, overrideMessage?: string) => void;
   conversationId: string | null;
   onRevertHistoryEntry: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
   workbookId?: string;
@@ -861,10 +789,6 @@ interface ConversationPanelProps {
     onAccept: () => void;
     onReject: () => void;
   } | null;
-  refinementChangeSetId?: string | null;
-  quickEditMode?: boolean;
-  onStartQuickEdit?: () => void;
-  onCancelQuickEdit?: () => void;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -896,21 +820,16 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onToggleThinking,
   onAnswerComplete,
   onFollowUp,
+  onRegenerate,
   conversationId,
   onRevertHistoryEntry,
   workbookId,
   onRestoreCheckpoint,
   isApplyingActions = false,
   pendingPreview = null,
-  refinementChangeSetId = null,
-  quickEditMode = false,
-  onStartQuickEdit,
-  onCancelQuickEdit,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
-  const [openComposerPanel, setOpenComposerPanel] = useState<ComposerPanel | null>(null);
   const showStartScreen = turns.length === 0;
-  const quickEditAvailable = Boolean(refinementChangeSetId && onStartQuickEdit);
   const activeTurn = activeTurnId ? turns.find((turn) => turn.id === activeTurnId) : undefined;
   const previewActionsReady = Boolean(
     activeTurn && !isWaitingForResponse && isTurnPresentationComplete(activeTurn),
@@ -939,18 +858,6 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight, behavior: 'smooth' });
   }, [turns, activeTurnId, isWaitingForResponse, activeClarification]);
 
-  const toggleComposerPanel = (panel: ComposerPanel) => {
-    setOpenComposerPanel((prev) => (prev === panel ? null : panel));
-  };
-
-  const handleToggleQuickEdit = () => {
-    if (quickEditMode) {
-      onCancelQuickEdit?.();
-      return;
-    }
-    onStartQuickEdit?.();
-  };
-
   const composerInput = (
     <PanelInput
       onSend={onSend}
@@ -961,41 +868,17 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       mode={mode}
       onModeChange={onModeChange}
       placeholder={
-        quickEditMode
-          ? 'Describe how to adjust the last change…'
-          : mode === 'ask'
-            ? 'Ask anything about your workbook - use @ for references'
-            : mode === 'plan'
-              ? 'Describe what you want to plan - use @ for references'
-              : 'Describe the change you want to make - use @ for references'
-      }
-      tools={
-        showStartScreen ? undefined : (
-          <ComposerToolBar
-            openPanel={openComposerPanel}
-            onTogglePanel={toggleComposerPanel}
-            quickEditMode={quickEditMode}
-            quickEditAvailable={quickEditAvailable}
-            onToggleQuickEdit={handleToggleQuickEdit}
-          />
-        )
+        mode === 'ask'
+          ? 'Ask anything about your workbook - use @ for references'
+          : mode === 'plan'
+            ? 'Describe what you want to plan - use @ for references'
+            : 'Describe the change you want to make - use @ for references'
       }
     />
   );
 
   const composerDock = (
     <div className="cellix-composer-dock">
-      {!showStartScreen && openComposerPanel === 'history' && (
-        <ChangeHistoryPanel conversationId={conversationId} onRevert={onRevertHistoryEntry} embedded />
-      )}
-      {!showStartScreen && openComposerPanel === 'checkpoints' && (
-        <CheckpointPanel
-          workbookId={workbookId}
-          conversationId={conversationId}
-          onRestore={onRestoreCheckpoint}
-          embedded
-        />
-      )}
       {composerInput}
     </div>
   );
@@ -1009,6 +892,13 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         onSelectSession={onSelectSession}
         onCloseSession={onCloseSession}
         onNewChat={onNewChat}
+        // Checkpoints icon temporarily hidden (not removed) — feature, panel,
+        // and backend are all still intact behind this flag. Restore with
+        // `showCheckpointsButton={!showStartScreen}` when it's wanted again.
+        showCheckpointsButton={false}
+        workbookId={workbookId}
+        conversationId={conversationId}
+        onRestoreCheckpoint={onRestoreCheckpoint}
       />
 
       <div className={`cellix-content ${showStartScreen ? 'start' : ''}`} ref={contentRef}>
@@ -1034,7 +924,9 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               onToggleThinking={onToggleThinking}
               onAnswerComplete={onAnswerComplete}
               onFollowUp={onFollowUp}
+              onRegenerate={onRegenerate}
               onRunAsAction={onRunAsAction}
+              onRevertChangeSet={onRevertHistoryEntry}
             />
           ))
         )}

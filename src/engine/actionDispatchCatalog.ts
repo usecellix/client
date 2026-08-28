@@ -39,6 +39,7 @@ const DISPATCH_CATALOG: Record<RichAction['type'], true> = {
   DEFINE_NAMED_RANGE: true,
   AUTOFIT_COLUMNS: true,
   SORT_RANGE: true,
+  SET_RANGE_VALUES: true,
   CLARIFY: true,
   CHECKPOINT: true,
   COPY_FILTERED_RANGE: true,

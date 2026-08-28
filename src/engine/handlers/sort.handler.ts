@@ -1,15 +1,58 @@
 import { SortRangeAction } from '@/action.types';
-import { isLocalRangeAddress, parseRangeAddress, stripSheetPrefix } from '../addressUtils';
+import {
+  columnIndexToLetter,
+  isLocalRangeAddress,
+  parseRangeAddress,
+  stripSheetPrefix,
+} from '../addressUtils';
 import { resolveWorksheet } from '../sheetResolve';
 import { compareSortValues } from '../sortCompare';
 import { preserveNumberFormatsAroundWrite } from '@/services/formatGuard';
+import { CellChange } from '@/types/changeSet';
 
 /* global Excel */
+
+/**
+ * The real before/after cell diff for this sort, computed from the values
+ * actually read off Excel — not the backend's shadow-workbook simulation,
+ * which deliberately skips sparse ranges (mixed blank/filled cells) and so
+ * can report "0 cells changed" for a sort that genuinely reordered the
+ * sheet. Returned so the caller can report it to `/audit/apply` and give
+ * Revert something real to work with (TASKS.md #93).
+ */
+function diffSortedGrid(
+  sheetName: string,
+  rangeAddress: string,
+  before: unknown[][],
+  after: unknown[][],
+): CellChange[] {
+  const bounds = parseRangeAddress(rangeAddress);
+  if (!bounds) return [];
+
+  const changes: CellChange[] = [];
+  for (let r = 0; r < before.length; r += 1) {
+    const beforeRow = before[r] ?? [];
+    const afterRow = after[r] ?? [];
+    for (let c = 0; c < beforeRow.length; c += 1) {
+      const beforeVal = beforeRow[c] ?? null;
+      const afterVal = afterRow[c] ?? null;
+      if (String(beforeVal ?? '') === String(afterVal ?? '')) continue;
+      changes.push({
+        cell: `${columnIndexToLetter(bounds.col + c)}${bounds.row + r + 1}`,
+        sheet: sheetName,
+        before: beforeVal,
+        after: afterVal,
+        isHardcoded: true,
+      });
+    }
+  }
+  return changes;
+}
 
 export async function handleSortRange(
   action: SortRangeAction,
   ctx: Excel.RequestContext,
-): Promise<void> {
+): Promise<{ sortedRangeChanges?: CellChange[] } | void> {
   const sheet = resolveWorksheet(ctx, action.sheetName);
   let rangeAddress = stripSheetPrefix(action.range);
 
@@ -97,4 +140,7 @@ export async function handleSortRange(
     },
   );
   await ctx.sync();
+
+  const changes = diffSortedGrid(action.sheetName, rangeAddress, values, sortedValues);
+  return changes.length > 0 ? { sortedRangeChanges: changes } : undefined;
 }

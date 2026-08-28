@@ -3,6 +3,7 @@ import {
   Archive,
   ChevronRight,
   ExternalLink,
+  Flag,
   LogOut,
   MessageSquare,
   Pin,
@@ -17,6 +18,8 @@ import {
 import { useSession } from '@/auth/auth-client';
 import { signOutUser } from '@/auth/useAuth';
 import { ChatSession } from '@/types/chatSession';
+import { CheckpointPanel } from '@/components/CheckpointPanel/CheckpointPanel';
+import { RestoreResult } from '@/types/checkpoint';
 
 interface PanelHeaderProps {
   sessions: ChatSession[];
@@ -25,6 +28,14 @@ interface PanelHeaderProps {
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
   onNewChat: () => void;
+  /** Checkpoints icon only makes sense once a conversation exists. Change
+   *  History was removed from here — reverting a specific action is now done
+   *  inline on that message (TurnRenderer's own Revert icon) instead of via
+   *  a separate browsable panel. */
+  showCheckpointsButton?: boolean;
+  workbookId?: string;
+  conversationId: string | null;
+  onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
 }
 
 export const PanelHeader: React.FC<PanelHeaderProps> = ({
@@ -34,12 +45,17 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   onSelectSession,
   onCloseSession,
   onNewChat,
+  showCheckpointsButton = false,
+  workbookId,
+  conversationId,
+  onRestoreCheckpoint,
 }) => {
   const { data: session } = useSession();
   const userEmail = session?.user?.email?.trim() || 'Signed in';
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [checkpointsOpen, setCheckpointsOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   const headerRef = useRef<HTMLDivElement>(null);
 
@@ -50,10 +66,11 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   const closeAll = () => {
     setHistoryOpen(false);
     setSettingsOpen(false);
+    setCheckpointsOpen(false);
   };
 
   useEffect(() => {
-    if (!historyOpen && !settingsOpen) return;
+    if (!historyOpen && !settingsOpen && !checkpointsOpen) return;
 
     const handlePointerDown = (event: MouseEvent) => {
       if (headerRef.current && !headerRef.current.contains(event.target as Node)) {
@@ -63,7 +80,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
 
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [historyOpen, settingsOpen]);
+  }, [historyOpen, settingsOpen, checkpointsOpen]);
 
   return (
     <div className="cellix-topbar" ref={headerRef}>
@@ -130,8 +147,9 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             type="button"
             className={`cellix-topbar-icon-btn ${historyOpen ? 'active' : ''}`}
             onClick={() => {
-              setHistoryOpen((prev) => !prev);
-              setSettingsOpen(false);
+              const next = !historyOpen;
+              closeAll();
+              setHistoryOpen(next);
             }}
             title="Chat history"
             aria-label="Chat history"
@@ -206,14 +224,46 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             </div>
           )}
 
+          {showCheckpointsButton && (
+            <div className="cellix-topbar-checkpoints-wrap">
+              <button
+                type="button"
+                className={`cellix-topbar-icon-btn ${checkpointsOpen ? 'active' : ''}`}
+                onClick={() => {
+                  const next = !checkpointsOpen;
+                  closeAll();
+                  setCheckpointsOpen(next);
+                }}
+                title="Checkpoints"
+                aria-label="Checkpoints"
+                aria-haspopup="menu"
+                aria-expanded={checkpointsOpen}
+              >
+                <Flag size={16} />
+              </button>
+
+              {checkpointsOpen && (
+                <div className="cellix-checkpoint-menu" role="menu" aria-label="Checkpoints">
+                  <CheckpointPanel
+                    workbookId={workbookId}
+                    conversationId={conversationId}
+                    onRestore={onRestoreCheckpoint}
+                    embedded
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="cellix-topbar-settings-wrap">
             <button
               type="button"
               className={`cellix-topbar-icon-btn ${settingsOpen ? 'active' : ''}`}
               onClick={(event) => {
                 event.stopPropagation();
-                setSettingsOpen((prev) => !prev);
-                setHistoryOpen(false);
+                const next = !settingsOpen;
+                closeAll();
+                setSettingsOpen(next);
               }}
               title="Settings"
               aria-label="Settings"

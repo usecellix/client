@@ -3,6 +3,7 @@ import {
   SetFormulaAction,
   FillDownAction,
   BatchSetAction,
+  SetRangeValuesAction,
 } from '@/action.types';
 import {
   preserveNumberFormatsAroundWrite,
@@ -10,6 +11,7 @@ import {
 } from '@/services/formatGuard';
 import { resolveWorksheet } from '../sheetResolve';
 import { applyRichFormat } from './format.handler';
+import { parseCellAddress, parseRangeAddress } from '../addressUtils';
 
 /* global Excel */
 
@@ -60,6 +62,56 @@ export async function handleFillDown(
   const source = sheet.getRange(action.sourceRange);
   const target = sheet.getRange(action.targetRange);
   target.copyFrom(source, Excel.RangeCopyType.all, false, false);
+  await ctx.sync();
+}
+
+/**
+ * Revert-only bulk write (TASKS.md #100) — the fast path for reverting an
+ * action (e.g. `SORT_RANGE`) that can touch hundreds of cells at once,
+ * where a per-cell `SET_CELL` inverse means hundreds of separate Office.js
+ * round trips. `action.operations` is deliberately sparse (only the cells
+ * that actually need correcting, not every cell in `action.range`) — the
+ * backend that builds this action has real captured values for the changed
+ * cells but no way to know the unchanged ones, so this reads the range's
+ * *current* live values in one call, overlays the corrections in memory,
+ * and writes the merged block back in one call. Unlisted cells inside the
+ * range are left exactly as Excel already has them. Uses
+ * `preserveNumberFormatsAroundWrite` with no remap (values go back to the
+ * exact positions they came from, no reordering) so restoring a date
+ * column doesn't fall into the same smart-entry reformatting bug class
+ * `sort.handler.ts` guards against.
+ */
+export async function handleSetRangeValues(
+  action: SetRangeValuesAction,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  if (!action.operations.length) return;
+
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const range = sheet.getRange(action.range);
+  range.load(['values', 'rowIndex', 'columnIndex']);
+  await ctx.sync();
+
+  const bounds = parseRangeAddress(action.range);
+  const baseRow = bounds?.row ?? range.rowIndex;
+  const baseCol = bounds?.col ?? range.columnIndex;
+  const matrix = (range.values as unknown[][]).map((row) => [...row]);
+
+  for (const op of action.operations) {
+    if (op.value === undefined) continue;
+    const cell = parseCellAddress(op.address);
+    if (!cell) continue;
+    const relRow = cell.row - baseRow;
+    const relCol = cell.col - baseCol;
+    if (relRow < 0 || relCol < 0 || relRow >= matrix.length || relCol >= (matrix[0]?.length ?? 0)) {
+      continue;
+    }
+    matrix[relRow]![relCol] = op.value;
+  }
+
+  await preserveNumberFormatsAroundWrite(range, ctx, () => {
+    range.values = matrix;
+  });
   await ctx.sync();
 }
 

@@ -112,7 +112,11 @@ export class PreviewManager {
   }
 
   async accept(): Promise<
-    | { createdConditionalFormatIds?: CreatedConditionalFormatId[]; createdChartIds?: CreatedChartId[] }
+    | {
+        createdConditionalFormatIds?: CreatedConditionalFormatId[];
+        createdChartIds?: CreatedChartId[];
+        sortedRangeChanges?: CellChange[];
+      }
     | void
   > {
     if (!this.isActive || this.applying) return;
@@ -140,6 +144,7 @@ export class PreviewManager {
     try {
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;
+      let sortedRangeChanges: CellChange[] | undefined;
       if (toApply.length > 0) {
         // applyActionsWithReport (not the void applyActions) — TASKS.md #40/#15 need
         // their createdConditionalFormatIds/createdChartIds. Same "errors present +
@@ -151,10 +156,11 @@ export class PreviewManager {
         }
         createdConditionalFormatIds = result.createdConditionalFormatIds;
         createdChartIds = result.createdChartIds;
+        sortedRangeChanges = result.sortedRangeChanges;
       }
       this.reset();
-      return createdConditionalFormatIds || createdChartIds
-        ? { createdConditionalFormatIds, createdChartIds }
+      return createdConditionalFormatIds || createdChartIds || sortedRangeChanges
+        ? { createdConditionalFormatIds, createdChartIds, sortedRangeChanges }
         : undefined;
     } catch (error) {
       // Keep pending + applied flags so a retry does not double-write.

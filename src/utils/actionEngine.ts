@@ -7,6 +7,7 @@ import {
 } from '../engine/overwriteGuard';
 import { selectActionRanges } from '../engine/selectRanges';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
+import { CellChange } from '../types/changeSet';
 import { sanitizeActions } from './actionGuard';
 
 /* global Excel */
@@ -55,11 +56,13 @@ export class ActionEngine {
     errors: string[];
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
+    sortedRangeChanges?: CellChange[];
   }> {
     const errors: string[] = [];
     let applied = 0;
     let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
     let createdChartIds: CreatedChartId[] | undefined;
+    let sortedRangeChanges: CellChange[] | undefined;
 
     try {
       const safeInput = annotateDestOverwriteForCreatedSheets(
@@ -84,6 +87,7 @@ export class ActionEngine {
       errors.push(...richResult.errors);
       createdConditionalFormatIds = richResult.createdConditionalFormatIds;
       createdChartIds = richResult.createdChartIds;
+      sortedRangeChanges = richResult.sortedRangeChanges;
       if (richResult.errors.some((e) => e.includes('Write blocked:'))) {
         throw new Error(richResult.errors.find((e) => e.includes('Write blocked:')) ?? richResult.errors[0]);
       }
@@ -102,6 +106,7 @@ export class ActionEngine {
       errors,
       ...(createdConditionalFormatIds ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds ? { createdChartIds } : {}),
+      ...(sortedRangeChanges ? { sortedRangeChanges } : {}),
     };
   }
 

@@ -10,6 +10,7 @@ import {
   handleSetFormula,
   handleFillDown,
   handleBatchSet,
+  handleSetRangeValues,
 } from './handlers/cell.handler';
 import {
   handleAddSheet,
@@ -54,6 +55,7 @@ import {
 } from './overwriteGuard';
 import { selectActionRanges } from './selectRanges';
 import { resolveWorksheet } from './sheetResolve';
+import { CellChange } from '@/types/changeSet';
 
 /* global Excel */
 
@@ -88,11 +90,13 @@ export class RichActionEngine {
     errors: string[];
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
+    sortedRangeChanges?: CellChange[];
   }> {
     const errors: string[] = [];
     let applied = 0;
     const createdConditionalFormatIds: CreatedConditionalFormatId[] = [];
     const createdChartIds: CreatedChartId[] = [];
+    const sortedRangeChanges: CellChange[] = [];
     const prepared = annotateDestOverwriteForCreatedSheets(
       pruneSpuriousAddSheets(actions),
     );
@@ -129,6 +133,9 @@ export class RichActionEngine {
                 sourceRange: action.sourceRange,
                 chartId: result.createdChartId,
               });
+            }
+            if (result && 'sortedRangeChanges' in result && result.sortedRangeChanges) {
+              sortedRangeChanges.push(...result.sortedRangeChanges);
             }
             applied += 1;
           } catch (err: unknown) {
@@ -175,13 +182,21 @@ export class RichActionEngine {
       errors,
       ...(createdConditionalFormatIds.length > 0 ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
+      ...(sortedRangeChanges.length > 0 ? { sortedRangeChanges } : {}),
     };
   }
 
   private async dispatch(
     action: RichAction,
     ctx: Excel.RequestContext,
-  ): Promise<{ createdConditionalFormatId?: string; createdChartId?: string } | void> {
+  ): Promise<
+    | {
+        createdConditionalFormatId?: string;
+        createdChartId?: string;
+        sortedRangeChanges?: CellChange[];
+      }
+    | void
+  > {
     // Last line of defense: never silently overwrite occupied cells.
     await guardAgainstOverwrite(action, ctx);
 
@@ -259,6 +274,9 @@ export class RichActionEngine {
         return handleClearRange(action, ctx);
       case 'SORT_RANGE':
         return handleSortRange(action, ctx);
+      case 'SET_RANGE_VALUES':
+        await handleSetRangeValues(action, ctx);
+        return;
       case 'COPY_FILTERED_RANGE':
         await handleCopyFilteredRange(action, ctx);
         return;
