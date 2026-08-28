@@ -179,4 +179,58 @@ describe('useConversation — SSE-driven state transitions', () => {
     },
     10000,
   );
+
+  it(
+    'regenerateTurnId replaces the existing turn in place instead of appending a new one',
+    async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeSseResponse([
+            sseBlock('answer', { answer: 'First answer.' }),
+            sseBlock('conversation_end', {}),
+          ]),
+        )
+        .mockResolvedValueOnce(
+          makeSseResponse([
+            sseBlock('answer', { answer: 'Second answer, regenerated.' }),
+            sseBlock('conversation_end', {}),
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { result } = renderHook(() => useConversation({ workbookKey: 'regenerate-test' }));
+
+      await sendAndSettle(result, 'ask');
+      await waitFor(() => expect(result.current.turns).toHaveLength(1));
+      const originalTurnId = result.current.turns[0].id;
+      expect(
+        result.current.turns[0].blocks.some(
+          (b) => b.type === 'answer' && b.content === 'First answer.',
+        ),
+      ).toBe(true);
+
+      await act(async () => {
+        await result.current.sendMessage(
+          SIMPLE_CREATE_MESSAGE,
+          [],
+          WORKBOOK_CONTEXT,
+          PROMPT_CONTEXT,
+          { mode: 'ask', regenerateTurnId: originalTurnId },
+        );
+      });
+
+      // Same turn count, same id — not a second bubble appended below.
+      expect(result.current.turns).toHaveLength(1);
+      expect(result.current.turns[0].id).toBe(originalTurnId);
+      await waitFor(() =>
+        expect(
+          result.current.turns[0].blocks.some(
+            (b) => b.type === 'answer' && b.content === 'Second answer, regenerated.',
+          ),
+        ).toBe(true),
+      );
+    },
+    10000,
+  );
 });

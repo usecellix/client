@@ -5,7 +5,7 @@ import {
   getAuditRevertEndpoint,
   getAuditStatsEndpoint,
 } from '@/lib/apiConfig';
-import { ChangeSetSummary } from '@/types/changeSet';
+import { CellChange, ChangeSetSummary } from '@/types/changeSet';
 import { SheetAction } from '@/types/sheet-actions';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
 
@@ -44,6 +44,10 @@ export async function markChangeSetApplied(
   changeSetId: string,
   createdConditionalFormatIds?: CreatedConditionalFormatId[],
   createdChartIds?: CreatedChartId[],
+  // TASKS.md #93 — the real before/after diff for a SORT_RANGE, read directly
+  // off Excel by the frontend. The backend's shadow-based diff skips sparse
+  // ranges, so without this Revert has nothing to undo for those sorts.
+  sortedRangeChanges?: CellChange[],
 ): Promise<ChangeSetSummary> {
   const body: Record<string, unknown> = {};
   // Fastify rejects Content-Type: application/json with an empty body (400) —
@@ -55,6 +59,9 @@ export async function markChangeSetApplied(
   }
   if (createdChartIds && createdChartIds.length > 0) {
     body.createdChartIds = createdChartIds;
+  }
+  if (sortedRangeChanges && sortedRangeChanges.length > 0) {
+    body.sortedRangeChanges = sortedRangeChanges;
   }
   const result = await auditFetch<{ changeSet: ChangeSetSummary }>(
     getAuditApplyEndpoint(changeSetId),

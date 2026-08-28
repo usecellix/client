@@ -136,6 +136,13 @@ export interface UseConversationOptions {
 export interface SendMessageOptions {
   refinementChangeSetId?: string;
   mode?: AssistantMode;
+  /**
+   * When set, re-runs this request against the existing turn with this id
+   * instead of appending a new one — used by regenerate/edit-and-resend so
+   * the message stays anchored in place rather than duplicating in the
+   * thread. The turn must already exist in the active session.
+   */
+  regenerateTurnId?: string;
 }
 
 interface PendingResponse {
@@ -174,6 +181,15 @@ interface TurnRuntime {
   pendingPlan: PlanBlock | null;
   aborted: boolean;
   mode: AssistantMode;
+  /**
+   * True once a real backend `status`/`thinking` SSE event has been folded
+   * into this turn's thought log. The scripted reading/analyzing/composing
+   * narration below is generic filler shown while waiting for the backend —
+   * once the backend has said something *real* about what it's doing, the
+   * filler must stop overwriting it (that was overwriting a genuine process
+   * description with a canned one right before the answer revealed).
+   */
+  hasLiveThinking: boolean;
 }
 
 const THINKING_ID = 'thinking_main';
@@ -207,7 +223,9 @@ function finalizeSteps(blocks: TurnBlock[], userMessage: string): TurnBlock[] {
           ...block,
           content: keepContent,
           loading: false,
-          expanded: keepContent.includes('\n') || /blocked|cannot create|verification/i.test(keepContent),
+          // Tap-to-expand only: never force it open here, even for notable
+          // content (blocked/verification) — but if the user already tapped
+          // it open mid-stream, respect that and don't force it shut either.
           visible: true,
         };
       }
@@ -228,7 +246,10 @@ function appendThinkingLog(
   if (prev.endsWith(text)) {
     return upsertThinking(blocks, prev, {
       loading: opts.loading ?? true,
-      expanded: opts.expanded ?? true,
+      // Default collapsed: live agent chatter (column lists, range reads) is
+      // noise until something goes wrong — the status line above already
+      // shows the current step, so re-showing it expanded here is redundant.
+      expanded: opts.expanded ?? false,
       visible: true,
     });
   }
@@ -238,7 +259,7 @@ function appendThinkingLog(
     next.length > 6000 ? `…\n\n${next.slice(next.length - 5800)}` : next;
   return upsertThinking(blocks, capped, {
     loading: opts.loading ?? true,
-    expanded: opts.expanded ?? true,
+    expanded: opts.expanded ?? false,
     visible: true,
   });
 }
@@ -273,7 +294,7 @@ function upsertThinking(
   const expanded =
     opts.expanded !== undefined
       ? opts.expanded
-      : (existing?.type === 'thinking' ? existing.expanded : true);
+      : (existing?.type === 'thinking' ? existing.expanded : false);
   const loading =
     opts.loading !== undefined
       ? opts.loading
@@ -315,6 +336,7 @@ function createRuntime(mode: AssistantMode = DEFAULT_ASSISTANT_MODE): TurnRuntim
     pendingPlan: null,
     aborted: false,
     mode,
+    hasLiveThinking: false,
   };
 }
 
@@ -852,10 +874,12 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       updateTurn(turnId, (turn) => ({
         ...turn,
+        // No `expanded` override — tap-to-expand only, so a fresh block
+        // starts collapsed (upsertThinking's own default) and a block the
+        // user already opened stays open across phase transitions.
         blocks: upsertThinking(turn.blocks, buildThoughtSummary(turn.userMessage, 'reading'), {
           loading: true,
           visible: true,
-          expanded: true,
         }),
       }));
 
@@ -928,14 +952,22 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       await delay(TIMING.pauseAfterAnalyzingStepBeforeThinking);
       if (isAborted()) return;
 
-      updateTurn(turnId, (turn) => ({
-        ...turn,
-        blocks: upsertThinking(
-          turn.blocks,
-          buildThoughtSummary(turn.userMessage, 'analyzing'),
-          { loading: true, visible: true, expanded: true },
-        ),
-      }));
+      updateTurn(turnId, (turn) => {
+        // Once the backend has said something real about what it's doing,
+        // keep that instead of overwriting it with generic filler text.
+        const existing = turn.blocks.find((b): b is ThinkingBlock => b.type === 'thinking');
+        const content =
+          runtime.hasLiveThinking && existing?.content
+            ? existing.content
+            : buildThoughtSummary(turn.userMessage, 'analyzing');
+        return {
+          ...turn,
+          blocks: upsertThinking(turn.blocks, content, {
+            loading: true,
+            visible: true,
+          }),
+        };
+      });
 
       await waitWithMin(runtime.responseGate, TIMING.analyzingMinRun);
       if (isAborted()) return;
@@ -948,14 +980,21 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       await delay(TIMING.pauseBeforeComposing);
       if (isAborted()) return;
 
-      updateTurn(turnId, (turn) => ({
-        ...turn,
-        blocks: upsertThinking(
-          upsertStatus(turn.blocks, 'Composing response…', true, true),
-          buildThoughtSummary(turn.userMessage, 'composing'),
-          { loading: true, visible: true, expanded: true },
-        ),
-      }));
+      updateTurn(turnId, (turn) => {
+        const existing = turn.blocks.find((b): b is ThinkingBlock => b.type === 'thinking');
+        const content =
+          runtime.hasLiveThinking && existing?.content
+            ? existing.content
+            : buildThoughtSummary(turn.userMessage, 'composing');
+        return {
+          ...turn,
+          blocks: upsertThinking(
+            upsertStatus(turn.blocks, 'Composing response…', true, true),
+            content,
+            { loading: true, visible: true },
+          ),
+        };
+      });
 
       await delay(
         runtime.pendingResponse?.type === 'question' ? TIMING.questionReveal : TIMING.answerReveal,
@@ -1011,7 +1050,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'status' && /analyz/i.test(event.data.message)) {
-            runtimeRef.current.get(turnId)?.analyzingGate.open();
+            const runtime = runtimeRef.current.get(turnId);
+            runtime?.analyzingGate.open();
+            if (runtime) runtime.hasLiveThinking = true;
             updateTurn(turnId, (turn) => ({
               ...turn,
               blocks: appendThinkingLog(
@@ -1027,7 +1068,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // Both carry { message }; there is no text variant on these events.
             const message = typeof event.data.message === 'string' ? event.data.message : '';
             if (!message.trim()) continue;
-            runtimeRef.current.get(turnId)?.analyzingGate.open();
+            const runtime = runtimeRef.current.get(turnId);
+            runtime?.analyzingGate.open();
+            if (runtime) runtime.hasLiveThinking = true;
             updateTurn(turnId, (turn) => ({
               ...turn,
               blocks: appendThinkingLog(
@@ -1329,7 +1372,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                     hasSafeActions
                       ? `Preview ready (${pendingActions.actions.length} changes) — Accept when ready.`
                       : blockedGuardMessage ?? 'No applyable changes for this package.',
-                    { loading: false, expanded: true },
+                    { loading: false },
                   ),
                 };
               });
@@ -1357,7 +1400,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'tool_request') {
-            runtimeRef.current.get(turnId)?.analyzingGate.open();
+            const runtime = runtimeRef.current.get(turnId);
+            runtime?.analyzingGate.open();
+            if (runtime) runtime.hasLiveThinking = true;
             updateTurn(turnId, (turn) => ({
               ...turn,
               blocks: upsertThinking(
@@ -1433,7 +1478,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         ),
       }));
 
-      const turnId = `turn_${Date.now()}`;
+      const regenerateTurnId = sendOptions?.regenerateTurnId;
+      const turnId = regenerateTurnId ?? `turn_${Date.now()}`;
       const timestamp = new Date();
       const mode = sendOptions?.mode ?? DEFAULT_ASSISTANT_MODE;
       const runtime = createRuntime(mode);
@@ -1459,15 +1505,28 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         type: 'command',
       });
 
-      const nextTitle =
-        session.turns.length === 0 ? truncateTabLabel(trimmed, 24) : session.title;
-
-      updateSession(session.id, (current) => ({
-        ...current,
-        title: nextTitle,
-        updatedAt: timestamp.toISOString(),
-        turns: [...current.turns, newTurn],
-      }));
+      // Regenerate/edit-and-resend: replace the existing turn in place
+      // (same id, same position) instead of appending a new one, so the
+      // message doesn't duplicate itself further down the thread.
+      updateSession(session.id, (current) => {
+        const existingIndex = regenerateTurnId
+          ? current.turns.findIndex((t) => t.id === regenerateTurnId)
+          : -1;
+        const turns =
+          existingIndex !== -1
+            ? current.turns.map((t, i) => (i === existingIndex ? newTurn : t))
+            : [...current.turns, newTurn];
+        const nextTitle =
+          existingIndex === -1 && current.turns.length === 0
+            ? truncateTabLabel(trimmed, 24)
+            : current.title;
+        return {
+          ...current,
+          title: nextTitle,
+          updatedAt: timestamp.toISOString(),
+          turns,
+        };
+      });
 
       setActiveTurnId(turnId);
       setIsWaitingForResponse(true);

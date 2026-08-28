@@ -10,6 +10,8 @@ interface AnswerRevealProps {
   userPrompt?: string;
   onComplete?: () => void;
   disabled?: boolean;
+  /** When the response finished — powers the footer's Copy + relative-time row. */
+  timestamp?: Date;
 }
 
 const TYPING_INTERVAL_MS = 24;
@@ -20,6 +22,7 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
   matches,
   onComplete,
   disabled = false,
+  timestamp,
 }) => {
   const [displayed, setDisplayed] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -76,6 +79,7 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
       matches={revealState === 'complete' ? matches : undefined}
       disabled={disabled}
       showTypingCursor={isTyping}
+      timestamp={timestamp}
     />
   );
 };

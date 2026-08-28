@@ -118,7 +118,7 @@ export const CheckpointPanel: React.FC<CheckpointPanelProps> = ({
               onClick={() => void handleCreate()}
             >
               <Plus size={12} />
-              {creating ? 'Creating…' : 'Create checkpoint'}
+              {creating ? 'Creating…' : 'New checkpoint'}
             </button>
           )}
           {error && <p className="cellix-checkpoint-error">{error}</p>}
@@ -131,24 +131,23 @@ export const CheckpointPanel: React.FC<CheckpointPanelProps> = ({
               <div key={cp.checkpointId} className="cellix-checkpoint-item">
                 <div className="cellix-checkpoint-meta">
                   <span className="cellix-checkpoint-label">{cp.label}</span>
-                  <span className={`cellix-checkpoint-trigger cellix-checkpoint-trigger-${cp.trigger}`}>
-                    {cp.trigger}
+                  <span className="cellix-checkpoint-time">
+                    {new Date(cp.createdAt).toLocaleString()}
                   </span>
-                  <span className="cellix-checkpoint-status">{cp.status}</span>
                 </div>
-                <div className="cellix-checkpoint-time">
-                  {new Date(cp.createdAt).toLocaleString()}
-                </div>
-                {cp.status === 'active' && (
+                {cp.status === 'active' ? (
                   <button
                     type="button"
                     className="cellix-checkpoint-restore"
+                    aria-label="Restore this checkpoint"
+                    title={restoringId === cp.checkpointId ? 'Restoring…' : 'Restore'}
                     disabled={restoringId === cp.checkpointId}
                     onClick={() => void handleRestore(cp.checkpointId)}
                   >
                     <RotateCcw size={12} />
-                    {restoringId === cp.checkpointId ? 'Restoring…' : 'Restore'}
                   </button>
+                ) : (
+                  <span className="cellix-checkpoint-status">Reverted</span>
                 )}
               </div>
             ))}

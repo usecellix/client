@@ -194,6 +194,27 @@
   display: inline-flex;
 }
 
+.cellix-topbar-checkpoints-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.cellix-checkpoint-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 120;
+  width: min(280px, calc(100vw - 28px));
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  background: var(--cx-white);
+  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16);
+  color: var(--cx-gray-700);
+}
+
 .cellix-settings-menu {
   position: absolute;
   top: calc(100% + 5px);
@@ -596,13 +617,6 @@
   padding: 8px 10px 10px;
 }
 
-.cellix-change-history-summary-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 4px 0;
-}
-
 .cellix-icon-btn {
   width: 26px;
   height: 26px;
@@ -657,7 +671,7 @@
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 14px 16px 16px 22px;
+  padding: 12px 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -674,13 +688,6 @@
   margin-top: 4px;
 }
 
-.cellix-msg-meta {
-  text-align: right;
-  font-size: 10.5px;
-  color: var(--cx-gray-500);
-  margin-bottom: 4px;
-}
-
 .cellix-user-msg {
   background: var(--cx-white);
   border: 1px solid var(--cx-border);
@@ -690,6 +697,160 @@
   color: var(--cx-gray-900);
   line-height: 1.5;
   align-self: stretch;
+}
+
+/* Icon overlaps the bottom-right corner of the box itself — no dedicated
+   row/line of its own, so it costs no extra vertical space regardless of
+   how many lines the message wraps to. */
+.cellix-user-msg-has-actions {
+  position: relative;
+}
+
+.cellix-user-msg-text {
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.cellix-user-msg-row {
+  position: relative;
+  align-self: stretch;
+}
+
+.cellix-user-msg-menu-wrap {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+}
+
+.cellix-user-msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--cx-gray-400);
+  cursor: pointer;
+}
+
+.cellix-user-msg-action-btn:hover:not(:disabled) {
+  color: var(--cx-gray-700);
+}
+
+.cellix-user-msg-action-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.cellix-user-msg-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  width: max-content;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  background: var(--cx-white);
+  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16);
+}
+
+.cellix-user-msg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--cx-radius-sm);
+  background: transparent;
+  color: var(--cx-gray-700);
+  font-family: var(--cx-font);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cellix-user-msg-menu-item:hover:not(:disabled) {
+  background: var(--cx-brand-50);
+  color: var(--cx-brand-800);
+}
+
+.cellix-user-msg-menu-item:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.cellix-user-msg-menu-item-done {
+  cursor: default;
+  color: var(--cx-brand-600, #4f46e5);
+}
+
+.cellix-user-msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: stretch;
+}
+
+.cellix-user-msg-edit-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--cx-brand-300, var(--cx-border));
+  border-radius: var(--cx-radius-md);
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cx-gray-900);
+  background: var(--cx-white);
+}
+
+.cellix-user-msg-edit-input:focus {
+  outline: none;
+  border-color: var(--cx-brand-500);
+}
+
+.cellix-user-msg-edit-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.cellix-user-msg-edit-save,
+.cellix-user-msg-edit-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.cellix-user-msg-edit-save {
+  border: 1px solid var(--cx-brand-500);
+  background: var(--cx-brand-500);
+  color: var(--cx-white);
+}
+
+.cellix-user-msg-edit-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cellix-user-msg-edit-cancel {
+  border: 1px solid var(--cx-gray-200);
+  background: var(--cx-white);
+  color: var(--cx-gray-600);
+}
+
+.cellix-user-msg-edit-cancel:hover {
+  background: var(--cx-gray-50);
 }
 
 /* Assistant replies: inset from Excel chrome + vertical guide */
@@ -816,16 +977,18 @@
 }
 
 .cellix-thinking-block {
-  margin-top: 14px;
+  /* .cellix-assistant-thread already gives every block an 8px gap — this is
+     on top of that, not instead of it, so keep it small. */
+  margin-top: 6px;
 }
 
 .cellix-step + .cellix-thinking-block {
-  margin-top: 18px;
+  margin-top: 10px;
 }
 
 .cellix-thinking-toggle {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--cx-gray-500);
@@ -909,69 +1072,55 @@
   -webkit-box-decoration-break: clone;
 }
 
-.cellix-response-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.cellix-toolbar-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 28px;
-  min-width: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--cx-border);
-  border-radius: var(--cx-radius-sm);
-  background: var(--cx-white);
-  color: var(--cx-gray-700);
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.cellix-toolbar-btn:hover {
-  background: var(--cx-gray-50);
-  border-color: var(--cx-gray-300);
-}
-
-.cellix-toolbar-btn.active {
-  background: var(--cx-brand-50);
-  border-color: var(--cx-brand-400);
-  color: var(--cx-brand-800);
-}
-
-.cellix-toolbar-group {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--cx-border);
-  border-radius: var(--cx-radius-sm);
-  overflow: hidden;
-  background: var(--cx-white);
-}
-
-.cellix-toolbar-group .cellix-toolbar-btn {
-  border: none;
-  border-radius: 0;
-  min-width: 32px;
-}
-
-.cellix-toolbar-group .cellix-toolbar-btn + .cellix-toolbar-btn {
-  border-left: 1px solid var(--cx-border);
-}
-
-.cellix-toolbar-btn-text span {
-  font-size: 12px;
-  font-weight: 500;
+.cellix-md-code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.92em;
+  color: var(--cx-brand-800, #3730a3);
+  background: var(--cx-gray-100);
+  border: 1px solid var(--cx-gray-200);
+  border-radius: 4px;
+  padding: 0.05em 0.4em;
+  white-space: nowrap;
 }
 
 .cellix-response-divider {
   height: 1px;
   background: var(--cx-gray-200);
-  margin: 14px 0 10px;
+  margin: 4px 0 6px;
+}
+
+.cellix-response-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cellix-response-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--cx-radius-sm);
+  background: transparent;
+  color: var(--cx-gray-500);
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.cellix-response-footer-btn:hover {
+  background: var(--cx-gray-100);
+  color: var(--cx-gray-700);
+  opacity: 1;
+}
+
+.cellix-response-footer-time {
+  font-size: 12px;
+  color: var(--cx-gray-500);
+  opacity: 0.75;
+  cursor: default;
 }
 
 .cellix-followups-toggle {
@@ -982,35 +1131,25 @@
   border: none;
   padding: 0;
   cursor: pointer;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 500;
+  color: var(--cx-gray-500);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .cellix-followups-chevron {
   color: var(--cx-gray-500);
 }
 
-.cellix-followups-count {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--cx-brand-700);
-  background: var(--cx-brand-50);
-  border-radius: 999px;
-  padding: 1px 7px;
-  margin-left: 2px;
-}
-
 .cellix-followups-list {
   list-style: none;
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   padding: 0;
 }
 
 .cellix-followups-item {
   position: relative;
   padding-left: 18px;
-  margin-bottom: 8px;
+  margin-bottom: 5px;
 }
 
 .cellix-followups-item::before {
@@ -1044,9 +1183,9 @@
   padding: 0;
   text-align: left;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #334155;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--cx-gray-700);
   font-weight: 400;
 }
 
@@ -1136,14 +1275,12 @@
   animation: cx-text-shimmer 2.2s linear infinite;
 }
 
-.cellix-thinking-preview {
-  margin: 4px 0 0 18px;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--cx-gray-500);
-  overflow: hidden;
-  text-overflow: ellipsis;
+.cellix-thinking-step-count {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--cx-gray-400);
   white-space: nowrap;
+  margin-left: 2px;
 }
 
 .cellix-thinking-body p {
@@ -1662,108 +1799,6 @@
   flex-direction: column;
   background: var(--cx-white);
   border-top: 1px solid var(--cx-border);
-}
-
-.cellix-composer-dock .cellix-change-history,
-.cellix-composer-dock .cellix-checkpoint-panel {
-  border-top: 0;
-  border-bottom: 1px solid var(--cx-gray-100);
-}
-
-.cellix-composer-dock .cellix-change-history-body,
-.cellix-composer-dock .cellix-checkpoint-body {
-  padding: 10px 12px;
-  max-height: min(240px, 40vh);
-  overflow-y: auto;
-}
-
-.cellix-composer-tool-bar {
-  display: flex;
-  align-items: center;
-  /* Tools sit at the right edge of the composer, so the left side stays clear
-     for the prompt itself. */
-  justify-content: flex-end;
-  gap: 2px;
-  padding: 0 2px 6px;
-  overflow: visible;
-}
-
-.cellix-composer-tool-wrap {
-  position: relative;
-  display: inline-flex;
-}
-
-.cellix-composer-tool-wrap::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%) translateY(2px);
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: var(--cx-gray-900);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  z-index: 50;
-  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.18);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-
-.cellix-composer-tool-wrap:first-child::after {
-  left: 0;
-  transform: translateX(0) translateY(2px);
-}
-
-.cellix-composer-tool-wrap:hover::after,
-.cellix-composer-tool-wrap:focus-within::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
-.cellix-composer-tool-wrap:first-child:hover::after,
-.cellix-composer-tool-wrap:first-child:focus-within::after {
-  transform: translateX(0) translateY(0);
-}
-
-.cellix-composer-tool-btn {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border: 1px solid transparent;
-  border-radius: var(--cx-radius-sm);
-  background: transparent;
-  color: var(--cx-gray-500);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-}
-
-.cellix-composer-tool-btn:hover:not(:disabled) {
-  background: var(--cx-brand-50);
-  border-color: var(--cx-brand-100);
-  color: var(--cx-brand-700);
-}
-
-.cellix-composer-tool-btn.active {
-  background: var(--cx-brand-50);
-  border-color: var(--cx-brand-100);
-  color: var(--cx-brand-700);
-}
-
-.cellix-composer-tool-btn.available:not(.active) {
-  color: var(--cx-brand-600);
-}
-
-.cellix-composer-tool-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
 }
 
 .cellix-input-area {
@@ -2650,92 +2685,6 @@
   font-weight: 600;
 }
 
-.cellix-change-history {
-  flex-shrink: 0;
-  border-top: 1px solid var(--cx-border);
-  background: var(--cx-gray-50);
-}
-
-.cellix-change-history-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  background: transparent;
-  font-size: 11px;
-  color: var(--cx-gray-600);
-  cursor: pointer;
-}
-
-.cellix-change-history-body {
-  padding: 0 12px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.cellix-change-history-item {
-  padding: 8px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid var(--cx-gray-100);
-}
-
-.cellix-change-history-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.cellix-change-history-prompt {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--cx-gray-800);
-  flex: 1 1 100%;
-}
-
-.cellix-change-history-status {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--cx-brand-700);
-}
-
-.cellix-change-history-time {
-  font-size: 10px;
-  color: var(--cx-gray-400);
-}
-
-.cellix-change-history-cells {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.cellix-change-history-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 2px 6px;
-  border-radius: var(--cx-radius-sm);
-  background: var(--cx-gray-100);
-  color: var(--cx-gray-700);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.cellix-change-history-chip-flagged {
-  background: #fef3c7;
-  color: #92400e;
-  border: 1px solid #f59e0b;
-}
-
 .cellix-change-exception-icon {
   flex-shrink: 0;
   color: #b45309;
@@ -2857,22 +2806,6 @@
   margin: 0;
 }
 
-.cellix-change-history-revert {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border: 1px solid var(--cx-border);
-  border-radius: 6px;
-  background: #fff;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.cellix-change-history-revert:hover:not(:disabled) {
-  background: var(--cx-gray-50);
-}
-
 /* Inline "revert the last change" row at the end of the conversation. Kept
    visually quiet — it sits in the message flow, so it must not read as another
    assistant turn. */
@@ -2923,8 +2856,6 @@
 
 .cellix-checkpoint-panel {
   flex-shrink: 0;
-  border-top: 1px solid var(--cx-border);
-  background: var(--cx-gray-50);
 }
 
 .cellix-checkpoint-toggle {
@@ -2941,7 +2872,7 @@
 }
 
 .cellix-checkpoint-body {
-  padding: 0 12px 10px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2974,7 +2905,11 @@
 }
 
 .cellix-checkpoint-item {
-  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
   border-radius: 8px;
   background: #fff;
   border: 1px solid var(--cx-gray-100);
@@ -2982,63 +2917,53 @@
 
 .cellix-checkpoint-meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  margin-bottom: 4px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .cellix-checkpoint-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--cx-gray-800);
-  flex: 1 1 100%;
-}
-
-.cellix-checkpoint-trigger {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-
-.cellix-checkpoint-trigger-auto {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.cellix-checkpoint-trigger-manual {
-  background: var(--cx-brand-50, #ecfdf5);
-  color: var(--cx-brand-700, #047857);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cellix-checkpoint-status {
   font-size: 10px;
   color: var(--cx-gray-500);
-  text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .cellix-checkpoint-time {
   font-size: 10px;
   color: var(--cx-gray-400);
-  margin-bottom: 6px;
 }
 
 .cellix-checkpoint-restore {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
   border: 1px solid var(--cx-border);
-  border-radius: 6px;
+  border-radius: var(--cx-radius-sm);
   background: #fff;
-  font-size: 10px;
+  color: var(--cx-gray-600);
   cursor: pointer;
 }
 
 .cellix-checkpoint-restore:hover:not(:disabled) {
   background: var(--cx-gray-50);
+  color: var(--cx-gray-800);
+}
+
+.cellix-checkpoint-restore:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .cellix-cost-dashboard {

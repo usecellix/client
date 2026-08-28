@@ -7,14 +7,16 @@ interface ThinkingBlockViewProps {
   onToggle: () => void;
 }
 
-function firstLine(text: string): string {
-  const line = text.split('\n').map((l) => l.trim()).find(Boolean);
-  return line ?? '';
+function paragraphs(text: string): string[] {
+  return text.split('\n\n').map((p) => p.trim()).filter(Boolean);
 }
 
 const ThinkingBlockView: React.FC<ThinkingBlockViewProps> = ({ block, onToggle }) => {
+  // Strictly tap-to-expand: collapsed shows only the toggle row, nothing
+  // else — no preview snippet, no skeleton mockup. Content only appears once
+  // the user has explicitly opened it via `onToggle`.
   const showBody = block.expanded && (block.content || block.loading);
-  const preview = !block.expanded && !block.loading && block.content ? firstLine(block.content) : '';
+  const stepCount = block.content ? paragraphs(block.content).length : 0;
 
   return (
     <div className="cellix-block-enter cellix-thinking-block">
@@ -29,16 +31,12 @@ const ThinkingBlockView: React.FC<ThinkingBlockViewProps> = ({ block, onToggle }
         <span className={block.loading ? 'cellix-shimmer-text' : ''}>
           {block.loading ? 'Thinking…' : 'Thought process'}
         </span>
+        {block.loading && stepCount > 1 && (
+          <span className="cellix-thinking-step-count">Step {stepCount}</span>
+        )}
       </button>
 
-      {preview && (
-        <p className="cellix-thinking-preview" title={block.content}>
-          {preview}
-          {block.content.includes('\n') ? '…' : ''}
-        </p>
-      )}
-
-      {block.loading && !block.content && (
+      {block.expanded && block.loading && !block.content && (
         <div className="cellix-thinking-skeleton">
           <div className="cellix-skeleton-line" style={{ width: '92%' }} />
           <div className="cellix-skeleton-line" style={{ width: '78%' }} />

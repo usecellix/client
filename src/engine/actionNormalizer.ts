@@ -6,6 +6,7 @@ import {
   AggregateTableAction,
   FormatSpec,
   ConditionalFormatOperator,
+  BatchSetOperation,
 } from '@/action.types';
 import { SheetAction } from '@/types/sheet-actions';
 import { columnLetterToIndex, parseCellAddress, parseRangeAddress } from './addressUtils';
@@ -23,6 +24,7 @@ function isRichAction(action: SheetAction): boolean {
     'ADD_SHEET',
     'DELETE_SHEET',
     'SORT_RANGE',
+    'SET_RANGE_VALUES',
     'COPY_FILTERED_RANGE',
     'FORMAT_MATCHING_ROWS',
     'SET_MATCHING_ROWS',
@@ -500,6 +502,19 @@ export function toRichAction(action: SheetAction): RichAction | null {
         explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       };
     }
+    // Revert-only bulk inverse (TASKS.md #100) — never advertised to the
+    // Executor, only ever constructed directly by diff.engine.ts and
+    // returned through revert(). Passthrough, same shape as the wire action
+    // — reuses BATCH_SET's own `operations` field/shape, since this is a
+    // sparse cell-corrections list, not a full rectangular value matrix.
+    case 'SET_RANGE_VALUES':
+      return {
+        type: 'SET_RANGE_VALUES',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        operations: (Array.isArray(r.operations) ? r.operations : []) as BatchSetOperation[],
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
+      } as RichAction;
     case 'MOVE_RANGE':
       return {
         type: 'MOVE_RANGE',

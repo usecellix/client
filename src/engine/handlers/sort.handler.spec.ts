@@ -84,6 +84,53 @@ describe('handleSortRange — format follows its row after sorting', () => {
     expect(finalFormats[0]).toEqual(['General', 'General']);
   });
 
+  it(
+    'reports the real before/after cell diff so Revert has something to work with (TASKS.md #93)',
+    async () => {
+      // Same shape as the reordering test above — this exists because the
+      // backend's own shadow-workbook diff (virtualApply.ts) deliberately
+      // skips simulating a sort on a sparse range, so it can report "0 cells
+      // changed" for a sort that genuinely reordered the sheet. The frontend
+      // computes the diff itself, from the values it actually wrote, instead
+      // of relying on that possibly-empty backend simulation.
+      const values = [
+        ['Date', 'Amount'],
+        [45543, 300],
+        [45544, 100],
+        [45545, 200],
+      ];
+      const numberFormat = [
+        ['General', 'General'],
+        ['General', 'General'],
+        ['General', 'General'],
+        ['General', 'General'],
+      ];
+      const range = makeMockRange(values, numberFormat);
+      const ctx = makeCtx(range);
+
+      const action: SortRangeAction = {
+        type: 'SORT_RANGE',
+        sheetName: 'Sheet1',
+        range: 'A1:B4',
+        key: 1,
+        ascending: true,
+        hasHeaders: true,
+      };
+
+      const result = await handleSortRange(action, ctx);
+
+      expect(result?.sortedRangeChanges).toBeDefined();
+      const changes = result!.sortedRangeChanges!;
+      // Header row (A1:B1) is untouched by the sort — must not appear.
+      expect(changes.some((c) => c.cell === 'A1' || c.cell === 'B1')).toBe(false);
+      // Row 2 (A2:B2) went from [45543, 300] to [45544, 100] — both changed.
+      const a2 = changes.find((c) => c.cell === 'A2');
+      const b2 = changes.find((c) => c.cell === 'B2');
+      expect(a2).toMatchObject({ sheet: 'Sheet1', before: 45543, after: 45544 });
+      expect(b2).toMatchObject({ sheet: 'Sheet1', before: 300, after: 100 });
+    },
+  );
+
   it('re-asserts numberFormat after writing values, not merely alongside it', async () => {
     // The actual fix under test: preserveNumberFormatsAroundWrite snapshots
     // numberFormat, runs the value write, THEN sets numberFormat — as two

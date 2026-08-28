@@ -35,8 +35,6 @@ const App: React.FC = () => {
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
   const [isComparing] = useState(false);
   const [isReadingWorkbook, setIsReadingWorkbook] = useState(false);
-  const [refinementChangeSetId, setRefinementChangeSetId] = useState<string | null>(null);
-  const [quickEditMode, setQuickEditMode] = useState(false);
   const applyInProgressRef = useRef(false);
   const appliedChangeSetIdsRef = useRef<Set<string>>(new Set());
   const [workbookKey, setWorkbookKey] = useState('workbook');
@@ -81,11 +79,13 @@ const App: React.FC = () => {
 
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;
+      let sortedRangeChanges: CellChange[] | undefined;
       try {
         if (previewManager.active) {
           const result = await previewManager.accept();
           createdConditionalFormatIds = result?.createdConditionalFormatIds;
           createdChartIds = result?.createdChartIds;
+          sortedRangeChanges = result?.sortedRangeChanges;
         } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
           // Already applied earlier — do not re-run INSERT_COLUMN / writes.
         } else {
@@ -98,6 +98,7 @@ const App: React.FC = () => {
           }
           createdConditionalFormatIds = result.createdConditionalFormatIds;
           createdChartIds = result.createdChartIds;
+          sortedRangeChanges = result.sortedRangeChanges;
         }
 
         clearPreviewState();
@@ -105,8 +106,12 @@ const App: React.FC = () => {
         if (meta?.changeSetId) {
           appliedChangeSetIdsRef.current.add(meta.changeSetId);
           try {
-            await markChangeSetApplied(meta.changeSetId, createdConditionalFormatIds, createdChartIds);
-            setRefinementChangeSetId(meta.changeSetId);
+            await markChangeSetApplied(
+              meta.changeSetId,
+              createdConditionalFormatIds,
+              createdChartIds,
+              sortedRangeChanges,
+            );
           } catch (error) {
             // Spec 22 Bug 3: do not swallow apply failures — UI must not show Applied.
             appliedChangeSetIdsRef.current.delete(meta.changeSetId);
@@ -231,9 +236,6 @@ const App: React.FC = () => {
     onActions: applyActionsWithAudit,
     onPreviewActions: previewActions,
     onClearPreview: clearActionPreview,
-    onChangeSetApplied: (changeSetId) => {
-      setRefinementChangeSetId(changeSetId);
-    },
     autoApplyActions: !previewEnabled,
     previewEnabled,
     isChangeSetApplied,
@@ -297,8 +299,8 @@ const App: React.FC = () => {
               pendingChangeSetId,
               result?.createdConditionalFormatIds,
               result?.createdChartIds,
+              result?.sortedRangeChanges,
             );
-            setRefinementChangeSetId(pendingChangeSetId);
           } catch (error) {
             // Same pattern as applyActionsWithAudit (spec 22 Bug 3): do not
             // leave a failed apply marked as applied — UI must not show Applied.
@@ -450,18 +452,27 @@ const App: React.FC = () => {
       handleModeChange(modeOverride);
     }
 
-    if (quickEditMode && refinementChangeSetId) {
-      await sendMessage(message.trim(), [[]], undefined, undefined, {
-        refinementChangeSetId,
-        mode: 'action',
-      });
-      setQuickEditMode(false);
-      return;
-    }
-
     const { sheetData, workbookContext, promptContext } = await readWorkbookData();
     await sendMessage(message.trim(), sheetData, workbookContext, promptContext, {
       mode: effectiveMode,
+    });
+  };
+
+  /**
+   * Regenerate (same text) or edit-and-resend (new text) an existing turn
+   * in place, rather than appending a duplicate further down the thread —
+   * the message stays anchored, only its answer changes.
+   */
+  const handleRegenerate = async (turnId: string, overrideMessage?: string) => {
+    if (isWaitingForResponse) return;
+    const target = turns.find((t) => t.id === turnId);
+    const text = (overrideMessage ?? target?.userMessage ?? '').trim();
+    if (!text) return;
+
+    const { sheetData, workbookContext, promptContext } = await readWorkbookData();
+    await sendMessage(text, sheetData, workbookContext, promptContext, {
+      mode,
+      regenerateTurnId: turnId,
     });
   };
 
@@ -480,7 +491,7 @@ const App: React.FC = () => {
     },
     // handleSend is defined inline each render; intentionally omitted from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mode, quickEditMode, refinementChangeSetId, isWaitingForResponse],
+    [mode, isWaitingForResponse],
   );
 
   const handleAnswerQuestion = async (answer: string) => {
@@ -500,8 +511,6 @@ const App: React.FC = () => {
         await ActionEngine.applyActions(inverseActions);
       }
       clearPreviewState();
-      setQuickEditMode(false);
-      setRefinementChangeSetId(null);
     },
     [clearPreviewState],
   );
@@ -516,8 +525,6 @@ const App: React.FC = () => {
         await ActionEngine.applyActions(result.inverseActions);
       }
       clearPreviewState();
-      setQuickEditMode(false);
-      setRefinementChangeSetId(null);
     },
     [clearPreviewState],
   );
@@ -552,15 +559,12 @@ const App: React.FC = () => {
       onToggleThinking={toggleThinking}
       onAnswerComplete={markAnswerComplete}
       onFollowUp={handleSend}
+      onRegenerate={handleRegenerate}
       onRevertHistoryEntry={handleRevertHistoryEntry}
       workbookId={workbookId}
       onRestoreCheckpoint={handleRestoreCheckpoint}
       isApplyingActions={isApplying}
       pendingPreview={pendingPreview}
-      refinementChangeSetId={refinementChangeSetId}
-      quickEditMode={quickEditMode}
-      onStartQuickEdit={() => setQuickEditMode(true)}
-      onCancelQuickEdit={() => setQuickEditMode(false)}
     />
   );
 };

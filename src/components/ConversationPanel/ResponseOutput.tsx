@@ -1,13 +1,6 @@
 import React, { useState } from 'react';
-import {
-  BarChart3,
-  BellOff,
-  Copy,
-  Share2,
-  ThumbsDown,
-  ThumbsUp,
-} from 'lucide-react';
-import { MatchResult } from '@/types/conversationTurn';
+import { Check, Copy } from 'lucide-react';
+import { MatchResult, formatFullDateTime, formatRelativeTime } from '@/types/conversationTurn';
 import { navigateToCell } from '@/services/rangeFetchService';
 import { renderInlineBoldMarkdown, renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
 
@@ -20,6 +13,8 @@ interface ResponseOutputProps {
   showTypingCursor?: boolean;
   /** When false, follow-ups are omitted (render at turn level via FollowUpsSection). */
   includeFollowUps?: boolean;
+  /** When the response finished — powers the footer's Copy + relative-time row. */
+  timestamp?: Date;
 }
 
 function formatCellRef(match: MatchResult): string {
@@ -65,13 +60,6 @@ function stripTrailingPeriod(text: string): string {
   return text.replace(/\.\s*$/, '');
 }
 
-function buildCopyText(content: string, matches?: MatchResult[]): string {
-  if (!matches?.length) return content;
-  const intro = stripTrailingPeriod(content.trim());
-  const refs = matches.map(formatCellRef).join(', ');
-  return `${intro} ${refs}.`;
-}
-
 const ResponseOutput: React.FC<ResponseOutputProps> = ({
   content,
   matches,
@@ -80,19 +68,19 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
   disabled = false,
   showTypingCursor = false,
   includeFollowUps = false,
+  timestamp,
 }) => {
-  const [copied, setCopied] = useState(false);
-  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   const hasMatches = Boolean(matches?.length);
   const introText = hasMatches ? stripTrailingPeriod(content.trim()) : content;
+  const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(buildCopyText(content, matches));
+      await navigator.clipboard.writeText(content);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
+    } catch (error) {
+      console.warn('[Cellix] Copy failed:', error);
     }
   };
 
@@ -114,39 +102,22 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
         </div>
       </div>
 
-      <div className="cellix-response-toolbar">
-        <button type="button" className="cellix-toolbar-btn" onClick={handleCopy} title={copied ? 'Copied' : 'Copy'}>
-          <Copy size={14} />
-        </button>
-        <div className="cellix-toolbar-group">
+      {timestamp && !showTypingCursor && (
+        <div className="cellix-response-footer">
           <button
             type="button"
-            className={`cellix-toolbar-btn ${feedback === 'down' ? 'active' : ''}`}
-            onClick={() => setFeedback('down')}
+            className="cellix-response-footer-btn"
+            aria-label={copied ? 'Copied' : 'Copy response'}
+            title={copied ? 'Copied' : 'Copy response'}
+            onClick={handleCopy}
           >
-            <ThumbsDown size={14} />
+            {copied ? <Check size={12} /> : <Copy size={12} />}
           </button>
-          <button
-            type="button"
-            className={`cellix-toolbar-btn ${feedback === 'up' ? 'active' : ''}`}
-            onClick={() => setFeedback('up')}
-          >
-            <ThumbsUp size={14} />
-          </button>
+          <span className="cellix-response-footer-time" title={formatFullDateTime(timestamp)}>
+            {formatRelativeTime(timestamp)}
+          </span>
         </div>
-        <button type="button" className="cellix-toolbar-btn cellix-toolbar-btn-text">
-          <BarChart3 size={14} />
-          <span>Usage</span>
-        </button>
-        <button type="button" className="cellix-toolbar-btn cellix-toolbar-btn-text">
-          <Share2 size={14} />
-          <span>Share</span>
-        </button>
-        <button type="button" className="cellix-toolbar-btn cellix-toolbar-btn-text">
-          <BellOff size={14} />
-          <span>Off</span>
-        </button>
-      </div>
+      )}
 
       {includeFollowUps && followUps.length > 0 && (
         <>
