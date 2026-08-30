@@ -8,7 +8,8 @@ import {
 import { selectActionRanges } from '../engine/selectRanges';
 import { SheetAction, SheetActionType } from '../types/sheet-actions';
 import { CellChange } from '../types/changeSet';
-import { sanitizeActions } from './actionGuard';
+import { sanitizeActions, SanitizeResult } from './actionGuard';
+import { probeSheetGuardStatesSafe } from '../engine/sheetGuardState';
 
 /* global Excel */
 
@@ -26,19 +27,23 @@ type PreviewRange = {
 };
 
 
-function detectPopulateEmptySheet(actions: SheetAction[]): boolean {
-  const hasHeaderCells = actions.some((a) => a.type === 'SET_CELL' && a.row === 0);
-  const hasAddRows = actions.some((a) => a.type === 'ADD_ROW');
-  return hasHeaderCells && hasAddRows;
-}
-
-function guardActions(actions: SheetAction[], sheetIsEmpty = false): SheetAction[] {
-  const isEmpty = sheetIsEmpty || detectPopulateEmptySheet(actions);
-  const layout = isEmpty
-    ? { headerRow: 0, nextDataRow: 0, dataRowCount: 0, columnCount: 1, headers: [], isEmpty: true }
-    : undefined;
-  const { actions: safe } = sanitizeActions(actions, layout);
-  return safe;
+/**
+ * Guard the batch using live per-sheet facts rather than the batch's shape.
+ *
+ * This used to be `detectPopulateEmptySheet` — "does the batch contain both a
+ * row-0 SET_CELL and an ADD_ROW?" — as a proxy for "is the target sheet
+ * empty?". A multi-sheet build writes headers with SET_CELL and no ADD_ROW at
+ * all, so the proxy said "populated", and the guard rewrote every header cell
+ * in the batch into one row on one sheet. It also made the outcome depend on
+ * whether an unrelated ADD_ROW happened to be present, so the same prompt
+ * could succeed or fail run to run. See TASKS.md #137.
+ *
+ * Returns the full `SanitizeResult` — callers need `blocked`/`warnings` to
+ * report a partial apply honestly instead of showing "Applied" over it.
+ */
+async function guardActions(actions: SheetAction[]): Promise<SanitizeResult> {
+  const sheetStates = await probeSheetGuardStatesSafe(actions);
+  return sanitizeActions(actions, undefined, { sheetStates });
 }
 
 export class ActionEngine {
@@ -54,6 +59,10 @@ export class ActionEngine {
   static async applyActionsWithReport(actions: SheetAction[]): Promise<{
     applied: number;
     errors: string[];
+    /** Actions the header guard dropped — never silently discard these. */
+    guardBlocked?: SheetAction[];
+    /** Human-readable notes on what the guard rewrote or dropped. */
+    guardWarnings?: string[];
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
     sortedRangeChanges?: CellChange[];
@@ -63,10 +72,25 @@ export class ActionEngine {
     let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
     let createdChartIds: CreatedChartId[] | undefined;
     let sortedRangeChanges: CellChange[] | undefined;
+    // Populated before the try so a throw still reports what the guard did.
+    let guardBlocked: SheetAction[] = [];
+    let guardWarnings: string[] = [];
 
     try {
+      const guarded = await guardActions(actions);
+      guardBlocked = guarded.blocked;
+      guardWarnings = guarded.warnings;
+      if (guardBlocked.length > 0) {
+        // Spec 22's rule, applied to the guard: a batch that silently shrank must
+        // not look like a clean apply. This used to be dropped on the floor —
+        // 121 of 189 actions vanished and the UI still showed "Applied".
+        console.warn(
+          `[Cellix] Header guard dropped ${guardBlocked.length} of ${actions.length} action(s):`,
+          guardWarnings,
+        );
+      }
       const safeInput = annotateDestOverwriteForCreatedSheets(
-        pruneSpuriousAddSheets(guardActions(actions)),
+        pruneSpuriousAddSheets(guarded.actions),
       );
       const { rich, unsupported } = partitionActions(safeInput);
       if (unsupported.length > 0) {
@@ -104,6 +128,8 @@ export class ActionEngine {
     return {
       applied,
       errors,
+      ...(guardBlocked.length > 0 ? { guardBlocked } : {}),
+      ...(guardWarnings.length > 0 ? { guardWarnings } : {}),
       ...(createdConditionalFormatIds ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds ? { createdChartIds } : {}),
       ...(sortedRangeChanges ? { sortedRangeChanges } : {}),
@@ -120,7 +146,7 @@ export class ActionEngine {
 
   static async previewActions(actions: SheetAction[]): Promise<void> {
     try {
-      const safeActions = guardActions(actions);
+      const safeActions = (await guardActions(actions)).actions;
       if (!safeActions.length) return;
 
       await this.clearPreview();

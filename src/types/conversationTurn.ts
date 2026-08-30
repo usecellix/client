@@ -60,6 +60,13 @@ export interface ActionBlock {
    */
   dependsOnChangeSetId?: string;
   /**
+   * Position within a staged build (TASKS.md #160). Present only when the
+   * server split the work into steps; absent for a single-card change.
+   */
+  stepIndex?: number;
+  stepTotal?: number;
+  stepLabel?: string;
+  /**
    * Action types in this batch with no defined inverse (per the backend's
    * reversibility-catalog.ts). Surfaced here so the user is warned before
    * Accept, not only discovered later when a revert fails.

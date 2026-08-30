@@ -12,6 +12,8 @@ interface AnswerRevealProps {
   disabled?: boolean;
   /** When the response finished — powers the footer's Copy + relative-time row. */
   timestamp?: Date;
+  /** When false, the caller renders the Copy + relative-time footer itself, positioned elsewhere. */
+  showFooter?: boolean;
 }
 
 const TYPING_INTERVAL_MS = 24;
@@ -23,6 +25,7 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
   onComplete,
   disabled = false,
   timestamp,
+  showFooter = true,
 }) => {
   const [displayed, setDisplayed] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -80,6 +83,7 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
       disabled={disabled}
       showTypingCursor={isTyping}
       timestamp={timestamp}
+      showFooter={showFooter}
     />
   );
 };

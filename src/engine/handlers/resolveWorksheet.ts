@@ -1,13 +1,10 @@
-/* global Excel */
-
-/** Resolve a worksheet by name, falling back to the active sheet. */
-export function resolveWorksheet(
-  ctx: Excel.RequestContext,
-  sheetName: string | undefined | null,
-): Excel.Worksheet {
-  const name = String(sheetName ?? '').trim();
-  if (name.length > 0) {
-    return ctx.workbook.worksheets.getItem(name);
-  }
-  return ctx.workbook.worksheets.getActiveWorksheet();
-}
+/**
+ * Single source of truth for worksheet resolution.
+ *
+ * This file used to hold a second, near-identical copy of `resolveWorksheet`
+ * — same active-sheet fallback, separately maintained, imported by
+ * `overwriteGuard` while the handlers imported the other one. Two copies of a
+ * fallback this load-bearing is a trap: fix one, miss the other. Re-export
+ * instead so there is exactly one implementation. See TASKS.md #137.
+ */
+export { resolveWorksheet } from '../sheetResolve';

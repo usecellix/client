@@ -1,4 +1,5 @@
 import { SheetAction } from '@/types/sheet-actions';
+import { sheetKeyOf, SheetGuardStates } from '@/engine/sheetGuardState';
 
 export const HEADER_ROW = 0;
 
@@ -85,8 +86,20 @@ function collectHeaderRowSetCells(actions: SheetAction[]): SheetAction[] {
   );
 }
 
-/** Merge SET_CELL / SET_FORMULA on header row into a single ADD_ROW. */
-function convertHeaderWritesToAddRow(headerActions: SheetAction[]): SheetAction | null {
+/**
+ * Merge SET_CELL / SET_FORMULA on header row into a single ADD_ROW.
+ *
+ * `sheetName` is not optional bookkeeping — it is the whole reason this merge
+ * is safe. A synthesized action that loses its target falls through
+ * `resolveWorksheet`'s missing-name branch onto `getActiveWorksheet()`, which
+ * silently writes it to whatever tab happens to be open. Callers must only
+ * ever pass actions that share one sheet, and that sheet's name must come back
+ * out on the merged action. See TASKS.md #137.
+ */
+function convertHeaderWritesToAddRow(
+  headerActions: SheetAction[],
+  sheetName: string | undefined,
+): SheetAction | null {
   if (!headerActions.length) return null;
 
   const maxCol = Math.max(...headerActions.map((a) => a.col ?? 0), 0);
@@ -99,7 +112,9 @@ function convertHeaderWritesToAddRow(headerActions: SheetAction[]): SheetAction 
     else if (action.type === 'CLEAR_CELL') rowData[action.col] = '';
   }
 
-  return { type: 'ADD_ROW', data: rowData as SheetAction['data'] };
+  const merged: SheetAction = { type: 'ADD_ROW', data: rowData as SheetAction['data'] };
+  if (sheetName) merged.sheetName = sheetName;
+  return merged;
 }
 
 function guardCellMutation(action: SheetAction, sheetIsEmpty = false): boolean {
@@ -113,39 +128,101 @@ function guardCellMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   return action.row <= HEADER_ROW;
 }
 
+export interface SanitizeOptions {
+  /**
+   * Live per-sheet facts from `probeSheetGuardStates`. When a sheet is present
+   * here it is authoritative: `hasHeaderRow: false` means row 1 is free and a
+   * header write into it is legitimate, not an overwrite.
+   *
+   * When absent (probe failed, or a caller with no Excel context), the sheet
+   * falls back to `layout` — the pre-existing single-sheet behaviour.
+   */
+  sheetStates?: SheetGuardStates;
+}
+
+/**
+ * Decide, for one sheet, whether row 1 is free to write.
+ *
+ * `layout` describes the *active* sheet only, so it may only speak for the
+ * group that has no explicit sheet name. Letting it answer for named sheets is
+ * how a batch got graded against the wrong sheet's headers.
+ */
+function resolveSheetIsEmpty(
+  sheetKey: string,
+  layout: SheetLayout | undefined,
+  options: SanitizeOptions | undefined,
+): boolean {
+  const probed = options?.sheetStates?.get(sheetKey);
+  if (probed) return !probed.hasHeaderRow;
+  if (sheetKey === '') return layout?.isEmpty ?? false;
+  // A named sheet with no probe result: the active sheet's layout says nothing
+  // about it, so fall back to the conservative legacy answer.
+  return layout?.isEmpty ?? false;
+}
+
+/**
+ * Split a batch into per-sheet groups, preserving each action's original index
+ * so the sanitized output keeps the batch's ordering.
+ */
+function groupBySheet(actions: SheetAction[]): Map<string, SheetAction[]> {
+  const groups = new Map<string, SheetAction[]>();
+  for (const action of actions) {
+    const key = sheetKeyOf(action);
+    const group = groups.get(key);
+    if (group) group.push(action);
+    else groups.set(key, [action]);
+  }
+  return groups;
+}
+
 export function sanitizeActions(
   actions: SheetAction[],
   layout?: SheetLayout,
+  options?: SanitizeOptions,
 ): SanitizeResult {
   const warnings: string[] = [];
   const blocked: SheetAction[] = [];
-  const sheetIsEmpty = layout?.isEmpty ?? false;
-
-  const headerWrites = collectHeaderRowSetCells(actions);
-  const withoutHeaderWrites = actions.filter((a) => !headerWrites.includes(a));
-
-  let normalized: SheetAction[] = [...withoutHeaderWrites];
-
-  if (headerWrites.length > 0 && !sheetIsEmpty) {
-    const addRow = convertHeaderWritesToAddRow(headerWrites);
-    if (addRow) {
-      normalized.unshift(addRow);
-      warnings.push(
-        'Converted header-row cell writes to ADD_ROW so data appends after existing rows.',
-      );
-    }
-  } else if (headerWrites.length > 0 && sheetIsEmpty) {
-    normalized = [...headerWrites, ...withoutHeaderWrites];
-  }
-
   const safe: SheetAction[] = [];
 
-  for (const action of normalized) {
-    if (isHeaderMutation(action, sheetIsEmpty) || guardCellMutation(action, sheetIsEmpty)) {
-      blocked.push(action);
-      continue;
+  let convertedGroups = 0;
+  let totalHeaderWrites = 0;
+
+  // Header-row logic is per sheet. Row 1 of "January" and row 1 of "Main" are
+  // unrelated cells; pooling them let a 121-cell, 13-sheet batch collapse into
+  // one row on one tab. See TASKS.md #137.
+  for (const [sheetKey, groupActions] of groupBySheet(actions)) {
+    const sheetIsEmpty = resolveSheetIsEmpty(sheetKey, layout, options);
+    const sheetName = groupActions.find((a) => a.sheetName)?.sheetName;
+
+    const headerWrites = collectHeaderRowSetCells(groupActions);
+    const withoutHeaderWrites = groupActions.filter((a) => !headerWrites.includes(a));
+    totalHeaderWrites += headerWrites.length;
+
+    let normalized: SheetAction[] = [...withoutHeaderWrites];
+
+    if (headerWrites.length > 0 && !sheetIsEmpty) {
+      const addRow = convertHeaderWritesToAddRow(headerWrites, sheetName);
+      if (addRow) {
+        normalized.unshift(addRow);
+        convertedGroups += 1;
+      }
+    } else if (headerWrites.length > 0 && sheetIsEmpty) {
+      normalized = [...headerWrites, ...withoutHeaderWrites];
     }
-    safe.push(action);
+
+    for (const action of normalized) {
+      if (isHeaderMutation(action, sheetIsEmpty) || guardCellMutation(action, sheetIsEmpty)) {
+        blocked.push(action);
+        continue;
+      }
+      safe.push(action);
+    }
+  }
+
+  if (convertedGroups > 0) {
+    warnings.push(
+      'Converted header-row cell writes to ADD_ROW so data appends after existing rows.',
+    );
   }
 
   if (blocked.length > 0) {
@@ -153,7 +230,7 @@ export function sanitizeActions(
   }
 
   const requiresClarification =
-    safe.length === 0 && (blocked.length > 0 || headerWrites.length > 0);
+    safe.length === 0 && (blocked.length > 0 || totalHeaderWrites > 0);
 
   if (requiresClarification && layout) {
     warnings.push(

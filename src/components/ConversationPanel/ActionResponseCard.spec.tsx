@@ -78,7 +78,7 @@ describe('ActionResponseCard', () => {
     expect(html).toContain('Show details');
   });
 
-  it('preserves internals inside the expandable details section', () => {
+  it('shows a plain-language description of the actions in the expandable details section, never internal jargon', () => {
     const html = renderToStaticMarkup(
       React.createElement(ActionResponseCard, {
         block: makeBlock(),
@@ -91,10 +91,11 @@ describe('ActionResponseCard', () => {
     );
 
     expect(html).toContain('data-testid="action-details-body"');
-    expect(html).toContain('openai/gpt-5-mini');
-    expect(html).toContain('Tier 1 single-action');
-    expect(html).toContain('CONDITIONAL_FORMAT');
-    expect(html).toContain('FORMAT_MATCHING_ROWS');
+    expect(html).toContain('Format rows matching a condition in A2:L51');
+    for (const token of FORBIDDEN) {
+      expect(html.includes(token)).toBe(false);
+    }
+    expect(html).not.toContain('openai/gpt-5-mini');
   });
 
   it('surfaces assumptions in the default headline', () => {

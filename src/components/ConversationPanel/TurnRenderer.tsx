@@ -16,6 +16,7 @@ import { SheetAction } from '@/types/sheet-actions';
 import StepIndicator from './StepIndicator';
 import ThinkingBlockView from './ThinkingBlockView';
 import AnswerReveal from './AnswerReveal';
+import { ResponseFooter } from './ResponseOutput';
 import FollowUpsSection from './FollowUpsSection';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
 import ActionResponseCard from './ActionResponseCard';
@@ -76,6 +77,7 @@ interface TurnRendererProps {
   isApplying?: boolean;
   showActionButtons?: boolean;
   onAcceptActions: (turnId: string, blockId: string) => void;
+  onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
   onToggleThinking: (turnId: string, blockId: string) => void;
@@ -152,6 +154,7 @@ function BlockRenderer({
   isApplying = false,
   isWaiting,
   onAcceptActions,
+  onAcceptAllActions,
   onRejectActions,
   onToggleThinking,
   onAnswerComplete,
@@ -166,6 +169,7 @@ function BlockRenderer({
   isWaiting: boolean;
   showActionButtons?: boolean;
   onAcceptActions: (turnId: string, blockId: string) => void;
+  onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onToggleThinking: (turnId: string, blockId: string) => void;
   onAnswerComplete: (turnId: string, blockId: string) => void;
@@ -224,6 +228,7 @@ function BlockRenderer({
         onComplete={() => onAnswerComplete(turn.id, block.id)}
         disabled={isWaiting}
         timestamp={turn.timestamp}
+        showFooter={!hasActions}
       />
     );
   }
@@ -270,6 +275,15 @@ function BlockRenderer({
         blockedReason={blockedReason}
         priorAnswerText={priorAnswerText}
         onAccept={() => onAcceptActions(turn.id, block.id)}
+        onAcceptAll={
+          // Only offer it when there IS more after this step.
+          onAcceptAllActions &&
+          typeof actionBlock.stepIndex === 'number' &&
+          typeof actionBlock.stepTotal === 'number' &&
+          actionBlock.stepIndex < actionBlock.stepTotal
+            ? () => onAcceptAllActions(turn.id, block.id)
+            : undefined
+        }
         onReject={() => onRejectActions(turn.id, block.id)}
       />
     );
@@ -308,14 +322,20 @@ function UserMessageRow({
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(text);
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuBoxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
+      const target = event.target as Node;
+      if (
+        triggerRef.current?.contains(target) ||
+        menuBoxRef.current?.contains(target)
+      ) {
+        return;
       }
+      setMenuOpen(false);
     };
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
@@ -400,12 +420,17 @@ function UserMessageRow({
   }
 
   return (
-    <div className="cellix-user-msg-row cellix-block-enter">
+    <div
+      className={`cellix-user-msg-row cellix-block-enter ${
+        menuOpen ? 'cellix-user-msg-row-menu-open' : ''
+      }`}
+    >
       <div className="cellix-user-msg cellix-user-msg-has-actions">
         <span className="cellix-user-msg-text">{text}</span>
-        <div className="cellix-user-msg-menu-wrap" ref={menuRef}>
+        <div className="cellix-user-msg-menu-wrap">
           <button
             type="button"
+            ref={triggerRef}
             className="cellix-user-msg-action-btn"
             aria-label="Message actions"
             title="Message actions"
@@ -416,8 +441,16 @@ function UserMessageRow({
             <RotateCcw size={13} />
           </button>
 
+          {/* Floating overlay, like the reference — opens downward from the
+              icon and sits on top of the content below rather than pushing
+              it down. */}
           {menuOpen && (
-            <div className="cellix-user-msg-menu" role="menu" aria-label="Message actions">
+            <div
+              className="cellix-user-msg-menu"
+              role="menu"
+              aria-label="Message actions"
+              ref={menuBoxRef}
+            >
               {canResend && (
                 <button
                   type="button"
@@ -485,6 +518,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   isApplying = false,
   showActionButtons = true,
   onAcceptActions,
+  onAcceptAllActions,
   onRejectActions,
   onAnswerQuestion,
   onToggleThinking,
@@ -528,6 +562,15 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
 
     return { followUps: [] as string[], followUpHandler: undefined, followUpsDisabled: true };
   }, [turn.blocks, turn.userMessage, onFollowUp, isWaiting, isActive]);
+
+  // When a turn has an action card, its Copy + relative-time footer is
+  // suppressed inside AnswerReveal/ResponseOutput (see `showFooter` above)
+  // and rendered here instead, after the card rather than directly under
+  // the response text — matches the reference (Claude/Cursor/Codex) layout.
+  const turnHasActions = turn.blocks.some((b) => b.type === 'actions');
+  const completedAnswer = turn.blocks.find(
+    (b): b is AnswerBlock => b.type === 'answer' && b.revealState === 'complete',
+  );
 
   const hasVisibleBlocks = turn.blocks.some((b) => {
     if (hideProgress && b.type === 'step') {
@@ -585,6 +628,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     isWaiting={isWaiting && isActive}
                     showActionButtons={actionDialogueReady}
                     onAcceptActions={onAcceptActions}
+                    onAcceptAllActions={onAcceptAllActions}
                     onRejectActions={onRejectActions}
                     onToggleThinking={onToggleThinking}
                     onAnswerComplete={onAnswerComplete}
@@ -594,6 +638,9 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                 </React.Fragment>
               );
             })}
+            {turnHasActions && completedAnswer && (
+              <ResponseFooter content={completedAnswer.content} timestamp={turn.timestamp} />
+            )}
             {followUps.length > 0 && followUpHandler && (
               <FollowUpsSection
                 followUps={followUps}

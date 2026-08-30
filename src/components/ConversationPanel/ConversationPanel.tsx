@@ -17,12 +17,9 @@ import {
 import { AssistantMode, ASSISTANT_MODES, ASSISTANT_MODE_META } from '@/types/mode';
 import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { ClarificationPayload } from '@/types/cellix.types';
-import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
 import { isTurnPresentationComplete } from '@/utils/turnPresentation';
 import { LastChangeRevert } from '@/components/ChangeHistoryPanel/LastChangeRevert';
-import { CellChange, formatCellValue } from '@/types/changeSet';
 import { RestoreResult } from '@/types/checkpoint';
-import { DiffItem } from '@/services/previewManager';
 import { SheetAction } from '@/types/sheet-actions';
 import { useSession } from '@/auth/auth-client';
 import { TextAnimate } from '@/components/ui/text-animate';
@@ -159,7 +156,7 @@ interface EmptyStateProps {
   children?: React.ReactNode;
 }
 
-const HEADING_CHAR_DURATION = 0.5;
+const HEADING_CHAR_DURATION = 0.22;
 
 const getDayGreeting = () => {
   // Always use IST (Asia/Kolkata), not the browser's local timezone.
@@ -185,7 +182,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }
   const promptPrefix = 'What would you like to ';
   const promptAccent = 'review?';
   const nameDelay = getNextCharDelay();
-  const promptDelay = getNextCharDelay(nameDelay) + 0.2;
+  const promptDelay = getNextCharDelay(nameDelay) + 0.08;
   const accentDelay = getNextCharDelay(promptDelay);
 
   return (
@@ -768,6 +765,7 @@ interface ConversationPanelProps {
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
   onAcceptActions: (turnId: string, blockId: string) => void;
+  onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
   onClarificationAnswer: (answer: string) => void;
@@ -781,14 +779,6 @@ interface ConversationPanelProps {
   workbookId?: string;
   onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
   isApplyingActions?: boolean;
-  pendingPreview?: {
-    changes: CellChange[];
-    changeSetId?: string;
-    summary: string;
-    isApplying: boolean;
-    onAccept: () => void;
-    onReject: () => void;
-  } | null;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -812,6 +802,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onSelectSession,
   onCloseSession,
   onAcceptActions,
+  onAcceptAllActions,
   onRejectActions,
   onAnswerQuestion,
   onClarificationAnswer,
@@ -826,7 +817,6 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   workbookId,
   onRestoreCheckpoint,
   isApplyingActions = false,
-  pendingPreview = null,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const showStartScreen = turns.length === 0;
@@ -841,21 +831,36 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     }
     onAnswerQuestion(answer);
   };
-  const previewItems: DiffItem[] = pendingPreview
-    ? pendingPreview.changes.map((change) => ({
-        sheetName: change.sheet,
-        address: change.cell,
-        actionType: change.formula ? 'SET_FORMULA' : 'SET_CELL',
-        before: formatCellValue(change.before),
-        after: formatCellValue(change.after),
-        description: change.formula
-          ? `Set formula ${change.formula}`
-          : `Change value to ${formatCellValue(change.after)}`,
-      }))
-    : [];
+
+  // Sticky-to-bottom, like Claude/Cursor/Codex chat panes: only auto-scroll
+  // when the user is already at (or near) the bottom, or when a brand-new
+  // turn just landed. Without this, any in-place edit to existing content —
+  // expanding "Thought process" on an old turn, answering a clarification,
+  // Accept/Reject — replaces `turns` with a new array reference and yanked
+  // the whole view down to the latest message, even far above the fold.
+  const isNearBottomRef = useRef(true);
+  const prevTurnsLengthRef = useRef(turns.length);
+
+  const handleContentScroll = () => {
+    const el = contentRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isNearBottomRef.current = distanceFromBottom < 80;
+  };
 
   useEffect(() => {
-    contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight, behavior: 'smooth' });
+    const el = contentRef.current;
+    if (!el) return;
+    const turnAppended = turns.length > prevTurnsLengthRef.current;
+    prevTurnsLengthRef.current = turns.length;
+    // A newly appended turn (the user just sent something) always jumps to
+    // it — matching the intentional "show me what I just did" case. Any
+    // other change (streaming reveal, in-place toggles) only follows along
+    // if the user hadn't already scrolled away to read something else.
+    if (turnAppended || isNearBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      isNearBottomRef.current = true;
+    }
   }, [turns, activeTurnId, isWaitingForResponse, activeClarification]);
 
   const composerInput = (
@@ -901,7 +906,11 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         onRestoreCheckpoint={onRestoreCheckpoint}
       />
 
-      <div className={`cellix-content ${showStartScreen ? 'start' : ''}`} ref={contentRef}>
+      <div
+        className={`cellix-content ${showStartScreen ? 'start' : ''}`}
+        ref={contentRef}
+        onScroll={handleContentScroll}
+      >
         {showStartScreen ? (
           <EmptyState onSuggestion={onSend}>{composerDock}</EmptyState>
         ) : (
@@ -919,6 +928,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   : isTurnPresentationComplete(turn)
               }
               onAcceptActions={onAcceptActions}
+              onAcceptAllActions={onAcceptAllActions}
               onRejectActions={onRejectActions}
               onAnswerQuestion={handleQuestionAnswer}
               onToggleThinking={onToggleThinking}
@@ -953,17 +963,6 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
             />
           )}
         </div>
-      )}
-
-      {pendingPreview && previewActionsReady && (
-        <PreviewSummaryBar
-          items={previewItems}
-          summary={pendingPreview.summary}
-          onAccept={pendingPreview.onAccept}
-          onReject={pendingPreview.onReject}
-          isApplying={pendingPreview.isApplying}
-          showActions
-        />
       )}
 
       {!showStartScreen && composerDock}
