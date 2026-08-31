@@ -1,26 +1,34 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import type { UseConversationOptions } from '@/hooks/useConversation';
 
 /**
- * App.tsx-level regression coverage for TASKS.md #44/#45 — `handlePreviewAccept`'s
- * "no pending action block, previewManager.active only" path (App.tsx:278-301).
+ * App.tsx-level regression coverage for TASKS.md #44/#45 — the false-success
+ * pattern where a failed `markChangeSetApplied` audit call must roll the
+ * changeSetId back out of `appliedChangeSetIdsRef`, not leave the UI showing
+ * "Applied" for a change the audit trail never recorded.
+ *
+ * The PreviewSummaryBar UI `handlePreviewAccept` originally guarded (App's
+ * second, now-removed accept path) was deleted as dead code once that bar was
+ * removed in favor of the single per-block Accept on `ActionResponseCard`.
+ * This spec now exercises the one remaining accept path directly:
+ * `applyActionsWithAudit`, passed to `useConversation` as `onActions` and
+ * invoked by the real `acceptActions()` flow.
  *
  * `App.tsx` has no other test coverage — this file builds the minimum harness
- * needed for this one regression rather than a general-purpose App render
+ * needed for this regression rather than a general-purpose App render
  * fixture: `useConversation`, `previewManager`, `markChangeSetApplied`, and
  * `frontendTelemetry` are all mocked so the test exercises only
- * `handlePreviewAccept`'s real, unmocked logic. `ConversationPanel` (App's
+ * `applyActionsWithAudit`'s real, unmocked logic. `ConversationPanel` (App's
  * entire render output) is mocked down to a single button wired to
- * `props.pendingPreview.onAccept`, since rendering the real component tree is
- * not what this regression needs and would pull in unrelated complexity.
+ * `props.onAcceptActions`, since rendering the real component tree is not
+ * what this regression needs and would pull in unrelated complexity.
  *
- * `previewActions` (App's `onPreviewActions` callback, passed to
+ * `applyActionsWithAudit` (App's `onActions` callback, passed to
  * `useConversation`) is captured from the mock's call args and invoked
- * directly — this runs App's real, unmocked `previewActions` closure exactly
- * as the SSE 'actions' handler would call it, without needing a full SSE
- * round trip.
+ * directly — this runs App's real, unmocked closure exactly as `acceptActions`
+ * would call it, without needing a full SSE round trip.
  */
 
 vi.mock('@/hooks/useConversation', () => ({
@@ -56,14 +64,7 @@ vi.mock('@/services/frontendTelemetry', () => ({
 }));
 
 vi.mock('@/components/ConversationPanel/ConversationPanel', () => ({
-  default: (props: { pendingPreview?: { onAccept: () => void } | null }) =>
-    props.pendingPreview ? (
-      <button type="button" data-testid="accept-preview" onClick={() => props.pendingPreview!.onAccept()}>
-        Accept
-      </button>
-    ) : (
-      <div data-testid="no-preview" />
-    ),
+  default: () => <div data-testid="app-rendered" />,
 }));
 
 import App from '@/taskpane/App';
@@ -95,6 +96,7 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
       answerClarification: vi.fn(),
       dismissClarification: vi.fn(),
       acceptActions: vi.fn(),
+    acceptAllActions: vi.fn(),
       rejectActions: vi.fn(),
       endConversation: vi.fn(),
       newChat: vi.fn(),
@@ -113,7 +115,7 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
   return captured;
 }
 
-describe('App — handlePreviewAccept (TASKS.md #44/#45)', () => {
+describe('App — applyActionsWithAudit accept-path rollback (TASKS.md #44/#45)', () => {
   beforeEach(() => {
     previewManagerMock.active = false;
     previewManagerMock.accept.mockReset();
@@ -125,18 +127,10 @@ describe('App — handlePreviewAccept (TASKS.md #44/#45)', () => {
     vi.clearAllMocks();
   });
 
-  it('rolls back appliedChangeSetIds when markChangeSetApplied fails on the previewManager-active-only path', async () => {
-    const options = renderAppAndCaptureOptions();
+  const sampleActions = [{ type: 'SET_CELL', address: 'A1', value: 5 }] as never;
 
-    // Simulate the real SSE handler calling onPreviewActions with no matching
-    // turn block yet in `turns` (mocked empty) — sets hasPendingPreview +
-    // pendingChangeSetId via App's real, unmocked previewActions closure.
-    await act(async () => {
-      await options.onPreviewActions?.('Set A1 to 5.' as never, 'Set A1 to 5.', {
-        changeSetId: CHANGE_SET_ID,
-        changes: [],
-      } as never);
-    });
+  it('rolls back appliedChangeSetIds when markChangeSetApplied fails on accept', async () => {
+    const options = renderAppAndCaptureOptions();
     previewManagerMock.active = true;
 
     previewManagerMock.accept.mockResolvedValue({
@@ -145,9 +139,16 @@ describe('App — handlePreviewAccept (TASKS.md #44/#45)', () => {
     } as never);
     markChangeSetAppliedMock.mockRejectedValueOnce(new Error('audit sync failed'));
 
-    const acceptButton = await screen.findByTestId('accept-preview');
+    // Real path: `acceptActions()` (mocked here) calls App's `onActions`
+    // (`applyActionsWithAudit`) exactly like this — captured and invoked
+    // directly so the test doesn't need a full turns/SSE round trip.
     await act(async () => {
-      fireEvent.click(acceptButton);
+      await expect(
+        options.onActions?.(sampleActions, 'Set A1 to 5.', {
+          changeSetId: CHANGE_SET_ID,
+          changes: [],
+        } as never),
+      ).rejects.toThrow();
     });
 
     // #44's fix: a failed markChangeSetApplied must roll the id back out of
@@ -157,13 +158,6 @@ describe('App — handlePreviewAccept (TASKS.md #44/#45)', () => {
 
   it('marks the changeSetId applied when markChangeSetApplied succeeds (sanity check)', async () => {
     const options = renderAppAndCaptureOptions();
-
-    await act(async () => {
-      await options.onPreviewActions?.('Set A1 to 5.' as never, 'Set A1 to 5.', {
-        changeSetId: CHANGE_SET_ID,
-        changes: [],
-      } as never);
-    });
     previewManagerMock.active = true;
 
     previewManagerMock.accept.mockResolvedValue({
@@ -172,9 +166,11 @@ describe('App — handlePreviewAccept (TASKS.md #44/#45)', () => {
     } as never);
     markChangeSetAppliedMock.mockResolvedValueOnce({} as never);
 
-    const acceptButton = await screen.findByTestId('accept-preview');
     await act(async () => {
-      fireEvent.click(acceptButton);
+      await options.onActions?.(sampleActions, 'Set A1 to 5.', {
+        changeSetId: CHANGE_SET_ID,
+        changes: [],
+      } as never);
     });
 
     expect(options.isChangeSetApplied?.(CHANGE_SET_ID)).toBe(true);

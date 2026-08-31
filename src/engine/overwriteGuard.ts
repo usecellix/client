@@ -246,13 +246,19 @@ export async function guardAgainstOverwrite(
 
   if (action.type === 'APPEND_ROW') {
     const sheet = resolveWorksheet(ctx, action.sheetName);
-    const used = sheet.getUsedRange();
-    if (used) {
-      used.load(['rowCount', 'columnCount']);
-      await ctx.sync();
-    }
-    const targetRow = used ? used.rowCount : 0;
-    const colCount = Math.max(action.values.length, used ? used.columnCount : 1, 1);
+    // `getUsedRange()` throws ItemNotFound on a sheet with literally nothing on
+    // it — the exact state of a sheet `ADD_SHEET` just created. That throw
+    // takes out the whole batch (worksheet.handler.ts's documented failure
+    // mode), which is precisely what an ADD_ROW-shaped header write into a
+    // brand-new sheet hits. `getUsedRangeOrNullObject` is the null-safe
+    // sibling and needs the standard load-then-sync-then-branch shape.
+    // TASKS.md #146.
+    const used = sheet.getUsedRangeOrNullObject();
+    used.load(['rowCount', 'columnCount', 'isNullObject']);
+    await ctx.sync();
+    const exists = !used.isNullObject;
+    const targetRow = exists ? used.rowCount : 0;
+    const colCount = Math.max(action.values.length, exists ? used.columnCount : 1, 1);
     const address = rangeAddressFromIndexes(targetRow, 0, 1, colCount);
     await assertRangeEmpty(
       sheet,

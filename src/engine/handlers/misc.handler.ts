@@ -16,37 +16,51 @@ import { stampAppliedBounds } from '../selectRanges';
 
 const PREVIEW_FILL = '#DCFCE7';
 
+/**
+ * `getUsedRange()` throws ItemNotFound on a sheet with nothing on it at all —
+ * the exact state of a sheet `ADD_SHEET` just created. `handleAppendRow`
+ * (below) is precisely how an ADD_ROW-shaped header write reaches such a
+ * sheet, so this landed a real live-session failure: "The requested resource
+ * doesn't exist." before a single sheet's header could be written.
+ * `getUsedRangeOrNullObject` is the null-safe sibling — every caller here
+ * needs the standard load-then-sync-then-branch shape, not the `if (!used)`
+ * check the throwing method made moot (`getUsedRange()` always returns a
+ * proxy object synchronously; the throw happens at sync, not at the call).
+ * See TASKS.md #146.
+ */
+async function getUsedBounds(
+  worksheet: Excel.Worksheet,
+  ctx: Excel.RequestContext,
+): Promise<{ rowCount: number; columnCount: number }> {
+  const used = worksheet.getUsedRangeOrNullObject();
+  used.load(['rowCount', 'columnCount', 'isNullObject']);
+  await ctx.sync();
+  if (used.isNullObject) return { rowCount: 0, columnCount: 1 };
+  return { rowCount: used.rowCount, columnCount: Math.max(used.columnCount, 1) };
+}
+
 async function getAppendRowIndex(
   worksheet: Excel.Worksheet,
   ctx: Excel.RequestContext,
 ): Promise<number> {
-  const used = worksheet.getUsedRange();
-  if (!used) return 0;
-  used.load(['rowCount']);
-  await ctx.sync();
-  return used.rowCount;
+  return (await getUsedBounds(worksheet, ctx)).rowCount;
 }
 
 async function getUsedColumnCount(
   worksheet: Excel.Worksheet,
   ctx: Excel.RequestContext,
 ): Promise<number> {
-  const used = worksheet.getUsedRange();
-  if (!used) return 1;
-  used.load(['columnCount']);
-  await ctx.sync();
-  return Math.max(used.columnCount, 1);
+  return (await getUsedBounds(worksheet, ctx)).columnCount;
 }
 
 async function getUsedRowCount(
   worksheet: Excel.Worksheet,
   ctx: Excel.RequestContext,
 ): Promise<number> {
-  const used = worksheet.getUsedRange();
-  if (!used) return 1;
-  used.load(['rowCount']);
-  await ctx.sync();
-  return used.rowCount;
+  const bounds = await getUsedBounds(worksheet, ctx);
+  // Pre-existing quirk, preserved: unlike the other two callers, this one
+  // wants a row count that is never zero even on an empty sheet.
+  return bounds.rowCount || 1;
 }
 
 function asExcelCellValue(value: unknown): string | number | boolean {

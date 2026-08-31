@@ -15,7 +15,49 @@ interface ResponseOutputProps {
   includeFollowUps?: boolean;
   /** When the response finished — powers the footer's Copy + relative-time row. */
   timestamp?: Date;
+  /**
+   * When false, the Copy + relative-time footer is omitted here so the
+   * caller can render it itself, positioned after other turn content (e.g.
+   * an action card) rather than directly under the response text.
+   */
+  showFooter?: boolean;
 }
+
+/** Copy + relative-time row — split out so it can be positioned after an
+ * action card instead of always directly under the response text. */
+export const ResponseFooter: React.FC<{ content: string; timestamp: Date }> = ({
+  content,
+  timestamp,
+}) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (error) {
+      console.warn('[Cellix] Copy failed:', error);
+    }
+  };
+
+  return (
+    <div className="cellix-response-footer">
+      <button
+        type="button"
+        className="cellix-response-footer-btn"
+        aria-label={copied ? 'Copied' : 'Copy response'}
+        title={copied ? 'Copied' : 'Copy response'}
+        onClick={handleCopy}
+      >
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+      </button>
+      <span className="cellix-response-footer-time" title={formatFullDateTime(timestamp)}>
+        {formatRelativeTime(timestamp)}
+      </span>
+    </div>
+  );
+};
 
 function formatCellRef(match: MatchResult): string {
   if (match.colLetter && match.rowNum) {
@@ -69,20 +111,10 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
   showTypingCursor = false,
   includeFollowUps = false,
   timestamp,
+  showFooter = true,
 }) => {
   const hasMatches = Boolean(matches?.length);
   const introText = hasMatches ? stripTrailingPeriod(content.trim()) : content;
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch (error) {
-      console.warn('[Cellix] Copy failed:', error);
-    }
-  };
 
   return (
     <div className="cellix-response-output cellix-block-enter">
@@ -102,21 +134,8 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
         </div>
       </div>
 
-      {timestamp && !showTypingCursor && (
-        <div className="cellix-response-footer">
-          <button
-            type="button"
-            className="cellix-response-footer-btn"
-            aria-label={copied ? 'Copied' : 'Copy response'}
-            title={copied ? 'Copied' : 'Copy response'}
-            onClick={handleCopy}
-          >
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-          </button>
-          <span className="cellix-response-footer-time" title={formatFullDateTime(timestamp)}>
-            {formatRelativeTime(timestamp)}
-          </span>
-        </div>
+      {showFooter && timestamp && !showTypingCursor && (
+        <ResponseFooter content={content} timestamp={timestamp} />
       )}
 
       {includeFollowUps && followUps.length > 0 && (

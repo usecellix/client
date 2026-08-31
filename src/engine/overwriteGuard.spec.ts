@@ -168,3 +168,66 @@ describe('guardAgainstOverwrite — BATCH_SET with a missing/malformed operation
     expect(getItem).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * TASKS.md #146 — APPEND_ROW's overwrite guard threw on a genuinely empty
+ * sheet, live: "The requested resource doesn't exist." reached the user
+ * before a single sheet's header could be written, whenever the executor
+ * chose an ADD_ROW-shaped header write (converted to APPEND_ROW) targeting
+ * the very sheet it was about to populate — a state `ADD_SHEET` guarantees
+ * for a brand-new sheet.
+ *
+ * The mock enforces the real Office.js contract: `getUsedRange()` on a fresh
+ * sheet throws (the documented, long-standing behavior this method has);
+ * only `getUsedRangeOrNullObject()` is safe. Any code that still calls the
+ * throwing method fails this test the same way the live session failed.
+ */
+describe('guardAgainstOverwrite — APPEND_ROW on a genuinely empty sheet (TASKS.md #146)', () => {
+  function makeEmptySheetCtx() {
+    const rangeOrNull = {
+      isNullObject: true,
+      rowCount: 0,
+      columnCount: 0,
+      load: vi.fn(),
+    };
+    const sheet = {
+      getUsedRange: vi.fn(() => {
+        throw new Error(
+          "RichApi.Error: The requested resource doesn't exist. (getUsedRange on an empty sheet)",
+        );
+      }),
+      getUsedRangeOrNullObject: vi.fn(() => rangeOrNull),
+      getRangeByIndexes: vi.fn(() => ({ load: vi.fn(), values: [] })),
+    };
+    const ctx = {
+      workbook: { worksheets: { getItem: vi.fn(() => sheet) } },
+      sync: vi.fn(async () => undefined),
+    } as unknown as Excel.RequestContext;
+    return { ctx, sheet };
+  }
+
+  it('does not throw, and never calls the throwing getUsedRange()', async () => {
+    const { ctx, sheet } = makeEmptySheetCtx();
+    const action = {
+      type: 'APPEND_ROW',
+      sheetName: 'November',
+      values: ['Unit No', 'Guest', 'Guest Name'],
+    } as unknown as RichAction;
+
+    await expect(guardAgainstOverwrite(action, ctx)).resolves.toBeUndefined();
+    expect(sheet.getUsedRange).not.toHaveBeenCalled();
+    expect(sheet.getUsedRangeOrNullObject).toHaveBeenCalled();
+  });
+
+  it('targets row 0 on a confirmed-empty sheet', async () => {
+    const { ctx, sheet } = makeEmptySheetCtx();
+    const action = {
+      type: 'APPEND_ROW',
+      sheetName: 'November',
+      values: ['Unit No', 'Guest'],
+    } as unknown as RichAction;
+
+    await guardAgainstOverwrite(action, ctx);
+    expect(sheet.getRangeByIndexes).toHaveBeenCalledWith(0, 0, 1, 2);
+  });
+});

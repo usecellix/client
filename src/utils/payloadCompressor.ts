@@ -260,6 +260,8 @@ export function prepareConversationRequestPayload(
     previewEnabled?: boolean;
     refinementChangeSetId?: string | null;
     mode?: AssistantMode;
+    /** Client-probed Excel capabilities — TASKS.md #152. */
+    excelCapabilities?: { dynamicArrays: boolean; probed: boolean };
   },
 ): {
   conversationId?: string;
@@ -272,6 +274,7 @@ export function prepareConversationRequestPayload(
   previewEnabled?: boolean;
   refinementChangeSetId?: string;
   mode?: AssistantMode;
+  excelCapabilities?: { dynamicArrays: boolean; probed: boolean };
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
   context: {
     previousMessages: ConversationHistoryMessage[];
@@ -344,6 +347,7 @@ export function prepareConversationRequestPayload(
       ? { refinementChangeSetId: options.refinementChangeSetId }
       : {}),
     ...(options?.mode ? { mode: options.mode } : {}),
+    ...(options?.excelCapabilities ? { excelCapabilities: options.excelCapabilities } : {}),
     conversationHistory,
     context: {
       previousMessages,

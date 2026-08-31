@@ -20,6 +20,9 @@ import {
   blockedActionsAreDataWrites,
   CLARIFY_ROW_PLACEMENT,
 } from '@/utils/actionGuard';
+import { probeSheetGuardStatesSafe, sheetsCreatedInBatch } from '@/engine/sheetGuardState';
+import type { OutcomeVerification } from '@/services/outcomeVerifier';
+import { probeExcelCapabilities } from '@/services/capabilityProbe';
 import { parseSseEventBlock } from '@/utils/sseParser';
 import { handleToolRequest } from '@/services/toolRequestHandler';
 import { navigateToCell } from '@/services/rangeFetchService';
@@ -100,6 +103,8 @@ interface UseConversationReturn {
    *  refused (block missing/not pending, or a staged wave whose dependency has
    *  not been accepted yet). Callers must not treat a refusal as applied. */
   acceptActions: (turnId: string, blockId: string) => Promise<boolean>;
+  /** Accept this step and every remaining one in a staged build — TASKS.md #160. */
+  acceptAllActions: (turnId: string, fromBlockId: string) => Promise<boolean>;
   rejectActions: (turnId: string, blockId: string) => void;
   endConversation: () => void;
   newChat: () => void;
@@ -163,6 +168,9 @@ interface PendingActions {
   internalDetails?: ResponseInternalDetails;
   dependsOnChangeSetId?: string;
   irreversibleActionTypes?: string[];
+  stepIndex?: number;
+  stepTotal?: number;
+  stepLabel?: string;
 }
 
 export interface PreviewActionsMeta {
@@ -171,6 +179,15 @@ export interface PreviewActionsMeta {
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
   irreversibleActionTypes?: string[];
+  /**
+   * Called after the post-apply read-back (TASKS.md #150) with what the
+   * workbook actually looks like. `message` is null when everything matched —
+   * a clean verification stays silent, a divergent one must not.
+   */
+  onOutcomeVerified?: (
+    verification: OutcomeVerification,
+    message: string | null,
+  ) => void;
 }
 
 interface TurnRuntime {
@@ -357,6 +374,9 @@ function createActionBlock(
     internalDetails: pending.internalDetails,
     dependsOnChangeSetId: pending.dependsOnChangeSetId,
     irreversibleActionTypes: pending.irreversibleActionTypes,
+    stepIndex: pending.stepIndex,
+    stepTotal: pending.stepTotal,
+    stepLabel: pending.stepLabel,
   };
 }
 
@@ -392,6 +412,22 @@ async function preflightOverwriteBlockedActions(
     return { safeActions: actions, safeChanges: changes, blockedMessage: null };
   }
 
+  // Sheets this very batch creates do not exist yet, so nothing in them can be
+  // overwritten — guarding them is meaningless by definition, and actively
+  // harmful: `resolveWorksheet` uses the THROWING `worksheets.getItem()`, which
+  // raises ItemNotFound for a sheet that is not there. That error is not an
+  // OverwriteGuardError, so the old `else { throw error }` below rethrew it out
+  // of the SSE handler and killed the whole turn *before* the action card was
+  // ever created — the user saw a bare "The requested resource doesn't exist."
+  // and no Accept button at all.
+  //
+  // This was latent until TASKS.md #141 merged the staged accept waves. The old
+  // two-wave split accidentally guaranteed ordering: wave 1 (ADD_SHEETs, which
+  // are not overwrite-guarded) reached the structural preview and created the
+  // sheets, so wave 2's preflight always found them present. Merging the waves
+  // removed that guarantee. See TASKS.md #147.
+  const createdHere = sheetsCreatedInBatch(actions);
+
   return Excel.run(async (ctx) => {
     const activeWs = ctx.workbook.worksheets.getActiveWorksheet();
     activeWs.load('name');
@@ -402,6 +438,11 @@ async function preflightOverwriteBlockedActions(
     const blocked: Array<{ action: SheetAction; message: string }> = [];
 
     for (const action of actions) {
+      const targetSheet = String(action.sheetName ?? '').trim().toLowerCase();
+      if (targetSheet && createdHere.has(targetSheet)) {
+        safeActions.push(action);
+        continue;
+      }
       try {
         // Dry-run: guardAgainstOverwrite only loads values & throws on occupancy.
         // These are still legacy-shaped (normalization happens at apply time), but
@@ -412,9 +453,15 @@ async function preflightOverwriteBlockedActions(
       } catch (error) {
         if (isOverwriteGuardError(error)) {
           blocked.push({ action, message: error.message });
-        } else {
-          throw error;
+          continue;
         }
+        // Any other error here is an Office.js problem with the *probe*, not a
+        // finding about the user's data. This pass is advisory UX only —
+        // `RichActionEngine.dispatch` re-runs the authoritative guard immediately
+        // before every real write (ARCHITECTURE.md AD-1) — so degrade to
+        // "let Accept decide" rather than destroying the turn.
+        console.warn('[Cellix] Overwrite preflight probe failed; deferring to apply-time guard:', error);
+        safeActions.push(action);
       }
     }
 
@@ -1217,9 +1264,16 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'actions') {
+            // Probe the live sheets this batch targets. Without it this pass
+            // graded every action against the *active* sheet's layout, while
+            // the apply-time pass graded them against nothing at all — two
+            // guards, two answers, and a batch that previewed as 189 changes
+            // then applied as 69. See TASKS.md #137.
+            const sheetStates = await probeSheetGuardStatesSafe(event.data.actions);
             const sanitized = sanitizeActions(
               event.data.actions,
               sheetLayoutRef.current ?? undefined,
+              { sheetStates },
             );
 
             // Only the "where does the NEW ROW go?" card is for blocked data writes.
@@ -1297,6 +1351,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               userFacingSummary: event.data.userFacingSummary,
               internalDetails: event.data.internalDetails,
               dependsOnChangeSetId: event.data.dependsOnChangeSetId,
+              stepIndex: event.data.stepIndex,
+              stepTotal: event.data.stepTotal,
+              stepLabel: event.data.stepLabel,
               irreversibleActionTypes: event.data.irreversibleActionTypes,
             };
 
@@ -1582,6 +1639,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         sheetData: resolvedSheetData,
       } = await buildPayloadContext();
 
+      // TASKS.md #152 — tell the server what this Excel can actually do, so a
+      // formula family is chosen against a probed fact rather than an
+      // assumption. Cached per session; never throws.
+      const excelCapabilities = await probeExcelCapabilities();
+
       const requestPayload = prepareConversationRequestPayload(trimmed, resolvedSheetData, {
         conversationId: conversationIdRef.current,
         workbookId: workbookIdRef.current,
@@ -1591,6 +1653,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         previewEnabled,
         refinementChangeSetId: sendOptions?.refinementChangeSetId,
         mode,
+        excelCapabilities,
       });
 
       try {
@@ -1729,11 +1792,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       applyingActionsRef.current = true;
 
+      let outcomeWarning: string | null = null;
       try {
         if (onActions) {
           await onActions(block.actions, block.explanation, {
             changeSetId: block.changeSetId,
             changes: block.changes,
+            // TASKS.md #150: the read-back's verdict comes back here so the UI
+            // can say so. A clean verification passes `null` and stays silent.
+            onOutcomeVerified: (_verification, message) => {
+              outcomeWarning = message;
+            },
           });
         }
 
@@ -1750,6 +1819,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
         if (block.changeSetId) {
           onChangeSetApplied?.(block.changeSetId);
+        }
+
+        // An apply that succeeded but did not produce the proposed workbook is
+        // NOT a clean success. Surface it on the turn rather than letting
+        // "Applied" stand alone — the §3.7 rule this whole class of bug keeps
+        // re-teaching: never let incomplete work look finished.
+        if (outcomeWarning) {
+          updateTurn(turnId, (t) => ({ ...t, error: outcomeWarning ?? undefined }));
         }
 
         setActiveClarification(null);
@@ -1775,6 +1852,40 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     },
     [onActions, onChangeSetApplied, updateTurn],
   );
+
+  /**
+   * Accept this step and every remaining pending step of the same staged build,
+   * in order — TASKS.md #160.
+   *
+   * Sequential and fail-closed on purpose. `acceptActions` already refuses a
+   * step whose dependency has not been applied (the #80 gate), and it returns
+   * `false` for a refusal — so a step that will not apply STOPS the run rather
+   * than letting later steps write into a workbook that never got its earlier
+   * ones. "Accept All" skips the human gate, never the checking.
+   */
+  const acceptAllActions = useCallback(
+    async (turnId: string, fromBlockId: string): Promise<boolean> => {
+      const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
+      if (!turn) return false;
+
+      const pending = turn.blocks.filter(
+        (b): b is ActionBlock => b.type === 'actions' && b.proposalStatus === 'pending',
+      );
+      const startAt = pending.findIndex((b) => b.id === fromBlockId);
+      if (startAt === -1) return false;
+
+      for (const block of pending.slice(startAt)) {
+        const ok = await acceptActions(turnId, block.id);
+        if (!ok) {
+          console.warn('[Cellix] Accept All stopped: a step did not apply', { blockId: block.id });
+          return false;
+        }
+      }
+      return true;
+    },
+    [acceptActions, getActiveSession],
+  );
+
 
   const rejectActions = useCallback(
     async (turnId: string, blockId: string) => {
@@ -1994,6 +2105,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     answerClarification,
     dismissClarification,
     acceptActions,
+    acceptAllActions,
     rejectActions,
     endConversation,
     newChat,

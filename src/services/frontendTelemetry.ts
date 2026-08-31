@@ -8,6 +8,8 @@ export type FrontendTelemetryCategory =
   | 'accept'
   | 'reject'
   | 'apply'
+  /** Post-apply outcome read-back — TASKS.md #150, `CODEBASE_ANALYSIS.md` §3.15. */
+  | 'verify'
   | 'sse'
   | 'navigation'
   | 'other';

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 interface FollowUpsSectionProps {
@@ -13,6 +13,17 @@ const FollowUpsSection: React.FC<FollowUpsSectionProps> = ({
   disabled = false,
 }) => {
   const [open, setOpen] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  // This toggle is local state — it doesn't touch the conversation's turns
+  // array, so the panel's sticky-to-bottom scroll never sees it expand.
+  // Without this, opening it near the bottom of the scroll area reveals the
+  // list below the visible viewport, hidden behind the composer.
+  useEffect(() => {
+    if (open) {
+      listRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [open]);
 
   if (followUps.length === 0) return null;
 
@@ -32,7 +43,7 @@ const FollowUpsSection: React.FC<FollowUpsSectionProps> = ({
         <span>Suggested follow-ups</span>
       </button>
       {open && (
-        <ul className="cellix-followups-list">
+        <ul className="cellix-followups-list" ref={listRef}>
           {followUps.map((item, index) => (
             <li
               key={item}

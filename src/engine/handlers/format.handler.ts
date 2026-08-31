@@ -3,15 +3,35 @@ import { FormatSpec } from '@/types/sheet-actions';
 
 /* global Excel */
 
+/**
+ * `borders` exists in two incompatible shapes — ARCHITECTURE.md AD-7 drift made
+ * concrete:
+ *
+ *   - rich/shared (`Root/shared/action.types.ts`): `{ style, edges: [...] }`
+ *   - wire (`client/src/types/sheet-actions.ts`):  `'all' | 'outer' | 'bottom' | 'none'`
+ *
+ * `legacyConverter` casts a wire action's `format` straight through to the rich
+ * type without converting, so a wire `borders: 'all'` arrives here as a plain
+ * string. Reading `.edges.includes(...)` off it threw
+ * `Cannot read properties of undefined (reading 'includes')`, which
+ * `RichActionEngine.dispatch` caught per-action — so the whole FORMAT_RANGE was
+ * dropped and the header band silently never painted, while sibling
+ * FORMAT_RANGEs carrying no `borders` applied fine. Accept both shapes.
+ * TASKS.md #139.
+ */
+function normalizeBorders(borders: RichFormatSpec['borders'] | FormatSpec['borders']): FormatSpec['borders'] {
+  if (!borders) return undefined;
+  if (typeof borders === 'string') {
+    return borders === 'all' ? 'outer' : borders;
+  }
+  if (borders.edges?.includes('all') || borders.edges?.includes('outer')) return 'outer';
+  if (borders.edges?.includes('bottom')) return 'bottom';
+  if (borders.style === 'none') return 'none';
+  return undefined;
+}
+
 function toLegacyFormat(fmt: RichFormatSpec): FormatSpec {
-  const borders =
-    fmt.borders?.edges.includes('all') || fmt.borders?.edges.includes('outer')
-      ? 'outer'
-      : fmt.borders?.edges.includes('bottom')
-        ? 'bottom'
-        : fmt.borders?.style === 'none'
-          ? 'none'
-          : undefined;
+  const borders = normalizeBorders(fmt.borders);
 
   return {
     bold: fmt.bold,

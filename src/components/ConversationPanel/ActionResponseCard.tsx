@@ -1,11 +1,8 @@
-import React, { useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { ActionBlock } from '@/types/conversationTurn';
-import {
-  formatInternalDetailsLines,
-  hasInternalDetails,
-  resolveActionBlockCopy,
-} from '@/utils/userFacingResponse';
+import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
+import { describeSheetActions } from '@/utils/describeSheetAction';
 
 function normalizeCopy(text: string): string {
   return text
@@ -22,6 +19,11 @@ export interface ActionResponseCardProps {
   showActionButtons?: boolean;
   onAccept: () => void;
   onReject: () => void;
+  /**
+   * Accept this step and every remaining one, in order — TASKS.md #160.
+   * Omitted when this is not part of a staged build, or is the last step.
+   */
+  onAcceptAll?: () => void;
   /** For tests — start with details expanded. */
   defaultDetailsExpanded?: boolean;
   /**
@@ -44,11 +46,23 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   showActionButtons = true,
   onAccept,
   onReject,
+  onAcceptAll,
   defaultDetailsExpanded = false,
   blockedReason,
   priorAnswerText,
 }) => {
   const [detailsOpen, setDetailsOpen] = useState(defaultDetailsExpanded);
+  const detailsBodyRef = useRef<HTMLDivElement>(null);
+
+  // Local toggle state doesn't touch the conversation's turns array, so the
+  // panel's sticky-to-bottom scroll never sees it expand — bring the newly
+  // revealed body into view ourselves instead of leaving it hidden behind
+  // the composer.
+  useEffect(() => {
+    if (detailsOpen) {
+      detailsBodyRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [detailsOpen]);
   const summary = resolveActionBlockCopy({
     userFacingSummary: block.userFacingSummary,
     explanation: block.explanation,
@@ -60,76 +74,84 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       summary.headline &&
       normalizeCopy(priorAnswerText) === normalizeCopy(summary.headline),
   );
-  const showDetails = hasInternalDetails(block.internalDetails);
-  const detailLines = block.internalDetails
-    ? formatInternalDetailsLines(block.internalDetails)
-    : [];
+  const showDetails = block.actions.length > 0;
+  const detailLines = showDetails ? describeSheetActions(block.actions) : [];
 
   const isPending = block.proposalStatus === 'pending';
   const isAccepted = block.proposalStatus === 'accepted';
   const isRejected = block.proposalStatus === 'rejected';
 
-  const detailsSection = showDetails ? (
+  const detailsToggle = showDetails ? (
+    <button
+      type="button"
+      className="cellix-details-toggle"
+      onClick={() => setDetailsOpen((v) => !v)}
+      aria-expanded={detailsOpen}
+      data-testid="action-details-toggle"
+    >
+      <ChevronRight
+        size={11}
+        className={`cellix-details-chevron${detailsOpen ? ' is-open' : ''}`}
+      />
+      <span>{detailsOpen ? 'Hide details' : 'Show details'}</span>
+    </button>
+  ) : null;
+
+  const detailsBody = showDetails ? (
     <div className="cellix-action-details" data-testid="action-details">
-      <button
-        type="button"
-        className="cellix-thinking-toggle"
-        onClick={() => setDetailsOpen((v) => !v)}
-        aria-expanded={detailsOpen}
-        data-testid="action-details-toggle"
-      >
-        {detailsOpen ? (
-          <ChevronDown size={12} color="#9CA3AF" />
-        ) : (
-          <ChevronRight size={12} color="#9CA3AF" />
-        )}
-        <span>{detailsOpen ? 'Hide details' : 'Show details'}</span>
-      </button>
       {detailsOpen && (
-        <div
-          className="cellix-thinking-body"
-          data-testid="action-details-body"
-          style={{ fontSize: 11.5, color: 'var(--cx-gray-500)' }}
-        >
+        <div className="cellix-details-body" data-testid="action-details-body" ref={detailsBodyRef}>
           {detailLines.map((line, i) => (
-            <p key={i} style={{ margin: '4px 0' }}>
-              {line}
-            </p>
+            <p key={i}>{line}</p>
           ))}
         </div>
       )}
     </div>
   ) : null;
 
+  /** Meta line: the one muted row under the headline (scope + size). */
+  const metaParts = [summary.contextLine, summary.supportingDetail].filter(Boolean) as string[];
+
+  /**
+   * Position within a staged build. This is the piece TASKS.md #141's version
+   * lacked: without it, accepting one card and stopping left a half-built
+   * workbook that looked finished. Stating "Step 2 of 5" makes the remaining
+   * work visible rather than inferred. TASKS.md #160.
+   */
+  const isStaged =
+    typeof block.stepIndex === 'number' &&
+    typeof block.stepTotal === 'number' &&
+    block.stepTotal > 1;
+  const stepBadge = isStaged ? (
+    <div className="cellix-step-badge" data-testid="action-step-badge">
+      <span className="cellix-step-count">
+        Step {block.stepIndex} of {block.stepTotal}
+      </span>
+      {block.stepLabel && <span className="cellix-step-label">{block.stepLabel}</span>}
+      {isPending && block.stepIndex! < block.stepTotal! && (
+        <span className="cellix-step-remaining">
+          {block.stepTotal! - block.stepIndex!} more step
+          {block.stepTotal! - block.stepIndex! === 1 ? '' : 's'} after this
+        </span>
+      )}
+    </div>
+  ) : null;
+
   const summaryBody = (
     <div data-testid="action-summary-default">
-      {summary.contextLine && (
-        <div
-          className="cellix-changes-context"
-          style={{ fontSize: 11.5, color: 'var(--cx-gray-500)', marginBottom: 4 }}
-        >
-          {summary.contextLine}
-        </div>
-      )}
+      {stepBadge}
       {!hideDuplicateHeadline && summary.headline && (
-        <div
-          className="cellix-changes-summary"
-          style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--cx-gray-700)' }}
-        >
-          {summary.headline}
-        </div>
+        <div className="cellix-changes-summary">{summary.headline}</div>
       )}
       {summary.bullets && summary.bullets.length > 0 && (
-        <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--cx-gray-600)' }}>
+        <ul className="cellix-changes-bullets">
           {summary.bullets.map((b, i) => (
             <li key={i}>{b}</li>
           ))}
         </ul>
       )}
-      {summary.supportingDetail && (
-        <div style={{ fontSize: 11.5, color: 'var(--cx-gray-500)', marginTop: 4 }}>
-          {summary.supportingDetail}
-        </div>
+      {metaParts.length > 0 && (
+        <div className="cellix-changes-meta">{metaParts.join(' · ')}</div>
       )}
     </div>
   );
@@ -146,6 +168,17 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
         >
           {isApplying ? 'Applying…' : 'Accept'}
         </button>
+        {onAcceptAll && (
+          <button
+            type="button"
+            className="cellix-btn-accept-all"
+            onClick={onAcceptAll}
+            disabled={isApplying || Boolean(blockedReason)}
+            title="Apply this step and every remaining step, in order"
+          >
+            Accept All
+          </button>
+        )}
         <button
           type="button"
           className="cellix-btn-reject"
@@ -159,11 +192,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   const blockedNotice =
     isPending && blockedReason ? (
-      <div
-        className="cellix-action-blocked-notice"
-        data-testid="action-blocked-notice"
-        style={{ fontSize: 11.5, color: 'var(--cx-gray-500)', marginTop: 4 }}
-      >
+      <div className="cellix-action-notice" data-testid="action-blocked-notice">
         {blockedReason}
       </div>
     ) : null;
@@ -172,12 +201,25 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   const irreversibleNotice =
     isPending && hasIrreversibleActions ? (
       <div
-        className="cellix-action-irreversible-notice"
+        className="cellix-action-notice is-warning"
         data-testid="action-irreversible-notice"
-        style={{ fontSize: 11.5, color: 'var(--warning-amber)', marginTop: 4 }}
       >
-        Not fully undoable: {block.irreversibleActionTypes!.join(', ')} — this change cannot be
-        automatically reverted once applied.
+        Can’t be undone automatically: {block.irreversibleActionTypes!.join(', ')}
+      </div>
+    ) : null;
+
+  /**
+   * One footer row carries both the details affordance and the decision, so the
+   * card costs a single line of height instead of three stacked ones.
+   */
+  const footer = (statusNode: React.ReactNode) =>
+    detailsToggle || acceptReject || statusNode ? (
+      <div className="cellix-action-footer">
+        <div className="cellix-action-footer-left">
+          {detailsToggle}
+          {statusNode}
+        </div>
+        {acceptReject}
       </div>
     ) : null;
 
@@ -185,47 +227,44 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     return (
       <div className="cellix-changes-card cellix-block-enter">
         {summaryBody}
-        <div className="cellix-changes-link" style={{ marginTop: 6 }}>
-          <span style={{ fontSize: 12, color: 'var(--cx-gray-500)' }}>Applied</span>
-        </div>
-        {detailsSection}
+        {footer(<span className="cellix-action-status is-applied">Applied</span>)}
+        {detailsBody}
       </div>
     );
   }
 
   if (isRejected) {
     return (
-      <div className="cellix-changes-card cellix-block-enter" style={{ opacity: 0.7 }}>
-        <div className="cellix-action-card-title">Changes rejected</div>
+      <div className="cellix-changes-card cellix-block-enter is-rejected">
         {summaryBody}
-        {detailsSection}
+        {footer(<span className="cellix-action-status">Rejected</span>)}
+        {detailsBody}
       </div>
     );
   }
 
   if (isPending && previewEnabled) {
     return (
-      <div className="cellix-changes-card cellix-block-enter">
+      <div className="cellix-changes-card cellix-block-enter is-pending">
         {summaryBody}
-        <div className="cellix-changes-link" style={{ marginTop: 6 }}>
-          <span style={{ fontSize: 12, color: 'var(--cx-gray-500)' }}>Pending review</span>
-        </div>
         {blockedNotice}
         {irreversibleNotice}
-        {acceptReject}
-        {detailsSection}
+        {footer(
+          showActionButtons ? null : <span className="cellix-action-status">Pending review</span>,
+        )}
+        {detailsBody}
       </div>
     );
   }
 
   return (
     <div className="cellix-action-card cellix-block-enter">
-      <div className="cellix-action-card-title">Cellix will make these changes:</div>
+      <div className="cellix-action-card-title">Cellix will make these changes</div>
       {summaryBody}
       {blockedNotice}
       {irreversibleNotice}
-      {acceptReject}
-      {detailsSection}
+      {footer(null)}
+      {detailsBody}
     </div>
   );
 };
