@@ -3,7 +3,7 @@ import { SheetActionType } from './sheet-actions';
 /**
  * Every SheetActionType must have an entry here — adding a new wire-level
  * action type without one fails the build. This is the frontend's mirror of
- * cellix_backend/src/excel-ai/types/action-catalog.ts's ACTION_CATALOG, one
+ * Server/src/excel-ai/types/action-catalog.ts's ACTION_CATALOG, one
  * layer up: that file guarantees the backend's own union stays internally
  * consistent; this one lets a cross-repo test confirm the frontend at least
  * recognizes every wire type the backend's catalog can advertise or emit,

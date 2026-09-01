@@ -3,7 +3,7 @@ import { RichAction } from '@/action.types';
 /**
  * Every RichAction type must have an entry here — adding a new type to
  * shared/action.types.ts without one fails the build. Mirrors
- * cellix_backend/src/excel-ai/types/action-catalog.ts's pattern, applied to
+ * Server/src/excel-ai/types/action-catalog.ts's pattern, applied to
  * the frontend's own dispatch completeness: this guards "actionEngine.ts's
  * switch (or handleWorksheetAction) actually handles every canonical action,"
  * independent of the wire-level check in types/sheetActionCatalog.ts. See
