@@ -10,7 +10,7 @@ export type RangeFilterOperator =
   | 'notMatchesRegex';
 
 export interface RangeFilterSpec {
-  column: string | number;
+  column: string;
   operator: RangeFilterOperator;
   value: string | number;
 }
@@ -48,7 +48,7 @@ export function applyFilterOperator(
   const left = String(cellValue ?? '').trim().toLowerCase();
   const right = String(value ?? '').trim().toLowerCase();
 
-  switch (operator as RangeFilterOperator) {
+  switch (operator) {
     case 'equals':
       return left === right;
     case 'notEquals':

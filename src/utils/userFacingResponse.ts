@@ -19,7 +19,7 @@ export interface ResponseInternalDetails {
 }
 
 export const INTERNAL_COPY_MARKERS =
-  /\b(Tier\s*[0-3]|single-action|no verification|Direct Change|Planner|Executor|Verifier|CONDITIONAL_FORMAT|SET_FORMULA|WRITE_TABLE|openai\/)/i;
+  /\b(Tier\s*[0-3]|single-action|no verification|Direct Change|Planner|Executor|Verifier|CONDITIONAL_FORMAT|FORMAT_MATCHING_ROWS|findMatchingRowOffsets|hasHeaders\s*:|SET_FORMULA|WRITE_TABLE|openai\/)/i;
 
 function looksInternal(text: string): boolean {
   return INTERNAL_COPY_MARKERS.test(text);

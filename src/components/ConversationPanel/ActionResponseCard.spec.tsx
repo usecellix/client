@@ -78,7 +78,7 @@ describe('ActionResponseCard', () => {
     expect(html).toContain('Show details');
   });
 
-  it('preserves internals inside the expandable details section', () => {
+  it('shows a plain-language description of the actions in the expandable details section, never internal jargon', () => {
     const html = renderToStaticMarkup(
       React.createElement(ActionResponseCard, {
         block: makeBlock(),
@@ -91,10 +91,11 @@ describe('ActionResponseCard', () => {
     );
 
     expect(html).toContain('data-testid="action-details-body"');
-    expect(html).toContain('openai/gpt-5-mini');
-    expect(html).toContain('Tier 1 single-action');
-    expect(html).toContain('CONDITIONAL_FORMAT');
-    expect(html).toContain('FORMAT_MATCHING_ROWS');
+    expect(html).toContain('Format rows matching a condition in A2:L51');
+    for (const token of FORBIDDEN) {
+      expect(html.includes(token)).toBe(false);
+    }
+    expect(html).not.toContain('openai/gpt-5-mini');
   });
 
   it('surfaces assumptions in the default headline', () => {
@@ -121,6 +122,107 @@ describe('ActionResponseCard', () => {
     expect(html).toContain('Paid first');
     const defaultPart = html.split('data-testid="action-details"')[0] ?? html;
     expect(defaultPart.includes('Tier 1')).toBe(false);
+  });
+});
+
+describe('ActionResponseCard — staged accept wave gating', () => {
+  it('disables Accept and shows the reason when blockedReason is set', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock(),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+        blockedReason: 'Accept the earlier step first.',
+      }),
+    );
+
+    expect(html).toContain('Accept the earlier step first.');
+    expect(html).toContain('data-testid="action-blocked-notice"');
+    // The Accept button itself must be disabled, not just annotated.
+    const acceptButtonHtml = html.slice(html.indexOf('cellix-btn-accept') - 40, html.indexOf('cellix-btn-accept') + 200);
+    expect(acceptButtonHtml).toContain('disabled');
+  });
+
+  it('leaves Reject enabled while blocked, so a stuck wave can still be dismissed', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock(),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+        blockedReason: 'Accept the earlier step first.',
+      }),
+    );
+
+    const rejectButtonHtml = html.slice(html.indexOf('cellix-btn-reject') - 40, html.indexOf('cellix-btn-reject') + 200);
+    expect(rejectButtonHtml).not.toContain('disabled');
+  });
+
+  it('renders no blocked notice and an enabled Accept when blockedReason is unset', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock(),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).not.toContain('data-testid="action-blocked-notice"');
+    const acceptButtonHtml = html.slice(html.indexOf('cellix-btn-accept') - 40, html.indexOf('cellix-btn-accept') + 200);
+    expect(acceptButtonHtml).not.toContain('disabled');
+  });
+});
+
+describe('ActionResponseCard — irreversibility warning', () => {
+  it('warns before Accept when the batch includes an action with no defined inverse', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({ irreversibleActionTypes: ['RENAME_SHEET'] }),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).toContain('data-testid="action-irreversible-notice"');
+    expect(html).toContain('RENAME_SHEET');
+    // Warning only, not a block — Accept must stay enabled.
+    const acceptButtonHtml = html.slice(html.indexOf('cellix-btn-accept') - 40, html.indexOf('cellix-btn-accept') + 200);
+    expect(acceptButtonHtml).not.toContain('disabled');
+  });
+
+  it('renders no irreversibility notice when the batch is fully revertible', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({ irreversibleActionTypes: [] }),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).not.toContain('data-testid="action-irreversible-notice"');
+  });
+
+  it('renders no irreversibility notice once accepted, even if the batch had irreversible actions', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({ irreversibleActionTypes: ['RENAME_SHEET'], proposalStatus: 'accepted' }),
+        previewEnabled: true,
+        showActionButtons: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+      }),
+    );
+
+    expect(html).not.toContain('data-testid="action-irreversible-notice"');
   });
 });
 

@@ -1,4 +1,13 @@
-import { CellValue, RichAction, CreateChartAction, UpdateChartAction, AggregateTableAction, FormatSpec } from '@/action.types';
+import {
+  CellValue,
+  RichAction,
+  CreateChartAction,
+  UpdateChartAction,
+  AggregateTableAction,
+  FormatSpec,
+  ConditionalFormatOperator,
+  BatchSetOperation,
+} from '@/action.types';
 import { SheetAction } from '@/types/sheet-actions';
 import { columnLetterToIndex, parseCellAddress, parseRangeAddress } from './addressUtils';
 import { convertLegacyToRich } from './legacyConverter';
@@ -15,12 +24,17 @@ function isRichAction(action: SheetAction): boolean {
     'ADD_SHEET',
     'DELETE_SHEET',
     'SORT_RANGE',
+    'SET_RANGE_VALUES',
     'COPY_FILTERED_RANGE',
     'FORMAT_MATCHING_ROWS',
+    'SET_MATCHING_ROWS',
     'MOVE_RANGE',
     'CREATE_CHART',
     'UPDATE_CHART',
+    'DELETE_CHART',
     'AGGREGATE_TABLE',
+    'CONDITIONAL_FORMAT',
+    'DELETE_CONDITIONAL_FORMAT',
   ]);
   if (richOnly.has(action.type)) return true;
 
@@ -214,6 +228,15 @@ export function toRichAction(action: SheetAction): RichAction | null {
         chartType: r.chartType as string | undefined,
         colorScheme: r.colorScheme as UpdateChartAction['colorScheme'],
       } as RichAction;
+    // Revert-only inverse of CREATE_CHART (TASKS.md #15) — never advertised to the
+    // Executor, only ever constructed directly by diff.engine.ts and returned through
+    // revert()/restore(). Passthrough, same shape as the wire action.
+    case 'DELETE_CHART':
+      return {
+        type: 'DELETE_CHART',
+        sheetName: String(r.sheetName ?? ''),
+        chartId: String(r.chartId ?? ''),
+      } as RichAction;
     case 'AGGREGATE_TABLE':
       return {
         type: 'AGGREGATE_TABLE',
@@ -295,6 +318,113 @@ export function toRichAction(action: SheetAction): RichAction | null {
         explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       };
     }
+    case 'CONDITIONAL_FORMAT': {
+      const rule =
+        r.rule && typeof r.rule === 'object' ? (r.rule as Record<string, unknown>) : undefined;
+      if (!rule || !r.range) return null;
+
+      const existingRuleId =
+        typeof r.existingRuleId === 'string' && r.existingRuleId.trim()
+          ? r.existingRuleId.trim()
+          : undefined;
+      const existingRuleIdField = existingRuleId ? { existingRuleId } : {};
+
+      // colorScale has no `format` field (each stop carries its own color),
+      // so it's handled before the format-required branches below.
+      if (rule.kind === 'colorScale') {
+        const colors =
+          Array.isArray(rule.colors) &&
+          (rule.colors.length === 2 || rule.colors.length === 3) &&
+          rule.colors.every((c) => typeof c === 'string' && c.trim())
+            ? (rule.colors as [string, string] | [string, string, string])
+            : undefined;
+        if (!colors) return null;
+        return {
+          type: 'CONDITIONAL_FORMAT',
+          sheetName: String(r.sheetName ?? ''),
+          range: String(r.range ?? ''),
+          rule: { kind: 'colorScale', colors },
+          ...existingRuleIdField,
+        };
+      }
+
+      const format =
+        rule.format && typeof rule.format === 'object' ? (rule.format as FormatSpec) : undefined;
+      if (!format) return null;
+
+      if (rule.kind === 'formula') {
+        if (typeof rule.formula !== 'string' || !rule.formula.trim()) return null;
+        return {
+          type: 'CONDITIONAL_FORMAT',
+          sheetName: String(r.sheetName ?? ''),
+          range: String(r.range ?? ''),
+          rule: { kind: 'formula', formula: rule.formula.trim(), format },
+          ...existingRuleIdField,
+        };
+      }
+
+      if (rule.kind === 'topBottom') {
+        const side = rule.side === 'top' || rule.side === 'bottom' ? rule.side : undefined;
+        const rank = typeof rule.rank === 'number' && rule.rank > 0 ? rule.rank : undefined;
+        if (!side || rank === undefined) return null;
+        return {
+          type: 'CONDITIONAL_FORMAT',
+          sheetName: String(r.sheetName ?? ''),
+          range: String(r.range ?? ''),
+          rule: {
+            kind: 'topBottom',
+            side,
+            rank,
+            format,
+            ...(rule.isPercent === true ? { isPercent: true } : {}),
+          },
+          ...existingRuleIdField,
+        };
+      }
+
+      const validOperators: ConditionalFormatOperator[] = [
+        'greaterThan',
+        'greaterThanOrEqual',
+        'lessThan',
+        'lessThanOrEqual',
+        'equalTo',
+        'notEqualTo',
+        'between',
+        'notBetween',
+      ];
+      const operator =
+        typeof rule.operator === 'string' && (validOperators as string[]).includes(rule.operator)
+          ? (rule.operator as ConditionalFormatOperator)
+          : undefined;
+      const value =
+        typeof rule.value === 'string' || typeof rule.value === 'number' ? rule.value : undefined;
+      if (!operator || value === undefined) return null;
+      const value2 =
+        typeof rule.value2 === 'string' || typeof rule.value2 === 'number' ? rule.value2 : undefined;
+      return {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        rule: {
+          kind: 'cellValue',
+          operator,
+          value,
+          ...(value2 !== undefined ? { value2 } : {}),
+          format,
+        },
+        ...existingRuleIdField,
+      };
+    }
+    // Revert-only inverse of a CONDITIONAL_FORMAT create (TASKS.md #40) — never
+    // advertised to the Executor, only ever constructed directly by diff.engine.ts
+    // and returned through revert()/restore(). Passthrough, same shape as the wire
+    // action — mirrors DELETE_CHART's identical fix at TASKS.md #67.
+    case 'DELETE_CONDITIONAL_FORMAT':
+      return {
+        type: 'DELETE_CONDITIONAL_FORMAT',
+        sheetName: String(r.sheetName ?? ''),
+        ruleId: String(r.ruleId ?? ''),
+      } as RichAction;
     case 'FORMAT_MATCHING_ROWS': {
       const filter =
         r.filter && typeof r.filter === 'object'
@@ -332,6 +462,59 @@ export function toRichAction(action: SheetAction): RichAction | null {
             },
       };
     }
+    case 'SET_MATCHING_ROWS': {
+      const filter =
+        r.filter && typeof r.filter === 'object'
+          ? (r.filter as {
+              column: string;
+              operator:
+                | 'equals'
+                | 'contains'
+                | 'greaterThan'
+                | 'lessThan'
+                | 'notEquals'
+                | 'lengthEquals'
+                | 'lengthNotEquals'
+                | 'matchesRegex'
+                | 'notMatchesRegex';
+              value: string | number;
+            })
+          : undefined;
+      if (filter && !filter.column) return null;
+      const targetColumn = String(r.targetColumn ?? r.columnName ?? '').trim();
+      if (!targetColumn) return null;
+      if (
+        r.value === undefined ||
+        (typeof r.value !== 'string' &&
+          typeof r.value !== 'number' &&
+          typeof r.value !== 'boolean')
+      ) {
+        return null;
+      }
+      return {
+        type: 'SET_MATCHING_ROWS',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        hasHeaders: r.hasHeaders !== false,
+        ...(filter?.column ? { filter } : {}),
+        targetColumn,
+        value: r.value,
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
+      };
+    }
+    // Revert-only bulk inverse (TASKS.md #100) — never advertised to the
+    // Executor, only ever constructed directly by diff.engine.ts and
+    // returned through revert(). Passthrough, same shape as the wire action
+    // — reuses BATCH_SET's own `operations` field/shape, since this is a
+    // sparse cell-corrections list, not a full rectangular value matrix.
+    case 'SET_RANGE_VALUES':
+      return {
+        type: 'SET_RANGE_VALUES',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        operations: (Array.isArray(r.operations) ? r.operations : []) as BatchSetOperation[],
+        explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
+      } as RichAction;
     case 'MOVE_RANGE':
       return {
         type: 'MOVE_RANGE',

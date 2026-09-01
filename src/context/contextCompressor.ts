@@ -142,6 +142,7 @@ export function buildPromptContext(
   namedRanges: { name: string; formula: string }[],
   tables: { name: string; sheetName: string; columnNames: string[] }[],
   selectedRange?: string,
+  conditionalFormats: { id: string; sheetName: string; range: string; ruleKind: string; summary: string }[] = [],
 ): string {
   const parts: string[] = [];
 
@@ -159,6 +160,14 @@ export function buildPromptContext(
   if (tables.length) {
     parts.push(
       `\nTables:\n${tables.map((t) => `  ${t.name} (${t.sheetName}): ${t.columnNames.join(', ')}`).join('\n')}`,
+    );
+  }
+
+  if (conditionalFormats.length) {
+    parts.push(
+      `\nConditional format rules (id, sheet, range, kind: summary — use the id to modify an existing rule instead of creating a duplicate):\n${conditionalFormats
+        .map((cf) => `  [${cf.id}] ${cf.sheetName}!${cf.range} (${cf.ruleKind}: ${cf.summary})`)
+        .join('\n')}`,
     );
   }
 

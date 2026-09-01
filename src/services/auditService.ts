@@ -5,8 +5,9 @@ import {
   getAuditRevertEndpoint,
   getAuditStatsEndpoint,
 } from '@/lib/apiConfig';
-import { ChangeSetSummary } from '@/types/changeSet';
+import { CellChange, ChangeSetSummary } from '@/types/changeSet';
 import { SheetAction } from '@/types/sheet-actions';
+import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
 
 export interface AuditStats {
   totalCost: number;
@@ -39,10 +40,35 @@ async function auditFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export async function markChangeSetApplied(changeSetId: string): Promise<ChangeSetSummary> {
+export async function markChangeSetApplied(
+  changeSetId: string,
+  createdConditionalFormatIds?: CreatedConditionalFormatId[],
+  createdChartIds?: CreatedChartId[],
+  // TASKS.md #93 — the real before/after diff for a SORT_RANGE, read directly
+  // off Excel by the frontend. The backend's shadow-based diff skips sparse
+  // ranges, so without this Revert has nothing to undo for those sorts.
+  sortedRangeChanges?: CellChange[],
+): Promise<ChangeSetSummary> {
+  const body: Record<string, unknown> = {};
+  // Fastify rejects Content-Type: application/json with an empty body (400) —
+  // '{}' is the pre-existing default; TASKS.md #40/#15 add optional keys so the
+  // backend can patch the real Excel-assigned id into a pending CONDITIONAL_FORMAT
+  // or CREATE_CHART structuralOp before marking the change set applied.
+  if (createdConditionalFormatIds && createdConditionalFormatIds.length > 0) {
+    body.createdConditionalFormatIds = createdConditionalFormatIds;
+  }
+  if (createdChartIds && createdChartIds.length > 0) {
+    body.createdChartIds = createdChartIds;
+  }
+  if (sortedRangeChanges && sortedRangeChanges.length > 0) {
+    body.sortedRangeChanges = sortedRangeChanges;
+  }
   const result = await auditFetch<{ changeSet: ChangeSetSummary }>(
     getAuditApplyEndpoint(changeSetId),
-    { method: 'POST' },
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
   );
   return result.changeSet;
 }
@@ -50,7 +76,10 @@ export async function markChangeSetApplied(changeSetId: string): Promise<ChangeS
 export async function revertChangeSet(
   changeSetId: string,
 ): Promise<{ changeSet: ChangeSetSummary; inverseActions: SheetAction[] }> {
-  return auditFetch(getAuditRevertEndpoint(changeSetId), { method: 'POST' });
+  return auditFetch(getAuditRevertEndpoint(changeSetId), {
+    method: 'POST',
+    body: '{}',
+  });
 }
 
 export async function fetchChangeSetHistory(

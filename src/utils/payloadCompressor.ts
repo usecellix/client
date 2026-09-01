@@ -253,15 +253,19 @@ export function prepareConversationRequestPayload(
   sheetData: any[][],
   options?: {
     conversationId?: string | null;
+    workbookId?: string | null;
     previousMessages?: ConversationHistoryMessage[];
     workbookContext?: WorkbookContext | WorkbookContextPayload;
     promptContext?: string;
     previewEnabled?: boolean;
     refinementChangeSetId?: string | null;
     mode?: AssistantMode;
+    /** Client-probed Excel capabilities — TASKS.md #152. */
+    excelCapabilities?: { dynamicArrays: boolean; probed: boolean };
   },
 ): {
   conversationId?: string;
+  workbookId?: string;
   message: string;
   sheetData: any[][];
   sheetCompression?: Omit<CompressedSheetPayload, 'sheetData'>;
@@ -270,6 +274,7 @@ export function prepareConversationRequestPayload(
   previewEnabled?: boolean;
   refinementChangeSetId?: string;
   mode?: AssistantMode;
+  excelCapabilities?: { dynamicArrays: boolean; probed: boolean };
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
   context: {
     previousMessages: ConversationHistoryMessage[];
@@ -325,6 +330,7 @@ export function prepareConversationRequestPayload(
 
   return {
     ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
+    ...(options?.workbookId ? { workbookId: options.workbookId } : {}),
     message,
     sheetData: compressed.sheetData,
     sheetCompression: {
@@ -341,6 +347,7 @@ export function prepareConversationRequestPayload(
       ? { refinementChangeSetId: options.refinementChangeSetId }
       : {}),
     ...(options?.mode ? { mode: options.mode } : {}),
+    ...(options?.excelCapabilities ? { excelCapabilities: options.excelCapabilities } : {}),
     conversationHistory,
     context: {
       previousMessages,

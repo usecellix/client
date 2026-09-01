@@ -26,6 +26,9 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
+  max-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   font-family: var(--cx-font);
   font-size: 13px;
   background: var(--cx-gray-50);
@@ -189,6 +192,27 @@
 .cellix-topbar-settings-wrap {
   position: relative;
   display: inline-flex;
+}
+
+.cellix-topbar-checkpoints-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.cellix-checkpoint-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 120;
+  width: min(280px, calc(100vw - 28px));
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  background: var(--cx-white);
+  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16);
+  color: var(--cx-gray-700);
 }
 
 .cellix-settings-menu {
@@ -593,13 +617,6 @@
   padding: 8px 10px 10px;
 }
 
-.cellix-change-history-summary-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 4px 0;
-}
-
 .cellix-icon-btn {
   width: 26px;
   height: 26px;
@@ -650,9 +667,11 @@
 }
 
 .cellix-content {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: 14px 16px 16px 22px;
+  padding: 12px 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -669,13 +688,6 @@
   margin-top: 4px;
 }
 
-.cellix-msg-meta {
-  text-align: right;
-  font-size: 10.5px;
-  color: var(--cx-gray-500);
-  margin-bottom: 4px;
-}
-
 .cellix-user-msg {
   background: var(--cx-white);
   border: 1px solid var(--cx-border);
@@ -685,6 +697,180 @@
   color: var(--cx-gray-900);
   line-height: 1.5;
   align-self: stretch;
+}
+
+/* Icon overlaps the bottom-right corner of the box itself — no dedicated
+   row/line of its own, so it costs no extra vertical space regardless of
+   how many lines the message wraps to. */
+.cellix-user-msg-has-actions {
+  position: relative;
+}
+
+.cellix-user-msg-text {
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.cellix-user-msg-row {
+  position: relative;
+  align-self: stretch;
+}
+
+/*
+ * Load-bearing, not cosmetic. `.cellix-block-enter`'s animation ends on
+ * `transform: translateY(0)` with `animation-fill-mode: both`, so that
+ * transform stays applied — and ANY non-`none` transform creates a stacking
+ * context. That makes both this row AND the response blocks in the sibling
+ * `.cellix-assistant-thread` their own stacking contexts, each sitting at
+ * level 0 inside `.cellix-turn`. The actions menu's own `z-index: 60` is
+ * therefore TRAPPED inside this row and can never out-paint a sibling that
+ * comes later in the DOM — which is why the response text rendered on top
+ * of the open menu regardless of whether it opened upward or downward.
+ * Lifting the whole row (only while the menu is open, so normal stacking is
+ * untouched otherwise) is what actually puts the menu in front.
+ */
+.cellix-user-msg-row-menu-open {
+  z-index: 70;
+}
+
+/* Absolutely positioned against the message box's corner (icon anchor);
+   `position: absolute` here also makes this the containing block for the
+   popover menu nested inside it below. */
+.cellix-user-msg-menu-wrap {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+}
+
+.cellix-user-msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--cx-gray-400);
+  cursor: pointer;
+}
+
+.cellix-user-msg-action-btn:hover:not(:disabled) {
+  color: var(--cx-gray-700);
+}
+
+.cellix-user-msg-action-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.cellix-user-msg-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  width: max-content;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-md);
+  background: var(--cx-white);
+  box-shadow: 0 14px 34px rgba(17, 24, 39, 0.16);
+}
+
+.cellix-user-msg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--cx-radius-sm);
+  background: transparent;
+  color: var(--cx-gray-700);
+  font-family: var(--cx-font);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cellix-user-msg-menu-item:hover:not(:disabled) {
+  background: var(--cx-brand-50);
+  color: var(--cx-brand-800);
+}
+
+.cellix-user-msg-menu-item:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.cellix-user-msg-menu-item-done {
+  cursor: default;
+  color: var(--cx-brand-600, #4f46e5);
+}
+
+.cellix-user-msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: stretch;
+}
+
+.cellix-user-msg-edit-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--cx-brand-300, var(--cx-border));
+  border-radius: var(--cx-radius-md);
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cx-gray-900);
+  background: var(--cx-white);
+}
+
+.cellix-user-msg-edit-input:focus {
+  outline: none;
+  border-color: var(--cx-brand-500);
+}
+
+.cellix-user-msg-edit-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.cellix-user-msg-edit-save,
+.cellix-user-msg-edit-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.cellix-user-msg-edit-save {
+  border: 1px solid var(--cx-brand-500);
+  background: var(--cx-brand-500);
+  color: var(--cx-white);
+}
+
+.cellix-user-msg-edit-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cellix-user-msg-edit-cancel {
+  border: 1px solid var(--cx-gray-200);
+  background: var(--cx-white);
+  color: var(--cx-gray-600);
+}
+
+.cellix-user-msg-edit-cancel:hover {
+  background: var(--cx-gray-50);
 }
 
 /* Assistant replies: inset from Excel chrome + vertical guide */
@@ -811,16 +997,18 @@
 }
 
 .cellix-thinking-block {
-  margin-top: 14px;
+  /* .cellix-assistant-thread already gives every block an 8px gap — this is
+     on top of that, not instead of it, so keep it small. */
+  margin-top: 6px;
 }
 
 .cellix-step + .cellix-thinking-block {
-  margin-top: 18px;
+  margin-top: 10px;
 }
 
 .cellix-thinking-toggle {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--cx-gray-500);
@@ -904,69 +1092,55 @@
   -webkit-box-decoration-break: clone;
 }
 
-.cellix-response-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.cellix-toolbar-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 28px;
-  min-width: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--cx-border);
-  border-radius: var(--cx-radius-sm);
-  background: var(--cx-white);
-  color: var(--cx-gray-700);
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.cellix-toolbar-btn:hover {
-  background: var(--cx-gray-50);
-  border-color: var(--cx-gray-300);
-}
-
-.cellix-toolbar-btn.active {
-  background: var(--cx-brand-50);
-  border-color: var(--cx-brand-400);
-  color: var(--cx-brand-800);
-}
-
-.cellix-toolbar-group {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--cx-border);
-  border-radius: var(--cx-radius-sm);
-  overflow: hidden;
-  background: var(--cx-white);
-}
-
-.cellix-toolbar-group .cellix-toolbar-btn {
-  border: none;
-  border-radius: 0;
-  min-width: 32px;
-}
-
-.cellix-toolbar-group .cellix-toolbar-btn + .cellix-toolbar-btn {
-  border-left: 1px solid var(--cx-border);
-}
-
-.cellix-toolbar-btn-text span {
-  font-size: 12px;
-  font-weight: 500;
+.cellix-md-code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.92em;
+  color: var(--cx-brand-800, #3730a3);
+  background: var(--cx-gray-100);
+  border: 1px solid var(--cx-gray-200);
+  border-radius: 4px;
+  padding: 0.05em 0.4em;
+  white-space: nowrap;
 }
 
 .cellix-response-divider {
   height: 1px;
   background: var(--cx-gray-200);
-  margin: 14px 0 10px;
+  margin: 4px 0 6px;
+}
+
+.cellix-response-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cellix-response-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--cx-radius-sm);
+  background: transparent;
+  color: var(--cx-gray-500);
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.cellix-response-footer-btn:hover {
+  background: var(--cx-gray-100);
+  color: var(--cx-gray-700);
+  opacity: 1;
+}
+
+.cellix-response-footer-time {
+  font-size: 12px;
+  color: var(--cx-gray-500);
+  opacity: 0.75;
+  cursor: default;
 }
 
 .cellix-followups-toggle {
@@ -977,35 +1151,25 @@
   border: none;
   padding: 0;
   cursor: pointer;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 500;
+  color: var(--cx-gray-500);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .cellix-followups-chevron {
   color: var(--cx-gray-500);
 }
 
-.cellix-followups-count {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--cx-brand-700);
-  background: var(--cx-brand-50);
-  border-radius: 999px;
-  padding: 1px 7px;
-  margin-left: 2px;
-}
-
 .cellix-followups-list {
   list-style: none;
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   padding: 0;
 }
 
 .cellix-followups-item {
   position: relative;
   padding-left: 18px;
-  margin-bottom: 8px;
+  margin-bottom: 5px;
 }
 
 .cellix-followups-item::before {
@@ -1039,9 +1203,9 @@
   padding: 0;
   text-align: left;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #334155;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--cx-gray-700);
   font-weight: 400;
 }
 
@@ -1131,14 +1295,12 @@
   animation: cx-text-shimmer 2.2s linear infinite;
 }
 
-.cellix-thinking-preview {
-  margin: 4px 0 0 18px;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--cx-gray-500);
-  overflow: hidden;
-  text-overflow: ellipsis;
+.cellix-thinking-step-count {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--cx-gray-400);
   white-space: nowrap;
+  margin-left: 2px;
 }
 
 .cellix-thinking-body p {
@@ -1193,6 +1355,15 @@
   color: var(--cx-gray-700);
 }
 
+/* Pending gets a single accent edge instead of a badge + label line. */
+.cellix-changes-card.is-pending {
+  border-left: 2px solid var(--cx-brand-500);
+}
+
+.cellix-changes-card.is-rejected {
+  opacity: 0.6;
+}
+
 .cellix-action-card-title {
   font-weight: 600;
   margin-bottom: 6px;
@@ -1210,55 +1381,161 @@
   line-height: 1.4;
 }
 
+/* --- Footer: details toggle on the left, decision on the right, one row. --- */
+.cellix-action-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  min-height: 24px;
+}
+
+.cellix-action-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cellix-details-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--cx-gray-500);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cellix-details-toggle:hover {
+  color: var(--cx-gray-700);
+}
+
+.cellix-details-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.cellix-details-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.cellix-details-body {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--cx-gray-200);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cx-gray-500);
+  /* A large multi-sheet build lists 190 actions here. Scroll the disclosure
+     rather than the whole conversation — the card above must stay compact and
+     its Accept/Reject reachable without paging past the list. TASKS.md #140. */
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cellix-details-body p {
+  margin: 3px 0;
+}
+
+.cellix-action-status {
+  font-size: 11.5px;
+  color: var(--cx-gray-500);
+  white-space: nowrap;
+}
+
+.cellix-action-status.is-applied::before {
+  content: '✓ ';
+  color: #15803d;
+}
+
+.cellix-action-notice {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--cx-gray-500);
+}
+
+.cellix-action-notice.is-warning {
+  color: var(--warning-amber, #b45309);
+}
+
 .cellix-action-btns {
   display: flex;
-  gap: 6px;
-  margin-top: 10px;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* Compact, content-width controls — no full-bleed blocks. */
+.cellix-btn-accept,
+.cellix-btn-reject,
+.cellix-btn-secondary {
+  height: 24px;
+  padding: 0 12px;
+  border-radius: var(--cx-radius-sm);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .cellix-btn-accept {
-  flex: 1;
-  padding: 7px 0;
-  border-radius: var(--cx-radius-sm);
-  background: var(--cx-brand-700);
+  background: var(--cx-brand-600);
   color: white;
-  border: none;
-  font-size: 12.5px;
+  border: 1px solid var(--cx-brand-600);
   font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
 }
 
-.cellix-btn-accept:hover {
-  background: var(--cx-brand-800);
+.cellix-btn-accept:hover:not(:disabled) {
+  background: var(--cx-brand-700);
+  border-color: var(--cx-brand-700);
+}
+
+/* Reject is a quiet ghost until hovered — it should not compete with Accept. */
+.cellix-btn-reject {
+  background: transparent;
+  color: var(--cx-gray-500);
+  border: 1px solid transparent;
+  font-weight: 500;
+}
+
+.cellix-btn-reject:hover:not(:disabled) {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
 }
 
 .cellix-btn-secondary {
-  flex: 1;
-  padding: 7px 0;
-  border-radius: var(--cx-radius-sm);
   background: white;
   color: var(--cx-gray-700);
   border: 1px solid var(--cx-border);
-  font-size: 12.5px;
   font-weight: 500;
-  cursor: pointer;
 }
 
-.cellix-btn-secondary:hover {
+.cellix-btn-secondary:hover:not(:disabled) {
   background: var(--cx-gray-100);
 }
 
-.cellix-btn-reject {
-  flex: 1;
-  padding: 7px 0;
-  border-radius: var(--cx-radius-sm);
-  background: white;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
+.cellix-btn-accept:focus-visible,
+.cellix-btn-reject:focus-visible,
+.cellix-btn-secondary:focus-visible {
+  outline: 2px solid var(--cx-brand-400);
+  outline-offset: 1px;
+}
+
+.cellix-btn-accept:disabled,
+.cellix-btn-reject:disabled,
+.cellix-btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .cellix-badge {
@@ -1276,18 +1553,24 @@
 .cellix-changes-summary {
   font-size: 12.5px;
   font-weight: 500;
-  color: var(--cx-gray-700);
+  color: var(--cx-gray-900);
   line-height: 1.45;
 }
 
-.cellix-changes-link {
-  color: var(--cx-brand-700);
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.cellix-changes-bullets {
+  margin: 4px 0 0;
+  padding-left: 16px;
   font-size: 12px;
-  margin-top: 6px;
+  line-height: 1.45;
+  color: var(--cx-gray-700);
+}
+
+/* Scope + size collapse into one muted line under the headline. */
+.cellix-changes-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--cx-gray-500);
+  line-height: 1.4;
 }
 
 .cellix-question-options {
@@ -1494,14 +1777,28 @@
   line-height: 1.25;
 }
 
-.cellix-empty .cellix-input-area {
+/* Anchored by its top edge, not its centre: a centred dock grows upward as
+   well as downward, and the upward half rides over the heading. */
+.cellix-empty .cellix-composer-dock {
   order: 3;
   width: min(594px, calc(100% - 16px));
   align-self: center;
   position: absolute;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  top: calc(50% - 65px);
+  transform: translateX(-50%);
+  z-index: 1;
+  border-top: 0;
+  background: transparent;
+}
+
+.cellix-empty .cellix-input-area {
+  width: 100%;
+  align-self: stretch;
+  position: static;
+  left: auto;
+  top: auto;
+  transform: none;
   z-index: 1;
   border-top: 0;
   background: transparent;
@@ -1515,10 +1812,28 @@
 
 .cellix-empty .cellix-reference-editor {
   min-height: 76px;
+  max-height: 76px;
+  overflow-y: auto;
 }
 
+/* Fixed box on the start screen: a long prompt scrolls inside it instead of
+   growing the shell. max-height caps the inline height the auto-grow sets. */
 .cellix-empty .cellix-input-shell textarea {
   min-height: 68px;
+  max-height: 68px;
+  overflow-y: auto;
+}
+
+/* Scrollable, but without the visible scrollbar cluttering the composer. */
+.cellix-empty .cellix-reference-editor,
+.cellix-input-shell textarea {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.cellix-empty .cellix-reference-editor::-webkit-scrollbar,
+.cellix-input-shell textarea::-webkit-scrollbar {
+  display: none;
 }
 
 .cellix-suggestion-carousel {
@@ -1639,10 +1954,29 @@
   color: var(--cx-brand-700);
 }
 
+.cellix-composer-dock {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cx-white);
+  border-top: 1px solid var(--cx-border);
+}
+
 .cellix-input-area {
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 40;
   border-top: 1px solid var(--cx-border);
   background: var(--cx-white);
-  padding: 10px 12px;
+  padding: 8px 12px 10px;
+}
+
+.cellix-composer-dock .cellix-input-area {
+  border-top: 0;
+  position: static;
+  padding-top: 6px;
+  overflow: visible;
 }
 
 .cellix-input-shell {
@@ -2328,10 +2662,17 @@
 .cellix-app-root {
   width: 100%;
   height: 100vh;
+  max-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .cellix-app-root .cellix-panel {
   height: 100%;
+  max-height: 100%;
+  min-height: 0;
 }
 
 .cellix-action-card-compact {
@@ -2340,6 +2681,7 @@
 
 /* Cursor-style preview summary above input */
 .cellix-preview-summary {
+  flex-shrink: 0;
   border-top: 1px solid var(--cx-border);
   background: var(--cx-white);
 }
@@ -2504,91 +2846,6 @@
   font-weight: 600;
 }
 
-.cellix-change-history {
-  border-top: 1px solid var(--cx-border);
-  background: var(--cx-gray-50);
-}
-
-.cellix-change-history-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  background: transparent;
-  font-size: 11px;
-  color: var(--cx-gray-600);
-  cursor: pointer;
-}
-
-.cellix-change-history-body {
-  padding: 0 12px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.cellix-change-history-item {
-  padding: 8px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid var(--cx-gray-100);
-}
-
-.cellix-change-history-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.cellix-change-history-prompt {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--cx-gray-800);
-  flex: 1 1 100%;
-}
-
-.cellix-change-history-status {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--cx-brand-700);
-}
-
-.cellix-change-history-time {
-  font-size: 10px;
-  color: var(--cx-gray-400);
-}
-
-.cellix-change-history-cells {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.cellix-change-history-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 2px 6px;
-  border-radius: var(--cx-radius-sm);
-  background: var(--cx-gray-100);
-  color: var(--cx-gray-700);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.cellix-change-history-chip-flagged {
-  background: #fef3c7;
-  color: #92400e;
-  border: 1px solid #f59e0b;
-}
-
 .cellix-change-exception-icon {
   flex-shrink: 0;
   color: #b45309;
@@ -2710,10 +2967,31 @@
   margin: 0;
 }
 
-.cellix-change-history-revert {
+/* Inline "revert the last change" row at the end of the conversation. Kept
+   visually quiet — it sits in the message flow, so it must not read as another
+   assistant turn. */
+.cellix-last-change-revert {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--cx-border);
+  border-radius: 8px;
+  background: var(--cx-gray-50);
+}
+
+.cellix-last-change-revert-label {
+  font-size: 10px;
+  color: var(--cx-gray-600, #52525b);
+}
+
+.cellix-last-change-revert-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  margin-left: auto;
   padding: 4px 8px;
   border: 1px solid var(--cx-border);
   border-radius: 6px;
@@ -2722,8 +3000,131 @@
   cursor: pointer;
 }
 
-.cellix-change-history-revert:hover:not(:disabled) {
+.cellix-last-change-revert-btn:hover:not(:disabled) {
   background: var(--cx-gray-50);
+}
+
+.cellix-last-change-revert-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.cellix-last-change-revert-error {
+  flex-basis: 100%;
+  font-size: 10px;
+  color: var(--cx-danger, #b91c1c);
+}
+
+.cellix-checkpoint-panel {
+  flex-shrink: 0;
+}
+
+.cellix-checkpoint-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  color: var(--cx-gray-600);
+  cursor: pointer;
+}
+
+.cellix-checkpoint-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cellix-checkpoint-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 4px 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.cellix-checkpoint-create:hover:not(:disabled) {
+  background: var(--cx-gray-50);
+}
+
+.cellix-checkpoint-error {
+  font-size: 11px;
+  color: #991b1b;
+  background: #fee2e2;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0;
+}
+
+.cellix-checkpoint-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--cx-gray-100);
+}
+
+.cellix-checkpoint-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cellix-checkpoint-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cx-gray-800);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellix-checkpoint-status {
+  font-size: 10px;
+  color: var(--cx-gray-500);
+  flex-shrink: 0;
+}
+
+.cellix-checkpoint-time {
+  font-size: 10px;
+  color: var(--cx-gray-400);
+}
+
+.cellix-checkpoint-restore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--cx-border);
+  border-radius: var(--cx-radius-sm);
+  background: #fff;
+  color: var(--cx-gray-600);
+  cursor: pointer;
+}
+
+.cellix-checkpoint-restore:hover:not(:disabled) {
+  background: var(--cx-gray-50);
+  color: var(--cx-gray-800);
+}
+
+.cellix-checkpoint-restore:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .cellix-cost-dashboard {
@@ -2797,6 +3198,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 8px 12px;
+  flex-shrink: 0;
   border-top: 1px solid var(--cx-border);
   background: #fffbeb;
   font-size: 11px;
@@ -2994,6 +3396,7 @@
   gap: 8px;
   padding: 0 10px 8px;
   background: var(--cx-white);
+  flex-shrink: 0;
   border-top: 1px solid var(--cx-border);
 }
 
@@ -3480,4 +3883,53 @@
 
 .cellix-find-end {
   color: var(--cx-gray-900);
+}
+
+/* Staged build: step position + Accept All — TASKS.md #160.
+   The badge is what makes staging honest. Without it, accepting one card and
+   stopping left a half-built workbook that looked finished (the #141 failure). */
+.cellix-step-badge {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+.cellix-step-count {
+  font-weight: 600;
+  color: var(--cx-primary, #4f46e5);
+  background: var(--cx-primary-soft, #eef2ff);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.cellix-step-label {
+  color: var(--cx-gray-600, #4b5563);
+  font-weight: 500;
+}
+
+.cellix-step-remaining {
+  color: var(--cx-gray-500, #6b7280);
+}
+
+.cellix-btn-accept-all {
+  background: transparent;
+  border: 1px solid var(--cx-primary, #4f46e5);
+  color: var(--cx-primary, #4f46e5);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cellix-btn-accept-all:hover:not(:disabled) {
+  background: var(--cx-primary-soft, #eef2ff);
+}
+
+.cellix-btn-accept-all:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

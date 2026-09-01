@@ -96,6 +96,13 @@ describe('convertLegacyToRich', () => {
       freezeColumns: 0,
       sheetName: 'Sheet1',
     });
+    expect(
+      convertLegacyToRich({ type: 'AUTO_FILTER', range: 'A1:N51', sheetName: 'Sheet1' }),
+    ).toEqual({
+      type: 'AUTO_FILTER',
+      range: 'A1:N51',
+      sheetName: 'Sheet1',
+    });
     expect(convertLegacyToRich({ type: 'SET_ZOOM', zoomPercent: 150, sheetName: 'Sheet1' })).toEqual({
       type: 'SET_ZOOM',
       zoomPercent: 150,

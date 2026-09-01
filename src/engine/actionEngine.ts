@@ -10,6 +10,7 @@ import {
   handleSetFormula,
   handleFillDown,
   handleBatchSet,
+  handleSetRangeValues,
 } from './handlers/cell.handler';
 import {
   handleAddSheet,
@@ -19,11 +20,19 @@ import {
 } from './handlers/sheet.handler';
 import {
   handleCreateTable,
+  handleDeleteTable,
   handleDefineNamedRange,
   handleAutofitColumns,
 } from './handlers/table.handler';
 import { handleSortRange } from './handlers/sort.handler';
-import { handleCopyFilteredRange, handleMoveRange, handleFormatMatchingRows } from './handlers/range.handler';
+import {
+  handleCopyFilteredRange,
+  handleMoveRange,
+  handleFormatMatchingRows,
+  handleSetMatchingRows,
+  handleConditionalFormat,
+  handleDeleteConditionalFormat,
+} from './handlers/range.handler';
 import { handleAggregateTable } from './handlers/aggregate.handler';
 import {
   handleAppendRow,
@@ -36,31 +45,98 @@ import {
 } from './handlers/misc.handler';
 import { applyRichFormat } from './handlers/format.handler';
 import { handleWorksheetAction } from './handlers/worksheet.handler';
-import { handleCreateChart, handleUpdateChart } from './handlers/chart.handler';
+import { handleCreateChart, handleDeleteChart, handleUpdateChart } from './handlers/chart.handler';
 import {
+  annotateDestOverwriteForCreatedSheets,
   guardAgainstOverwrite,
   isOverwriteGuardError,
   OverwriteGuardError,
+  pruneSpuriousAddSheets,
 } from './overwriteGuard';
 import { selectActionRanges } from './selectRanges';
 import { resolveWorksheet } from './sheetResolve';
+import { CellChange } from '@/types/changeSet';
 
 /* global Excel */
 
+/**
+ * The real Excel-assigned id a CONDITIONAL_FORMAT create just got, keyed by
+ * the sheet/range it was applied to — TASKS.md #40's apply-time id capture.
+ * `sheetName`/`range` (not array index) are the correlation key reported
+ * back to the backend, since `pruneSpuriousAddSheets`/
+ * `annotateDestOverwriteForCreatedSheets` can drop/reorder unrelated
+ * ADD_SHEET entries in `prepared`, making a positional index unreliable.
+ */
+export interface CreatedConditionalFormatId {
+  sheetName: string;
+  range: string;
+  ruleId: string;
+}
+
+/**
+ * The real Excel-assigned chart name a CREATE_CHART create just got, keyed by
+ * sheetName+sourceRange — TASKS.md #15's apply-time id capture, reusing #40's
+ * mechanism (`CreatedConditionalFormatId`'s sibling).
+ */
+export interface CreatedChartId {
+  sheetName: string;
+  sourceRange: string;
+  chartId: string;
+}
+
 export class RichActionEngine {
-  async applyActions(actions: RichAction[]): Promise<{ applied: number; errors: string[] }> {
+  async applyActions(actions: RichAction[]): Promise<{
+    applied: number;
+    errors: string[];
+    createdConditionalFormatIds?: CreatedConditionalFormatId[];
+    createdChartIds?: CreatedChartId[];
+    sortedRangeChanges?: CellChange[];
+  }> {
     const errors: string[] = [];
     let applied = 0;
+    const createdConditionalFormatIds: CreatedConditionalFormatId[] = [];
+    const createdChartIds: CreatedChartId[] = [];
+    const sortedRangeChanges: CellChange[] = [];
+    const prepared = annotateDestOverwriteForCreatedSheets(
+      pruneSpuriousAddSheets(actions),
+    );
 
-    if (actions.length === 0) {
+    if (prepared.length === 0) {
       return { applied, errors };
     }
 
     try {
       await Excel.run(async (ctx) => {
-        for (const action of actions) {
+        for (const action of prepared) {
           try {
-            await this.dispatch(action, ctx);
+            const result = await this.dispatch(action, ctx);
+            if (
+              result &&
+              'createdConditionalFormatId' in result &&
+              result.createdConditionalFormatId &&
+              action.type === 'CONDITIONAL_FORMAT'
+            ) {
+              createdConditionalFormatIds.push({
+                sheetName: action.sheetName,
+                range: action.range,
+                ruleId: result.createdConditionalFormatId,
+              });
+            }
+            if (
+              result &&
+              'createdChartId' in result &&
+              result.createdChartId &&
+              action.type === 'CREATE_CHART'
+            ) {
+              createdChartIds.push({
+                sheetName: action.sheetName,
+                sourceRange: action.sourceRange,
+                chartId: result.createdChartId,
+              });
+            }
+            if (result && 'sortedRangeChanges' in result && result.sortedRangeChanges) {
+              sortedRangeChanges.push(...result.sortedRangeChanges);
+            }
             applied += 1;
           } catch (err: unknown) {
             // Overwrite guard is a hard stop — do not continue writing after a block.
@@ -76,7 +152,7 @@ export class RichActionEngine {
         // Mouse-select edited area (no fill colors) after successful writes.
         if (applied > 0) {
           try {
-            await selectActionRanges(actions, ctx);
+            await selectActionRanges(prepared, ctx);
           } catch (selectErr) {
             console.warn('[Cellix] Failed to select applied ranges:', selectErr);
           }
@@ -101,10 +177,26 @@ export class RichActionEngine {
       errors.push(message);
     }
 
-    return { applied, errors };
+    return {
+      applied,
+      errors,
+      ...(createdConditionalFormatIds.length > 0 ? { createdConditionalFormatIds } : {}),
+      ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
+      ...(sortedRangeChanges.length > 0 ? { sortedRangeChanges } : {}),
+    };
   }
 
-  private async dispatch(action: RichAction, ctx: Excel.RequestContext): Promise<void> {
+  private async dispatch(
+    action: RichAction,
+    ctx: Excel.RequestContext,
+  ): Promise<
+    | {
+        createdConditionalFormatId?: string;
+        createdChartId?: string;
+        sortedRangeChanges?: CellChange[];
+      }
+    | void
+  > {
     // Last line of defense: never silently overwrite occupied cells.
     await guardAgainstOverwrite(action, ctx);
 
@@ -151,15 +243,20 @@ export class RichActionEngine {
         return handleCopySheet(action, ctx);
       case 'CREATE_TABLE':
         return handleCreateTable(action, ctx);
+      case 'DELETE_TABLE':
+        return handleDeleteTable(action, ctx);
       case 'CREATE_CHART': {
         const result = await handleCreateChart(action, ctx);
         if (result.chartId && !(action as { chartId?: string }).chartId) {
           (action as { chartId?: string }).chartId = result.chartId;
         }
-        return;
+        return { createdChartId: result.chartId };
       }
       case 'UPDATE_CHART':
         return handleUpdateChart(action, ctx);
+      case 'DELETE_CHART':
+        await handleDeleteChart(action, ctx);
+        return;
       case 'AGGREGATE_TABLE':
         await handleAggregateTable(action, ctx);
         return;
@@ -177,14 +274,25 @@ export class RichActionEngine {
         return handleClearRange(action, ctx);
       case 'SORT_RANGE':
         return handleSortRange(action, ctx);
+      case 'SET_RANGE_VALUES':
+        await handleSetRangeValues(action, ctx);
+        return;
       case 'COPY_FILTERED_RANGE':
         await handleCopyFilteredRange(action, ctx);
         return;
       case 'FORMAT_MATCHING_ROWS':
         await handleFormatMatchingRows(action, ctx);
         return;
+      case 'SET_MATCHING_ROWS':
+        await handleSetMatchingRows(action, ctx);
+        return;
       case 'MOVE_RANGE':
         await handleMoveRange(action, ctx);
+        return;
+      case 'CONDITIONAL_FORMAT':
+        return handleConditionalFormat(action, ctx);
+      case 'DELETE_CONDITIONAL_FORMAT':
+        await handleDeleteConditionalFormat(action, ctx);
         return;
       case 'CLARIFY':
       case 'CHECKPOINT':

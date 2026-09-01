@@ -130,6 +130,41 @@ describe('localSheetActions', () => {
     expect(plan?.actions[0]).toEqual({ type: 'DELETE_SHEET', sheetName: 'Archive' });
   });
 
+  it('deletes all sheets except the named keep sheet', () => {
+    const plan = tryLocalDeleteSheetActions(
+      'Delete all the sheets except purchase register',
+      {
+        activeSheet: 'Purchase Register',
+        sheets: [
+          { sheetName: 'Purchase Register' },
+          { sheetName: 'Sales' },
+          { sheetName: 'Invoices' },
+        ] as WorkbookContext['sheets'],
+      },
+      'action',
+    );
+    expect(plan?.actions).toEqual([
+      { type: 'DELETE_SHEET', sheetName: 'Sales' },
+      { type: 'DELETE_SHEET', sheetName: 'Invoices' },
+    ]);
+    expect(plan?.explanation).not.toContain('Purchase Register');
+  });
+
+  it('still deletes a sheet when asked to delete it by name (not except-phrase)', () => {
+    const plan = tryLocalDeleteSheetActions(
+      'Delete sheet Purchase Register',
+      {
+        activeSheet: 'Purchase Register',
+        sheets: [
+          { sheetName: 'Purchase Register' },
+          { sheetName: 'Sales' },
+        ] as WorkbookContext['sheets'],
+      },
+      'action',
+    );
+    expect(plan?.actions).toEqual([{ type: 'DELETE_SHEET', sheetName: 'Purchase Register' }]);
+  });
+
   it('handles blank tab create phrasing', () => {
     const plan = tryLocalSheetActions('create a blank tab', context, 'action');
     expect(plan?.actions[0]?.type).toBe('ADD_SHEET');

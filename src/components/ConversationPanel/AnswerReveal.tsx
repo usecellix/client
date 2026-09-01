@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
 import { MatchResult } from '@/types/conversationTurn';
-import { navigateToCell } from '@/services/rangeFetchService';
 import ResponseOutput from './ResponseOutput';
 
 interface AnswerRevealProps {
@@ -11,6 +10,10 @@ interface AnswerRevealProps {
   userPrompt?: string;
   onComplete?: () => void;
   disabled?: boolean;
+  /** When the response finished — powers the footer's Copy + relative-time row. */
+  timestamp?: Date;
+  /** When false, the caller renders the Copy + relative-time footer itself, positioned elsewhere. */
+  showFooter?: boolean;
 }
 
 const TYPING_INTERVAL_MS = 24;
@@ -21,6 +24,8 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
   matches,
   onComplete,
   disabled = false,
+  timestamp,
+  showFooter = true,
 }) => {
   const [displayed, setDisplayed] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -77,6 +82,8 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
       matches={revealState === 'complete' ? matches : undefined}
       disabled={disabled}
       showTypingCursor={isTyping}
+      timestamp={timestamp}
+      showFooter={showFooter}
     />
   );
 };

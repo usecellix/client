@@ -52,6 +52,26 @@ export interface ActionBlock {
   changes?: CellChange[];
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
+  /**
+   * Staged accept waves (large multi-sheet builds split "create the sheets"
+   * from "fill them in"): when set, this block must not be accepted until the
+   * sibling block whose changeSetId matches this value is 'accepted' — its
+   * actions (e.g. sheet creates) must actually exist first.
+   */
+  dependsOnChangeSetId?: string;
+  /**
+   * Position within a staged build (TASKS.md #160). Present only when the
+   * server split the work into steps; absent for a single-card change.
+   */
+  stepIndex?: number;
+  stepTotal?: number;
+  stepLabel?: string;
+  /**
+   * Action types in this batch with no defined inverse (per the backend's
+   * reversibility-catalog.ts). Surfaced here so the user is warned before
+   * Accept, not only discovered later when a revert fails.
+   */
+  irreversibleActionTypes?: string[];
 }
 
 export interface StatusBlock {
@@ -129,4 +149,30 @@ export function truncateTabLabel(text: string, max = 18): string {
 
 export function formatMessageTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** Short relative label ("5d ago", "just now") for a response's own timestamp footer. */
+export function formatRelativeTime(date: Date, now: Date = new Date()): string {
+  const seconds = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 1000));
+  if (seconds < 45) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
+/** Full date + time for the hover tooltip on a relative-time label. */
+export function formatFullDateTime(date: Date): string {
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }

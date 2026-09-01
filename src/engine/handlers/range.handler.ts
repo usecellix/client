@@ -1,11 +1,16 @@
 import {
+  ConditionalFormatAction,
+  ConditionalFormatOperator,
   CopyFilteredRangeAction,
+  DeleteConditionalFormatAction,
   FormatMatchingRowsAction,
   MoveRangeAction,
+  SetMatchingRowsAction,
 } from '@/action.types';
 import {
   isLocalRangeAddress,
   parseCellAddress,
+  parseRangeAddress,
   stripSheetPrefix,
 } from '../addressUtils';
 import {
@@ -13,9 +18,10 @@ import {
   buildOutputRows,
   filterDataRows,
   findMatchingRowOffsets,
+  resolveFilterColumnIndex,
   type RangeFilterSpec,
 } from '../rangeFilter';
-import { applyRichFormat } from './format.handler';
+import { applyConditionalRangeFormat, applyRichFormat } from './format.handler';
 import { resolveWorksheet } from './resolveWorksheet';
 
 /* global Excel */
@@ -34,6 +40,43 @@ async function resolveOrCreateSheet(
   const created = sheets.add(sheetName);
   await ctx.sync();
   return created;
+}
+
+/**
+ * Extend a filter-scan range down to the sheet's real last used row.
+ *
+ * The executor infers `range` from a token-compressed sample of the sheet, so on a
+ * 50-row register it can emit "A1:L11". Filter actions mean "every matching row",
+ * so honouring that guess silently updates 10 rows and reports success (F13).
+ *
+ * Widens rows only — never columns, so the caller's column window (and therefore
+ * targetColumn resolution) is unchanged. Falls back to the requested range if the
+ * used range is unavailable (empty sheet) or already smaller.
+ */
+async function extendRangeToUsedRows(
+  sheet: Excel.Worksheet,
+  rangeAddress: string,
+  ctx: Excel.RequestContext,
+): Promise<Excel.Range> {
+  const requested = parseRangeAddress(rangeAddress);
+  if (!requested) return sheet.getRange(rangeAddress);
+
+  const used = sheet.getUsedRange();
+  used.load(['rowIndex', 'rowCount']);
+  await ctx.sync();
+
+  const usedLastRow = (used.rowIndex ?? 0) + (used.rowCount ?? 0) - 1;
+  const requestedLastRow = requested.row + requested.rowCount - 1;
+  if (!Number.isFinite(usedLastRow) || usedLastRow <= requestedLastRow) {
+    return sheet.getRange(rangeAddress);
+  }
+
+  return sheet.getRangeByIndexes(
+    requested.row,
+    requested.col,
+    usedLastRow - requested.row + 1,
+    requested.colCount,
+  );
 }
 
 function resolveSourceRangeAddress(address: string): string {
@@ -91,7 +134,8 @@ async function clearMatchedSourceRows(
   }
 
   const colIndex = headerRow.findIndex(
-    (cell) => String(cell ?? '').trim().toLowerCase() === filter.column.trim().toLowerCase(),
+    (cell) =>
+      String(cell ?? '').trim().toLowerCase() === String(filter.column).trim().toLowerCase(),
   );
   if (colIndex === -1) {
     throw new Error(`Column "${filter.column}" not found in source range`);
@@ -136,6 +180,36 @@ export async function handleCopyFilteredRange(
   const destSheet = await resolveOrCreateSheet(ctx, action.destSheet);
   await writeOutputRows(destSheet, action.destStartCell, outputRows, ctx);
 
+  // Preserve header + matched-row formatting when we filtered by header column.
+  // (Values are written above; this copies formats only.)
+  if (action.filter && action.hasHeaders && headerRow && outputRows.length > 0) {
+    const start = parseCellAddress(action.destStartCell);
+    if (start) {
+      const colCount = Math.max(...outputRows.map((row) => row.length), 1);
+      const formatsCopyType = (Excel as any)?.RangeCopyType?.formats;
+      if (formatsCopyType) {
+        // Copy header formatting. getRangeByIndexes is a Worksheet method — the
+        // Range-relative equivalent is getCell() widened with getResizedRange().
+        const sourceHeaderRange = sourceRange.getCell(0, 0).getResizedRange(0, colCount - 1);
+        const destHeaderRange = destSheet.getRangeByIndexes(start.row, start.col, 1, colCount);
+        destHeaderRange.copyFrom(sourceHeaderRange, formatsCopyType);
+
+        // Copy formatting for each matched data row (in the same order we wrote values).
+        const matchedOffsets = findMatchingRowOffsets(rows, action.hasHeaders, action.filter);
+        for (let i = 0; i < matchedOffsets.length; i++) {
+          const sourceRowIndex = matchedOffsets[i]!;
+          const destRowIndex = i + 1; // outputRows: [header, ...matchedDataRows]
+          const sourceRowRange = sourceRange
+            .getCell(sourceRowIndex, 0)
+            .getResizedRange(0, colCount - 1);
+          const destRowRange = destSheet.getRangeByIndexes(start.row + destRowIndex, start.col, 1, colCount);
+          destRowRange.copyFrom(sourceRowRange, formatsCopyType);
+        }
+        await ctx.sync();
+      }
+    }
+  }
+
   if (action.mode === 'move' && action.filter) {
     await clearMatchedSourceRows(
       sourceSheet,
@@ -172,10 +246,12 @@ export async function handleMoveRange(
 export async function handleFormatMatchingRows(
   action: FormatMatchingRowsAction,
   ctx: Excel.RequestContext,
-): Promise<{ rowsFormatted: number }> {
+): Promise<{ rowsFormatted: number; rowsScanned: number }> {
   const sheet = resolveWorksheet(ctx, action.sheetName);
   const rangeAddress = resolveSourceRangeAddress(action.range);
-  const range = sheet.getRange(rangeAddress);
+  // Same truncated-sample exposure as handleSetMatchingRows (F13): a filter-based
+  // format must cover every matching row, not just the ones the model sampled.
+  const range = await extendRangeToUsedRows(sheet, rangeAddress, ctx);
   range.load(['values', 'rowIndex', 'columnIndex', 'columnCount']);
   await ctx.sync();
 
@@ -196,7 +272,180 @@ export async function handleFormatMatchingRows(
     await ctx.sync();
   }
 
-  return { rowsFormatted: offsets.length };
+  // TASKS.md #93: report coverage, not just success — see handleSetMatchingRows.
+  const rowsScanned = Math.max(rows.length - (action.hasHeaders !== false ? 1 : 0), 0);
+  return { rowsFormatted: offsets.length, rowsScanned };
+}
+
+export async function handleSetMatchingRows(
+  action: SetMatchingRowsAction,
+  ctx: Excel.RequestContext,
+): Promise<{ rowsUpdated: number; rowsScanned: number }> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const rangeAddress = resolveSourceRangeAddress(action.range);
+  // TASKS.md F13: the executor infers `range` from a COMPRESSED context sample, so a
+  // 50-row sheet can arrive as "A1:L11" and silently update only the sampled rows —
+  // reported to the user as "Applied". A filter-based action means "every matching
+  // row on the sheet", so extend the scan to the real used range before reading.
+  const range = await extendRangeToUsedRows(sheet, rangeAddress, ctx);
+  range.load(['values', 'rowIndex', 'columnIndex', 'columnCount']);
+  await ctx.sync();
+
+  const rows = (range.values ?? []) as unknown[][];
+  if (rows.length === 0) return { rowsUpdated: 0, rowsScanned: 0 };
+
+  const hasHeaders = action.hasHeaders !== false;
+  const headerRow = hasHeaders ? rows[0] : null;
+  if (!headerRow) {
+    throw new Error('SET_MATCHING_ROWS requires hasHeaders: true to resolve targetColumn');
+  }
+
+  const targetColOffset = resolveFilterColumnIndex(headerRow, action.targetColumn);
+  const absoluteTargetCol = range.columnIndex + targetColOffset;
+  const offsets = action.filter
+    ? findMatchingRowOffsets(rows, hasHeaders, action.filter)
+    : Array.from({ length: Math.max(rows.length - (hasHeaders ? 1 : 0), 0) }, (_, i) =>
+        hasHeaders ? i + 1 : i,
+      );
+
+  for (const offset of offsets) {
+    const cell = sheet.getRangeByIndexes(
+      range.rowIndex + offset,
+      absoluteTargetCol,
+      1,
+      1,
+    );
+    cell.values = [[action.value]];
+  }
+
+  if (offsets.length > 0) {
+    await ctx.sync();
+  }
+
+  // TASKS.md #93: a partial write used to look identical to a complete one — the
+  // 10-of-50 incident reported "Applied" with no signal. Report what was actually
+  // scanned so callers (and the console) can tell coverage from success.
+  const rowsScanned = Math.max(rows.length - (hasHeaders ? 1 : 0), 0);
+  return { rowsUpdated: offsets.length, rowsScanned };
+}
+
+const CONDITIONAL_FORMAT_OPERATOR_MAP: Record<
+  ConditionalFormatOperator,
+  Excel.ConditionalCellValueRule['operator']
+> = {
+  greaterThan: 'GreaterThan',
+  greaterThanOrEqual: 'GreaterThanOrEqual',
+  lessThan: 'LessThan',
+  lessThanOrEqual: 'LessThanOrEqual',
+  equalTo: 'EqualTo',
+  notEqualTo: 'NotEqualTo',
+  between: 'Between',
+  notBetween: 'NotBetween',
+};
+
+/** Office.js's ConditionalCellValueRule.formula1/2 take a formula string — quote text values. */
+function toConditionalFormatFormula(value: number | string): string {
+  return typeof value === 'number' ? String(value) : `"${String(value).replace(/"/g, '""')}"`;
+}
+
+const CONDITIONAL_FORMAT_RULE_KIND_TO_OFFICE_TYPE: Record<
+  ConditionalFormatAction['rule']['kind'],
+  Excel.ConditionalFormatType | 'CellValue' | 'Custom' | 'TopBottom' | 'ColorScale'
+> = {
+  cellValue: 'CellValue',
+  formula: 'Custom',
+  topBottom: 'TopBottom',
+  colorScale: 'ColorScale',
+};
+
+/**
+ * Applies a live, re-evaluating Excel conditional-format rule — never a
+ * one-shot computed fill (PRD M7). When `action.existingRuleId` is set
+ * (TASKS.md #38), resolves the already-existing rule via
+ * `conditionalFormats.getItem(id)` and mutates it in place instead of
+ * `.add(...)`-ing a duplicate — `rule.kind` must match the existing rule's
+ * own kind; Office.js throws if the wrong sub-object (`cellValue`/`custom`/
+ * `topBottom`/`colorScale`) is written for the retrieved rule's actual type.
+ *
+ * On a plain create, reads back the real Excel-assigned rule `.id` and
+ * returns it — this is the apply-time id capture TASKS.md #40 needs to make
+ * revert possible: the backend can't know this id at preview time (Office.js
+ * only assigns it once `.add()` actually runs), so `RichActionEngine`
+ * collects it here and reports it to `POST /audit/apply/:changeSetId` on
+ * accept, which patches it into the change set's `structuralOps`.
+ */
+export async function handleConditionalFormat(
+  action: ConditionalFormatAction,
+  ctx: Excel.RequestContext,
+): Promise<{ createdConditionalFormatId?: string } | void> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+
+  const conditionalFormat = action.existingRuleId
+    ? sheet.getUsedRange().conditionalFormats.getItem(action.existingRuleId)
+    : sheet
+        .getRange(resolveSourceRangeAddress(action.range))
+        .conditionalFormats.add(
+          CONDITIONAL_FORMAT_RULE_KIND_TO_OFFICE_TYPE[action.rule.kind] as Excel.ConditionalFormatType,
+        );
+
+  if (action.rule.kind === 'formula') {
+    conditionalFormat.custom.rule.formula = action.rule.formula;
+    applyConditionalRangeFormat(conditionalFormat.custom.format, action.rule.format);
+  } else if (action.rule.kind === 'topBottom') {
+    const type: Excel.ConditionalTopBottomRule['type'] = action.rule.isPercent
+      ? action.rule.side === 'top'
+        ? 'TopPercent'
+        : 'BottomPercent'
+      : action.rule.side === 'top'
+        ? 'TopItems'
+        : 'BottomItems';
+    conditionalFormat.topBottom.rule = { type, rank: action.rule.rank };
+    applyConditionalRangeFormat(conditionalFormat.topBottom.format, action.rule.format);
+  } else if (action.rule.kind === 'colorScale') {
+    const { colors } = action.rule;
+    const criteria: Excel.ConditionalColorScaleCriteria = {
+      minimum: { type: 'LowestValue', color: colors[0] },
+      maximum: { type: 'HighestValue', color: colors[colors.length - 1]! },
+    };
+    if (colors.length === 3) {
+      criteria.midpoint = { formula: '50', type: 'Percentile', color: colors[1] };
+    }
+    conditionalFormat.colorScale.criteria = criteria;
+  } else {
+    conditionalFormat.cellValue.rule = {
+      operator: CONDITIONAL_FORMAT_OPERATOR_MAP[action.rule.operator],
+      formula1: toConditionalFormatFormula(action.rule.value),
+      ...(action.rule.value2 !== undefined
+        ? { formula2: toConditionalFormatFormula(action.rule.value2) }
+        : {}),
+    };
+    applyConditionalRangeFormat(conditionalFormat.cellValue.format, action.rule.format);
+  }
+
+  if (!action.existingRuleId) {
+    conditionalFormat.load('id');
+  }
+  await ctx.sync();
+
+  if (!action.existingRuleId) {
+    return { createdConditionalFormatId: conditionalFormat.id };
+  }
+}
+
+/**
+ * Revert-only inverse of a CONDITIONAL_FORMAT create (TASKS.md #40) — deletes
+ * a specific rule by its real Excel-assigned id, resolved via the sheet's
+ * used range (the same range CONDITIONAL_FORMAT rules were originally read
+ * back from in `workbookReader.ts`).
+ */
+export async function handleDeleteConditionalFormat(
+  action: DeleteConditionalFormatAction,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const conditionalFormat = sheet.getUsedRange().conditionalFormats.getItem(action.ruleId);
+  conditionalFormat.delete();
+  await ctx.sync();
 }
 
 /** Re-export for unit tests */

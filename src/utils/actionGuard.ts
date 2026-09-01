@@ -1,4 +1,5 @@
 import { SheetAction } from '@/types/sheet-actions';
+import { sheetKeyOf, SheetGuardStates } from '@/engine/sheetGuardState';
 
 export const HEADER_ROW = 0;
 
@@ -58,8 +59,17 @@ export function computeSheetLayout(sheetData: unknown[][]): SheetLayout {
   };
 }
 
+/** Cosmetic header paints — never treat as "overwrite headers with data". */
+const HEADER_COSMETIC_TYPES = new Set<SheetAction['type']>([
+  'FORMAT_RANGE',
+  'HIGHLIGHT_CELL',
+  'MERGE_CELLS',
+]);
+
 function isHeaderMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   if (action.type === 'ADD_ROW' || action.type === 'WRITE_TABLE') return false;
+  // Spec 24: bold/fill/highlight the header row must not be blocked as a "new row" write.
+  if (HEADER_COSMETIC_TYPES.has(action.type)) return false;
   if (sheetIsEmpty) {
     const allowedOnHeader = new Set(['SET_CELL', 'SET_FORMULA', 'FORMAT_RANGE', 'MERGE_CELLS']);
     if (action.row === HEADER_ROW && allowedOnHeader.has(action.type)) return false;
@@ -76,8 +86,20 @@ function collectHeaderRowSetCells(actions: SheetAction[]): SheetAction[] {
   );
 }
 
-/** Merge SET_CELL / SET_FORMULA on header row into a single ADD_ROW. */
-function convertHeaderWritesToAddRow(headerActions: SheetAction[]): SheetAction | null {
+/**
+ * Merge SET_CELL / SET_FORMULA on header row into a single ADD_ROW.
+ *
+ * `sheetName` is not optional bookkeeping — it is the whole reason this merge
+ * is safe. A synthesized action that loses its target falls through
+ * `resolveWorksheet`'s missing-name branch onto `getActiveWorksheet()`, which
+ * silently writes it to whatever tab happens to be open. Callers must only
+ * ever pass actions that share one sheet, and that sheet's name must come back
+ * out on the merged action. See TASKS.md #137.
+ */
+function convertHeaderWritesToAddRow(
+  headerActions: SheetAction[],
+  sheetName: string | undefined,
+): SheetAction | null {
   if (!headerActions.length) return null;
 
   const maxCol = Math.max(...headerActions.map((a) => a.col ?? 0), 0);
@@ -90,11 +112,15 @@ function convertHeaderWritesToAddRow(headerActions: SheetAction[]): SheetAction 
     else if (action.type === 'CLEAR_CELL') rowData[action.col] = '';
   }
 
-  return { type: 'ADD_ROW', data: rowData as SheetAction['data'] };
+  const merged: SheetAction = { type: 'ADD_ROW', data: rowData as SheetAction['data'] };
+  if (sheetName) merged.sheetName = sheetName;
+  return merged;
 }
 
 function guardCellMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   if (action.type === 'ADD_ROW' || action.type === 'WRITE_TABLE') return false;
+  // Cosmetic format on header/body is always allowed (fill, bold, highlight).
+  if (HEADER_COSMETIC_TYPES.has(action.type)) return false;
   if (action.row === undefined) return false;
   if (sheetIsEmpty && action.row === HEADER_ROW) {
     return !['SET_CELL', 'SET_FORMULA', 'FORMAT_RANGE', 'MERGE_CELLS'].includes(action.type);
@@ -102,39 +128,101 @@ function guardCellMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   return action.row <= HEADER_ROW;
 }
 
+export interface SanitizeOptions {
+  /**
+   * Live per-sheet facts from `probeSheetGuardStates`. When a sheet is present
+   * here it is authoritative: `hasHeaderRow: false` means row 1 is free and a
+   * header write into it is legitimate, not an overwrite.
+   *
+   * When absent (probe failed, or a caller with no Excel context), the sheet
+   * falls back to `layout` — the pre-existing single-sheet behaviour.
+   */
+  sheetStates?: SheetGuardStates;
+}
+
+/**
+ * Decide, for one sheet, whether row 1 is free to write.
+ *
+ * `layout` describes the *active* sheet only, so it may only speak for the
+ * group that has no explicit sheet name. Letting it answer for named sheets is
+ * how a batch got graded against the wrong sheet's headers.
+ */
+function resolveSheetIsEmpty(
+  sheetKey: string,
+  layout: SheetLayout | undefined,
+  options: SanitizeOptions | undefined,
+): boolean {
+  const probed = options?.sheetStates?.get(sheetKey);
+  if (probed) return !probed.hasHeaderRow;
+  if (sheetKey === '') return layout?.isEmpty ?? false;
+  // A named sheet with no probe result: the active sheet's layout says nothing
+  // about it, so fall back to the conservative legacy answer.
+  return layout?.isEmpty ?? false;
+}
+
+/**
+ * Split a batch into per-sheet groups, preserving each action's original index
+ * so the sanitized output keeps the batch's ordering.
+ */
+function groupBySheet(actions: SheetAction[]): Map<string, SheetAction[]> {
+  const groups = new Map<string, SheetAction[]>();
+  for (const action of actions) {
+    const key = sheetKeyOf(action);
+    const group = groups.get(key);
+    if (group) group.push(action);
+    else groups.set(key, [action]);
+  }
+  return groups;
+}
+
 export function sanitizeActions(
   actions: SheetAction[],
   layout?: SheetLayout,
+  options?: SanitizeOptions,
 ): SanitizeResult {
   const warnings: string[] = [];
   const blocked: SheetAction[] = [];
-  const sheetIsEmpty = layout?.isEmpty ?? false;
-
-  const headerWrites = collectHeaderRowSetCells(actions);
-  const withoutHeaderWrites = actions.filter((a) => !headerWrites.includes(a));
-
-  let normalized: SheetAction[] = [...withoutHeaderWrites];
-
-  if (headerWrites.length > 0 && !sheetIsEmpty) {
-    const addRow = convertHeaderWritesToAddRow(headerWrites);
-    if (addRow) {
-      normalized.unshift(addRow);
-      warnings.push(
-        'Converted header-row cell writes to ADD_ROW so data appends after existing rows.',
-      );
-    }
-  } else if (headerWrites.length > 0 && sheetIsEmpty) {
-    normalized = [...headerWrites, ...withoutHeaderWrites];
-  }
-
   const safe: SheetAction[] = [];
 
-  for (const action of normalized) {
-    if (isHeaderMutation(action, sheetIsEmpty) || guardCellMutation(action, sheetIsEmpty)) {
-      blocked.push(action);
-      continue;
+  let convertedGroups = 0;
+  let totalHeaderWrites = 0;
+
+  // Header-row logic is per sheet. Row 1 of "January" and row 1 of "Main" are
+  // unrelated cells; pooling them let a 121-cell, 13-sheet batch collapse into
+  // one row on one tab. See TASKS.md #137.
+  for (const [sheetKey, groupActions] of groupBySheet(actions)) {
+    const sheetIsEmpty = resolveSheetIsEmpty(sheetKey, layout, options);
+    const sheetName = groupActions.find((a) => a.sheetName)?.sheetName;
+
+    const headerWrites = collectHeaderRowSetCells(groupActions);
+    const withoutHeaderWrites = groupActions.filter((a) => !headerWrites.includes(a));
+    totalHeaderWrites += headerWrites.length;
+
+    let normalized: SheetAction[] = [...withoutHeaderWrites];
+
+    if (headerWrites.length > 0 && !sheetIsEmpty) {
+      const addRow = convertHeaderWritesToAddRow(headerWrites, sheetName);
+      if (addRow) {
+        normalized.unshift(addRow);
+        convertedGroups += 1;
+      }
+    } else if (headerWrites.length > 0 && sheetIsEmpty) {
+      normalized = [...headerWrites, ...withoutHeaderWrites];
     }
-    safe.push(action);
+
+    for (const action of normalized) {
+      if (isHeaderMutation(action, sheetIsEmpty) || guardCellMutation(action, sheetIsEmpty)) {
+        blocked.push(action);
+        continue;
+      }
+      safe.push(action);
+    }
+  }
+
+  if (convertedGroups > 0) {
+    warnings.push(
+      'Converted header-row cell writes to ADD_ROW so data appends after existing rows.',
+    );
   }
 
   if (blocked.length > 0) {
@@ -142,7 +230,7 @@ export function sanitizeActions(
   }
 
   const requiresClarification =
-    safe.length === 0 && (blocked.length > 0 || headerWrites.length > 0);
+    safe.length === 0 && (blocked.length > 0 || totalHeaderWrites > 0);
 
   if (requiresClarification && layout) {
     warnings.push(
@@ -163,16 +251,48 @@ export const CLARIFY_ROW_PLACEMENT = {
   ],
 } as const;
 
+/** True when sanitize blocked value-writes (not cosmetic header fill). Safe to ask row-placement. */
+export function blockedActionsAreDataWrites(blocked: SheetAction[]): boolean {
+  if (blocked.length === 0) return false;
+  return blocked.some(
+    (a) =>
+      a.type === 'SET_CELL' ||
+      a.type === 'SET_FORMULA' ||
+      a.type === 'CLEAR_CELL' ||
+      a.type === 'CLEAR_CONTENT' ||
+      a.type === 'DELETE_ROW' ||
+      a.type === 'ADD_ROW' ||
+      a.type === 'INSERT_ROW' ||
+      a.type === 'WRITE_TABLE' ||
+      a.type === 'BATCH_SET',
+  );
+}
+
+/** User free-text rejecting the "new row" clarification and asking for header format instead. */
+export function isHeaderFormatCorrectionMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  const rejectsNewRow =
+    /\bnot\s+(a\s+)?new\s+row\b|\bno\s+new\s+row\b|\bexisting\s+row\b|\bnot\s+insert/i.test(
+      lower,
+    );
+  const wantsHeaderFormat =
+    /\b(header|headers)\b/.test(lower) &&
+    /\b(bg|background|fill|color|colour|highlight|bold|green|red)\b/.test(lower);
+  return (rejectsNewRow && wantsHeaderFormat) || wantsHeaderFormat;
+}
+
 export function buildActionRulesPrompt(layout?: SheetLayout): string {
   const nextRowHuman = layout ? layout.nextDataRow + 1 : 'last row + 1';
   const headerList = layout?.headers.filter(Boolean).join(', ') || '(see preview)';
 
   return `
 SPREADSHEET ACTION RULES (0-indexed rows in JSON; row 0 = Excel row 1):
-- Row ${HEADER_ROW} (Excel row 1) is the HEADER row: [${headerList}]. NEVER use SET_CELL, CLEAR_CELL, SET_FORMULA, or DELETE_ROW on row ${HEADER_ROW} unless the user explicitly asks to rename headers.
+- Row ${HEADER_ROW} (Excel row 1) is the HEADER row: [${headerList}].
+- NEVER use SET_CELL, CLEAR_CELL, SET_FORMULA, or DELETE_ROW on row ${HEADER_ROW} unless the user explicitly asks to rename headers.
+- FORMAT_RANGE and HIGHLIGHT_CELL on row ${HEADER_ROW} ARE allowed when the user wants to style/bold/fill the headers (not add data).
 - To ADD a new data row, ALWAYS use: {"type":"ADD_ROW","data":["col1","col2",...]} — do NOT set row index; it appends automatically at row ${nextRowHuman}.
 - Do NOT write dummy/data values into row ${HEADER_ROW} when the user asks to "add a row".
-- If placement, values, or target row are unclear, respond with a clarifying QUESTION only (no actions JSON). Ask: where to insert, what values, how many rows.
+- If placement, values, or target row are unclear for adding data, respond with a clarifying QUESTION only (no actions JSON). Ask: where to insert, what values, how many rows — never when the user only asked to format/color headers.
 - Prefer ADD_ROW over multiple SET_CELL actions when adding a full row.
 
 Example — add dummy row (correct):

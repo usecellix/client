@@ -45,6 +45,11 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       strictPort: true,
       https: httpsConfig,
+      // Allow serving the workspace-root `shared/` package (action.types.ts re-export) —
+      // it lives one level above this project's own root.
+      fs: {
+        allow: [path.resolve(__dirname, '..')],
+      },
       cors: {
         origin: 'https://localhost:3000',
         credentials: true,

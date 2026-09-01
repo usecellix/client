@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, KeyboardEvent } from 'react';
+import React, { useRef, useEffect, KeyboardEvent } from 'react';
 import {
   ArrowRight,
   AtSign,
@@ -17,11 +17,9 @@ import {
 import { AssistantMode, ASSISTANT_MODES, ASSISTANT_MODE_META } from '@/types/mode';
 import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { ClarificationPayload } from '@/types/cellix.types';
-import { PreviewSummaryBar } from '@/components/PreviewSummaryBar/PreviewSummaryBar';
 import { isTurnPresentationComplete } from '@/utils/turnPresentation';
-import { ChangeHistoryPanel } from '@/components/ChangeHistoryPanel/ChangeHistoryPanel';
-import { CellChange, formatCellValue } from '@/types/changeSet';
-import { DiffItem } from '@/services/previewManager';
+import { LastChangeRevert } from '@/components/ChangeHistoryPanel/LastChangeRevert';
+import { RestoreResult } from '@/types/checkpoint';
 import { SheetAction } from '@/types/sheet-actions';
 import { useSession } from '@/auth/auth-client';
 import { TextAnimate } from '@/components/ui/text-animate';
@@ -159,7 +157,7 @@ interface EmptyStateProps {
   children?: React.ReactNode;
 }
 
-const HEADING_CHAR_DURATION = 0.5;
+const HEADING_CHAR_DURATION = 0.22;
 
 const getDayGreeting = () => {
   // Always use IST (Asia/Kolkata), not the browser's local timezone.
@@ -185,7 +183,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }
   const promptPrefix = 'What would you like to ';
   const promptAccent = 'review?';
   const nameDelay = getNextCharDelay();
-  const promptDelay = getNextCharDelay(nameDelay) + 0.2;
+  const promptDelay = getNextCharDelay(nameDelay) + 0.08;
   const accentDelay = getNextCharDelay(promptDelay);
 
   return (
@@ -768,6 +766,7 @@ interface ConversationPanelProps {
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
   onAcceptActions: (turnId: string, blockId: string) => void;
+  onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onAnswerQuestion: (answer: string) => void;
   onClarificationAnswer: (answer: string) => void;
@@ -775,21 +774,12 @@ interface ConversationPanelProps {
   onToggleThinking: (turnId: string, blockId: string) => void;
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onFollowUp: (text: string) => void;
+  onRegenerate?: (turnId: string, overrideMessage?: string) => void;
   conversationId: string | null;
   onRevertHistoryEntry: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
+  workbookId?: string;
+  onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
   isApplyingActions?: boolean;
-  pendingPreview?: {
-    changes: CellChange[];
-    changeSetId?: string;
-    summary: string;
-    isApplying: boolean;
-    onAccept: () => void;
-    onReject: () => void;
-  } | null;
-  refinementChangeSetId?: string | null;
-  quickEditMode?: boolean;
-  onStartQuickEdit?: () => void;
-  onCancelQuickEdit?: () => void;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -813,21 +803,21 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onSelectSession,
   onCloseSession,
   onAcceptActions,
+  onAcceptAllActions,
   onRejectActions,
   onAnswerQuestion,
   onClarificationAnswer,
-  onClarificationDismiss,
+  // onClarificationDismiss is supplied by App but no control invokes it yet —
+  // the dismiss affordance is unimplemented, so it is intentionally not bound.
   onToggleThinking,
   onAnswerComplete,
   onFollowUp,
+  onRegenerate,
   conversationId,
   onRevertHistoryEntry,
+  workbookId,
+  onRestoreCheckpoint,
   isApplyingActions = false,
-  pendingPreview = null,
-  refinementChangeSetId = null,
-  quickEditMode = false,
-  onStartQuickEdit,
-  onCancelQuickEdit,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const showStartScreen = turns.length === 0;
@@ -842,22 +832,62 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     }
     onAnswerQuestion(answer);
   };
-  const previewItems: DiffItem[] = pendingPreview
-    ? pendingPreview.changes.map((change) => ({
-        sheetName: change.sheet,
-        address: change.cell,
-        actionType: change.formula ? 'SET_FORMULA' : 'SET_CELL',
-        before: formatCellValue(change.before),
-        after: formatCellValue(change.after),
-        description: change.formula
-          ? `Set formula ${change.formula}`
-          : `Change value to ${formatCellValue(change.after)}`,
-      }))
-    : [];
+
+  // Sticky-to-bottom, like Claude/Cursor/Codex chat panes: only auto-scroll
+  // when the user is already at (or near) the bottom, or when a brand-new
+  // turn just landed. Without this, any in-place edit to existing content —
+  // expanding "Thought process" on an old turn, answering a clarification,
+  // Accept/Reject — replaces `turns` with a new array reference and yanked
+  // the whole view down to the latest message, even far above the fold.
+  const isNearBottomRef = useRef(true);
+  const prevTurnsLengthRef = useRef(turns.length);
+
+  const handleContentScroll = () => {
+    const el = contentRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isNearBottomRef.current = distanceFromBottom < 80;
+  };
 
   useEffect(() => {
-    contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight, behavior: 'smooth' });
+    const el = contentRef.current;
+    if (!el) return;
+    const turnAppended = turns.length > prevTurnsLengthRef.current;
+    prevTurnsLengthRef.current = turns.length;
+    // A newly appended turn (the user just sent something) always jumps to
+    // it — matching the intentional "show me what I just did" case. Any
+    // other change (streaming reveal, in-place toggles) only follows along
+    // if the user hadn't already scrolled away to read something else.
+    if (turnAppended || isNearBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      isNearBottomRef.current = true;
+    }
   }, [turns, activeTurnId, isWaitingForResponse, activeClarification]);
+
+  const composerInput = (
+    <PanelInput
+      onSend={onSend}
+      onStop={onStop}
+      disabled={isWaitingForResponse}
+      isProcessing={isWaitingForResponse}
+      isWaitingClarification={isWaitingClarification}
+      mode={mode}
+      onModeChange={onModeChange}
+      placeholder={
+        mode === 'ask'
+          ? 'Ask anything about your workbook - use @ for references'
+          : mode === 'plan'
+            ? 'Describe what you want to plan - use @ for references'
+            : 'Describe the change you want to make - use @ for references'
+      }
+    />
+  );
+
+  const composerDock = (
+    <div className="cellix-composer-dock">
+      {composerInput}
+    </div>
+  );
 
   return (
     <div className="cellix-panel">
@@ -868,30 +898,22 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         onSelectSession={onSelectSession}
         onCloseSession={onCloseSession}
         onNewChat={onNewChat}
+        // Checkpoints icon temporarily hidden (not removed) — feature, panel,
+        // and backend are all still intact behind this flag. Restore with
+        // `showCheckpointsButton={!showStartScreen}` when it's wanted again.
+        showCheckpointsButton={false}
+        workbookId={workbookId}
+        conversationId={conversationId}
+        onRestoreCheckpoint={onRestoreCheckpoint}
       />
 
-      <div className={`cellix-content ${showStartScreen ? 'start' : ''}`} ref={contentRef}>
+      <div
+        className={`cellix-content ${showStartScreen ? 'start' : ''}`}
+        ref={contentRef}
+        onScroll={handleContentScroll}
+      >
         {showStartScreen ? (
-          <EmptyState onSuggestion={onSend}>
-            <PanelInput
-              onSend={onSend}
-              onStop={onStop}
-              disabled={isWaitingForResponse}
-              isProcessing={isWaitingForResponse}
-              isWaitingClarification={isWaitingClarification}
-              mode={mode}
-              onModeChange={onModeChange}
-              placeholder={
-                quickEditMode
-                  ? 'Describe how to adjust the last change…'
-                  : mode === 'ask'
-                    ? 'Ask anything about your workbook - use @ for references'
-                    : mode === 'plan'
-                      ? 'Describe what you want to plan - use @ for references'
-                      : 'Describe the change you want to make - use @ for references'
-              }
-            />
-          </EmptyState>
+          <EmptyState onSuggestion={onSend}>{composerDock}</EmptyState>
         ) : (
           turns.map((turn) => (
             <TurnRenderer
@@ -901,16 +923,34 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               isWaiting={isWaitingForResponse && turn.id === activeTurnId}
               previewEnabled={previewEnabled}
               isApplying={isApplyingActions}
-              showActionButtons={previewActionsReady}
+              showActionButtons={
+                turn.id === activeTurnId
+                  ? previewActionsReady
+                  : isTurnPresentationComplete(turn)
+              }
               onAcceptActions={onAcceptActions}
+              onAcceptAllActions={onAcceptAllActions}
               onRejectActions={onRejectActions}
               onAnswerQuestion={handleQuestionAnswer}
               onToggleThinking={onToggleThinking}
               onAnswerComplete={onAnswerComplete}
               onFollowUp={onFollowUp}
+              onRegenerate={onRegenerate}
               onRunAsAction={onRunAsAction}
+              onRevertChangeSet={onRevertHistoryEntry}
             />
           ))
+        )}
+
+        {/* Revert for the most recent applied change lives at the end of the
+            conversation, where the change just happened — not behind the
+            composer's history icon. Full per-entry history is still there. */}
+        {!showStartScreen && (
+          <LastChangeRevert
+            conversationId={conversationId}
+            onRevert={onRevertHistoryEntry}
+            refreshKey={turns.length}
+          />
         )}
       </div>
 
@@ -926,57 +966,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         </div>
       )}
 
-      {pendingPreview && (
-        <PreviewSummaryBar
-          items={previewItems}
-          summary={pendingPreview.summary}
-          onAccept={pendingPreview.onAccept}
-          onReject={pendingPreview.onReject}
-          isApplying={pendingPreview.isApplying}
-          showActions={previewActionsReady}
-        />
-      )}
-
-      <ChangeHistoryPanel conversationId={conversationId} onRevert={onRevertHistoryEntry} />
-
-      {refinementChangeSetId && !quickEditMode && onStartQuickEdit && (
-        <div className="cellix-quick-edit-banner">
-          <span>Last change applied — refine without re-reading the workbook.</span>
-          <button type="button" className="cellix-btn-secondary" onClick={onStartQuickEdit}>
-            Quick edit
-          </button>
-        </div>
-      )}
-
-      {quickEditMode && onCancelQuickEdit && (
-        <div className="cellix-quick-edit-banner active">
-          <span>Quick edit mode — describe how to adjust the last change.</span>
-          <button type="button" className="cellix-btn-secondary" onClick={onCancelQuickEdit}>
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {!showStartScreen && (
-        <PanelInput
-          onSend={onSend}
-          onStop={onStop}
-          disabled={isWaitingForResponse}
-          isProcessing={isWaitingForResponse}
-          isWaitingClarification={isWaitingClarification}
-          mode={mode}
-          onModeChange={onModeChange}
-          placeholder={
-            quickEditMode
-              ? 'Describe how to adjust the last change…'
-              : mode === 'ask'
-                ? 'Ask anything about your workbook - use @ for references'
-                : mode === 'plan'
-                  ? 'Describe what you want to plan - use @ for references'
-                  : 'Describe the change you want to make - use @ for references'
-          }
-        />
-      )}
+      {!showStartScreen && composerDock}
     </div>
   );
 };

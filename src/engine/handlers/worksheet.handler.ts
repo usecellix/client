@@ -9,11 +9,47 @@ function asActionRecord(action: RichAction): ActionRecord {
   return action as unknown as ActionRecord;
 }
 
+/**
+ * Exactly the action types the switch below handles.
+ *
+ * This gate is load-bearing, not a micro-optimisation. The engine tries this
+ * handler FIRST for every action, and resolveWorksheet() calls
+ * `worksheets.getItem(name)`, which queues a lookup on the Office.js request
+ * context. Resolving before knowing whether we handle the type meant an
+ * ADD_SHEET/CREATE_SHEET for a sheet that does not exist yet (the normal case —
+ * it is about to be created) queued a lookup for a missing sheet. The switch
+ * then fell through to `default`, the sheet was created correctly by a later
+ * handler, but the poisoned lookup stayed in the batch and the next ctx.sync()
+ * failed the whole run with "The requested resource doesn't exist."
+ */
+const WORKSHEET_ACTION_TYPES = new Set<string>([
+  'HIDE_ROW',
+  'UNHIDE_ROW',
+  'HIDE_COLUMN',
+  'UNHIDE_COLUMN',
+  'SET_ROW_HEIGHT',
+  'SET_COLUMN_WIDTH',
+  'FREEZE_PANES',
+  'UNFREEZE_PANES',
+  'AUTO_FILTER',
+  'SET_ZOOM',
+  'PROTECT_SHEET',
+  'UNPROTECT_SHEET',
+  'UNMERGE_CELLS',
+  'HIDE_SHEET',
+  'SHOW_SHEET',
+  'SET_SHEET_COLOR',
+  'ADD_COMMENT',
+  'DELETE_COMMENT',
+]);
+
 export async function handleWorksheetAction(
   action: RichAction,
   ctx: Excel.RequestContext,
 ): Promise<boolean> {
   const record = asActionRecord(action);
+  // Resolve only after confirming we handle this type — see WORKSHEET_ACTION_TYPES.
+  if (!WORKSHEET_ACTION_TYPES.has(record.type)) return false;
   const sheet = resolveWorksheet(ctx, String(record.sheetName ?? ''));
 
   switch (record.type) {
@@ -64,13 +100,18 @@ export async function handleWorksheetAction(
       sheet.freezePanes.unfreeze();
       await ctx.sync();
       return true;
-    case 'SET_ZOOM': {
-      const zoom = Number(record.zoomPercent);
-      if (!Number.isFinite(zoom)) return true;
-      sheet.sheetView.zoom = Math.max(10, Math.min(400, Math.round(zoom)));
+    case 'AUTO_FILTER':
+      if (typeof record.range !== 'string' || !record.range) return true;
+      sheet.autoFilter.apply(record.range);
       await ctx.sync();
       return true;
-    }
+    case 'SET_ZOOM':
+      // The Excel JavaScript API exposes no view-zoom control (Worksheet has only
+      // namedSheetViews, and pageLayout.zoom applies to printing). This previously
+      // assigned to a non-existent sheetView and failed with an opaque TypeError.
+      throw new Error(
+        'Zoom cannot be changed from an add-in — the Excel JavaScript API does not expose worksheet view zoom.',
+      );
     case 'PROTECT_SHEET':
       sheet.protection.protect();
       await ctx.sync();
@@ -97,16 +138,19 @@ export async function handleWorksheetAction(
       sheet.tabColor = record.color;
       await ctx.sync();
       return true;
+    // Comments hang off the workbook, not the range — Range has no getComment().
     case 'ADD_COMMENT':
       if (typeof record.address !== 'string' || typeof record.comment !== 'string') return true;
-      sheet.getRange(record.address).getComment().add(record.comment);
+      ctx.workbook.comments.add(sheet.getRange(record.address), record.comment);
       await ctx.sync();
       return true;
-    case 'DELETE_COMMENT':
+    case 'DELETE_COMMENT': {
       if (typeof record.address !== 'string') return true;
-      sheet.getRange(record.address).getComment().delete();
+      const comment = ctx.workbook.comments.getItemByCell(sheet.getRange(record.address));
+      comment.delete();
       await ctx.sync();
       return true;
+    }
     default:
       return false;
   }

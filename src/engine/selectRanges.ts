@@ -44,6 +44,8 @@ export function resolveActionSelectBounds(
   );
   if (!sheetName) return null;
 
+  // NB: this intersects `type` down to the tags common to both unions, so any
+  // rich-only action handled below must also appear in SheetActionType.
   const rich = action as RichAction & SheetAction;
 
   switch (rich.type) {
@@ -67,7 +69,8 @@ export function resolveActionSelectBounds(
     }
     case 'FORMAT_RANGE':
     case 'CLEAR_RANGE':
-    case 'MERGE_CELLS': {
+    case 'MERGE_CELLS':
+    case 'CONDITIONAL_FORMAT': {
       if (typeof rich.range === 'string') {
         const parsed = parseRangeAddress(rich.range);
         if (parsed) return { sheetName, ...parsed };
@@ -150,7 +153,8 @@ export function resolveActionSelectBounds(
       if (!start) return null;
       return { sheetName: destSheet, row: start.row, col: start.col, rowCount: 1, colCount: 1 };
     }
-    case 'FORMAT_MATCHING_ROWS': {
+    case 'FORMAT_MATCHING_ROWS':
+    case 'SET_MATCHING_ROWS': {
       if (typeof rich.range === 'string') {
         const parsed = parseRangeAddress(rich.range);
         if (parsed) return { sheetName, ...parsed };

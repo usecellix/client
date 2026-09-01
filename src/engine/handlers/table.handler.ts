@@ -1,5 +1,6 @@
 import {
   CreateTableAction,
+  DeleteTableAction,
   DefineNamedRangeAction,
   AutoFitColumnsAction,
 } from '@/action.types';
@@ -25,6 +26,26 @@ export async function handleCreateTable(
   const table = sheet.tables.add(action.range, action.hasHeaders);
   table.name = tableName;
   if (action.style) table.style = action.style;
+  await ctx.sync();
+}
+
+/** Undoes CREATE_TABLE: unwraps the Table object back to a plain range (TASKS.md #16). */
+export async function handleDeleteTable(
+  action: DeleteTableAction,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  const tableName = action.tableName.trim();
+  if (!tableName) {
+    throw new Error('DELETE_TABLE requires a non-empty tableName');
+  }
+
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const table = sheet.tables.getItemOrNullObject(tableName);
+  table.load('isNullObject');
+  await ctx.sync();
+  if (table.isNullObject) return;
+
+  table.convertToRange();
   await ctx.sync();
 }
 

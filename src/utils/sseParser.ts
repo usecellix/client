@@ -31,6 +31,22 @@ export interface SseActionsData {
   tier?: number;
   userFacingSummary?: UserFacingSummary;
   internalDetails?: ResponseInternalDetails;
+  /**
+   * Staged accept waves: when present, this block's Accept must stay disabled
+   * until the block carrying changeSetId === this value has been accepted —
+   * its actions (e.g. sheet creates) must actually exist before this block's
+   * actions can safely apply.
+   */
+  dependsOnChangeSetId?: string;
+  /** Position within a staged build — TASKS.md #160. */
+  stepIndex?: number;
+  stepTotal?: number;
+  stepLabel?: string;
+  /**
+   * Action types in this batch with no defined inverse (per the backend's
+   * reversibility-catalog.ts) — surfaced to warn the user before Accept.
+   */
+  irreversibleActionTypes?: string[];
 }
 
 export interface SseToolRequestData {
@@ -83,6 +99,8 @@ export interface SseSelectCellData {
 
 export type ParsedSseEvent =
   | { type: 'status'; data: { message: string } }
+  // Agent progress from SseEmitter (THINKING / CHECKPOINT steps).
+  | { type: 'thinking'; data: { message: string } }
   | { type: 'chunk'; data: { text: string } }
   | { type: 'answer'; data: SseAnswerData }
   | { type: 'question'; data: SseQuestionData }
@@ -136,6 +154,13 @@ function normalizeActionsData(p: Record<string, unknown>): SseActionsData {
     tier: typeof p.tier === 'number' ? p.tier : undefined,
     userFacingSummary: parseUserFacingSummary(p.userFacingSummary),
     internalDetails: parseInternalDetails(p.internalDetails),
+    dependsOnChangeSetId: typeof p.dependsOnChangeSetId === 'string' ? p.dependsOnChangeSetId : undefined,
+    stepIndex: typeof p.stepIndex === 'number' ? p.stepIndex : undefined,
+    stepTotal: typeof p.stepTotal === 'number' ? p.stepTotal : undefined,
+    stepLabel: typeof p.stepLabel === 'string' ? p.stepLabel : undefined,
+    irreversibleActionTypes: Array.isArray(p.irreversibleActionTypes)
+      ? (p.irreversibleActionTypes as string[])
+      : undefined,
   };
 }
 
