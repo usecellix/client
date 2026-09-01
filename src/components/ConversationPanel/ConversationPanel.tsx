@@ -145,6 +145,7 @@ const ModeSwitch: React.FC<ModeSwitchProps> = ({ mode, onModeChange, disabled = 
 const SUGGESTIONS = [
   "What's in cell A1?",
   'Calculate the total',
+  'Reconcile my GST purchases with GSTR-2B',
   'Explain this sheet to me',
 ];
 

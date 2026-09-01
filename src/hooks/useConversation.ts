@@ -26,6 +26,8 @@ import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import { buildThoughtSummary } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isSimpleCreateTask } from '@/utils/statusMessage';
 import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
+import { isGstReconPrompt } from '@/utils/gstReconIntent';
+import { tryHandleGstReconChat } from '@/services/gstReconChat';
 import { shouldPreviewActions } from '@/utils/previewPolicy';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { CellChange } from '@/types/changeSet';
@@ -634,6 +636,124 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     ],
   );
 
+  /**
+   * Chat-native GST recon: discover sheets → match on server → answer + Accept/Reject card.
+   * Does not use the LLM conversation path.
+   */
+  const dispatchGstReconChat = useCallback(
+    async (turnId: string, message: string) => {
+      const runtime = runtimeRef.current.get(turnId);
+      if (!runtime) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(
+          turn.blocks,
+          'Looking for Purchase Register and GSTR sheets…',
+          true,
+          true,
+        ),
+      }));
+
+      await delay(150);
+      if (runtime.aborted) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Matching invoices…', true, true),
+      }));
+
+      const outcome = await tryHandleGstReconChat(message, {
+        conversationId: conversationIdRef.current,
+      });
+
+      if (!outcome) {
+        // Should not happen if caller pre-checked intent
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          phase: 'complete',
+          blocks: finalizeSteps(
+            [
+              ...withoutStatus(turn.blocks),
+              {
+                id: answerBlockId(turnId),
+                type: 'answer',
+                content: 'I could not start GST reconciliation for that request.',
+                revealState: 'typing',
+              } satisfies AnswerBlock,
+            ],
+            turn.userMessage,
+          ),
+        }));
+        return;
+      }
+
+      if (runtime.aborted) return;
+
+      if (outcome.kind === 'message_only') {
+        pushHistory({
+          role: 'assistant',
+          content: outcome.answer,
+          timestamp: new Date().toISOString(),
+          type: 'answer',
+        });
+        revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer });
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          phase: 'complete',
+        }));
+        return;
+      }
+
+      const pendingActions: PendingActions = {
+        id: `actions_gst_${Date.now()}`,
+        actions: outcome.actions,
+        explanation: outcome.explanation,
+        userFacingSummary: outcome.userFacingSummary,
+        internalDetails: {
+          processingLabel: 'GST reconciliation (deterministic match)',
+          rawActionSummary: `${outcome.actions.length} Excel actions (CREATE_SHEET + WRITE_TABLE)`,
+        },
+      };
+      runtime.pendingActions = pendingActions;
+
+      pushHistory({
+        role: 'assistant',
+        content: outcome.answer,
+        timestamp: new Date().toISOString(),
+        type: 'answer',
+      });
+
+      revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer });
+
+      if (outcome.actions.length && shouldPreviewActions(outcome.actions, autoApplyActions)) {
+        await onPreviewActions?.(outcome.actions, outcome.explanation, {});
+      }
+
+      updateTurn(turnId, (turn) => {
+        const withoutOldPending = turn.blocks.filter(
+          (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
+        );
+        return {
+          ...turn,
+          phase: 'complete',
+          blocks: [
+            ...withoutOldPending,
+            createActionBlock(pendingActions, isChangeSetApplied),
+          ],
+        };
+      });
+    },
+    [
+      autoApplyActions,
+      isChangeSetApplied,
+      onPreviewActions,
+      pushHistory,
+      revealFinalResponse,
+      updateTurn,
+    ],
+  );
+
   const runVisualTimeline = useCallback(
     async (turnId: string, runtime: TurnRuntime, opts: TimelineOptions) => {
       const isAborted = () => runtime.aborted;
@@ -1233,6 +1353,46 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         return;
       }
 
+      // Chat-native GST reconciliation (no form) — discover sheets, match, Accept/Reject.
+      if (isGstReconPrompt(trimmed)) {
+        try {
+          await dispatchGstReconChat(turnId, trimmed);
+        } catch (error: unknown) {
+          const messageText =
+            error instanceof Error
+              ? error.message
+              : 'GST reconciliation failed. Check sheets and try again.';
+          pushHistory({
+            role: 'assistant',
+            content: messageText,
+            timestamp: new Date().toISOString(),
+            type: 'answer',
+          });
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            phase: 'error',
+            error: messageText,
+            blocks: finalizeSteps(
+              [
+                ...withoutStatus(turn.blocks),
+                {
+                  id: answerBlockId(turnId),
+                  type: 'answer',
+                  content: messageText,
+                  revealState: 'complete',
+                } satisfies AnswerBlock,
+              ],
+              turn.userMessage,
+            ),
+          }));
+        } finally {
+          setIsWaitingForResponse(false);
+          abortControllerRef.current = null;
+          runtimeRef.current.delete(turnId);
+        }
+        return;
+      }
+
       const timelinePromise = runVisualTimeline(turnId, runtime, {
         sheetIsEmpty: sheetLayout.isEmpty,
         userMessage: trimmed,
@@ -1324,6 +1484,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
     },
     [
+      dispatchGstReconChat,
       dispatchLocalSheetActions,
       ensureActiveSession,
       getActiveSession,
