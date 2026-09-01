@@ -1,6 +1,7 @@
 const DEFAULT_API_BASE_URL = '/api';
 const STREAM_PATH = '/excel-ai/process';
 const CONVERSATION_PATH = '/excel-ai/conversation';
+const CONVERSATIONS_PATH = '/excel-ai/conversations';
 const COMPARE_PATH = '/sheets/compare';
 
 function normalizeBaseUrl(raw: string): string {
@@ -39,6 +40,20 @@ export function getConversationEndpoint(): string {
 
 export function getConversationByIdEndpoint(conversationId: string): string {
   return `${getApiBaseUrl()}${CONVERSATION_PATH}/${encodeURIComponent(conversationId)}`;
+}
+
+/** Server-backed chat history for the signed-in user (TASKS.md #171/#172). */
+export function getConversationListEndpoint(params?: {
+  limit?: number;
+  cursor?: string;
+  workbookId?: string;
+}): string {
+  const query = new URLSearchParams();
+  if (params?.limit !== undefined) query.set('limit', String(params.limit));
+  if (params?.cursor) query.set('cursor', params.cursor);
+  if (params?.workbookId) query.set('workbookId', params.workbookId);
+  const suffix = query.toString();
+  return `${getApiBaseUrl()}${CONVERSATIONS_PATH}${suffix ? `?${suffix}` : ''}`;
 }
 
 export function getToolResultEndpoint(): string {

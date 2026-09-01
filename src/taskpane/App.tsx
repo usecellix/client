@@ -249,6 +249,7 @@ const App: React.FC = () => {
     newChat,
     selectSession,
     closeSession,
+    openConversationFromHistory,
     toggleThinking,
     markAnswerComplete,
   } = useConversation({
@@ -462,6 +463,7 @@ const App: React.FC = () => {
       onNewChat={newChat}
       onSelectSession={selectSession}
       onCloseSession={closeSession}
+      onOpenHistoryConversation={openConversationFromHistory}
       onAcceptActions={handleAcceptActions}
       onAcceptAllActions={handleAcceptAllActions}
       onRejectActions={handleRejectActions}

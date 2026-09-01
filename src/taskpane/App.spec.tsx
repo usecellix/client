@@ -103,6 +103,8 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
       clearConversation: vi.fn(),
       selectSession: vi.fn(),
       closeSession: vi.fn(),
+      openConversationFromHistory: vi.fn().mockResolvedValue(true),
+      isLoadingHistoryConversation: false,
       selectTurn: vi.fn(),
       closeTurn: vi.fn(),
       toggleThinking: vi.fn(),

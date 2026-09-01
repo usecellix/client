@@ -764,6 +764,8 @@ interface ConversationPanelProps {
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
+  /** Open a past conversation from server-backed history (TASKS.md #172). */
+  onOpenHistoryConversation: (conversationId: string) => Promise<boolean>;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
@@ -801,6 +803,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onNewChat,
   onSelectSession,
   onCloseSession,
+  onOpenHistoryConversation,
   onAcceptActions,
   onAcceptAllActions,
   onRejectActions,
@@ -897,6 +900,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         onSelectSession={onSelectSession}
         onCloseSession={onCloseSession}
         onNewChat={onNewChat}
+        onOpenHistoryConversation={onOpenHistoryConversation}
         // Checkpoints icon temporarily hidden (not removed) — feature, panel,
         // and backend are all still intact behind this flag. Restore with
         // `showCheckpointsButton={!showStartScreen}` when it's wanted again.

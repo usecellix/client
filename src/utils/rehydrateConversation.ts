@@ -20,6 +20,9 @@ export interface StoredConversation {
   messages: StoredConversationMessage[];
   status?: string;
   updatedAt?: string;
+  /** Server-derived label from the first user message (TASKS.md #171). */
+  title?: string;
+  workbookId?: string;
 }
 
 export function messagesToHistory(messages: StoredConversationMessage[]): ConversationHistoryMessage[] {

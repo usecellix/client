@@ -53,8 +53,11 @@ import {
 } from '@/utils/chatSessionStorage';
 import {
   mergeSessionFromStored,
+  messagesToHistory,
+  messagesToTurns,
   StoredConversation,
 } from '@/utils/rehydrateConversation';
+import { fetchConversationById } from '@/services/conversationHistoryService';
 import { getConversationByIdEndpoint } from '@/lib/apiConfig';
 import type {
   ResponseInternalDetails,
@@ -111,6 +114,14 @@ interface UseConversationReturn {
   clearConversation: () => void;
   selectSession: (sessionId: string) => void;
   closeSession: (sessionId: string) => void;
+  /**
+   * Open a past conversation from server-backed history (TASKS.md #172).
+   * Resolves false when the fetch failed, so the caller can surface that rather
+   * than silently showing an empty thread.
+   */
+  openConversationFromHistory: (conversationId: string) => Promise<boolean>;
+  /** True while a history conversation's full body is being fetched. */
+  isLoadingHistoryConversation: boolean;
   selectTurn: (turnId: string) => void;
   closeTurn: (turnId: string) => void;
   toggleThinking: (turnId: string, blockId: string) => void;
@@ -509,6 +520,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [isLoadingHistoryConversation, setIsLoadingHistoryConversation] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
   const [activeClarification, setActiveClarification] = useState<ClarificationPayload | null>(null);
@@ -2018,6 +2030,62 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     [applySessionContext, onClearPreview, syncSessions],
   );
 
+  /**
+   * Open a conversation from server-backed history (TASKS.md #172).
+   *
+   * If that conversation is already an open tab — the common case right after
+   * sending a message — this just selects it rather than fetching and appending
+   * a duplicate tab for the same thread.
+   *
+   * Otherwise it fetches the full body and rehydrates it through the *existing*
+   * `messagesToTurns` path that reload-restore already uses, rather than adding
+   * a second message-loading mechanism that could drift from it.
+   */
+  const openConversationFromHistory = useCallback(
+    async (conversationId: string): Promise<boolean> => {
+      const alreadyOpen = sessionsRef.current.find(
+        (session) => session.conversationId === conversationId,
+      );
+      if (alreadyOpen) {
+        selectSession(alreadyOpen.id);
+        return true;
+      }
+
+      setIsLoadingHistoryConversation(true);
+      try {
+        const stored = await fetchConversationById(conversationId);
+        const messages = stored.messages ?? [];
+        const restored: ChatSession = {
+          ...createChatSession(truncateTabLabel(stored.title || 'Chat', 24)),
+          conversationId: stored.conversationId ?? conversationId,
+          turns: messagesToTurns(messages),
+          history: messagesToHistory(messages),
+          updatedAt: stored.updatedAt ?? new Date().toISOString(),
+        };
+
+        // Abort anything streaming into the tab we're leaving, exactly as
+        // newChat does — otherwise a late chunk lands in the restored thread.
+        abortControllerRef.current?.abort();
+        void onClearPreview?.();
+
+        activeSessionIdRef.current = restored.id;
+        setActiveSessionId(restored.id);
+        setActiveClarification(null);
+        setIsWaitingForResponse(false);
+        applySessionContext(restored);
+        setActiveTurnId(restored.turns[restored.turns.length - 1]?.id ?? null);
+        syncSessions([...sessionsRef.current, restored]);
+        return true;
+      } catch (error) {
+        console.warn('[Cellix] Failed to open conversation from history:', error);
+        return false;
+      } finally {
+        setIsLoadingHistoryConversation(false);
+      }
+    },
+    [applySessionContext, onClearPreview, selectSession, syncSessions],
+  );
+
   const selectTurn = useCallback(
     (turnId: string) => {
       const session = getActiveSession();
@@ -2112,6 +2180,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     clearConversation,
     selectSession,
     closeSession,
+    openConversationFromHistory,
+    isLoadingHistoryConversation,
     selectTurn,
     closeTurn,
     toggleThinking,

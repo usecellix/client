@@ -1,7 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Archive,
-  ChevronRight,
   ExternalLink,
   Flag,
   LogOut,
@@ -11,7 +9,6 @@ import {
   Settings,
   Sparkles,
   SquarePen,
-  Trash2,
   User,
   X,
 } from 'lucide-react';
@@ -20,6 +17,14 @@ import { signOutUser } from '@/auth/useAuth';
 import { ChatSession } from '@/types/chatSession';
 import { CheckpointPanel } from '@/components/CheckpointPanel/CheckpointPanel';
 import { RestoreResult } from '@/types/checkpoint';
+import {
+  ConversationSummary,
+  fetchConversationHistory,
+} from '@/services/conversationHistoryService';
+import {
+  dedupeConversations,
+  groupConversationsByRecency,
+} from '@/utils/conversationHistoryGrouping';
 
 interface PanelHeaderProps {
   sessions: ChatSession[];
@@ -28,6 +33,12 @@ interface PanelHeaderProps {
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
   onNewChat: () => void;
+  /**
+   * Open a past conversation from server-backed history (TASKS.md #172).
+   * Resolves false on failure so the menu can say so instead of quietly
+   * swapping in an empty thread.
+   */
+  onOpenHistoryConversation: (conversationId: string) => Promise<boolean>;
   /** Checkpoints icon only makes sense once a conversation exists. Change
    *  History was removed from here — reverting a specific action is now done
    *  inline on that message (TurnRenderer's own Revert icon) instead of via
@@ -45,6 +56,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   onSelectSession,
   onCloseSession,
   onNewChat,
+  onOpenHistoryConversation,
   showCheckpointsButton = false,
   workbookId,
   conversationId,
@@ -57,11 +69,70 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [checkpointsOpen, setCheckpointsOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
+  const [history, setHistory] = useState<ConversationSummary[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [openingId, setOpeningId] = useState<string | null>(null);
   const headerRef = useRef<HTMLDivElement>(null);
 
-  const filteredSessions = sessions.filter((chatSession) =>
-    chatSession.title.toLowerCase().includes(historyQuery.trim().toLowerCase()),
+  /**
+   * Fetched on open rather than on mount — history is behind a menu almost
+   * nobody opens on every session, so paying for the request up front would be
+   * a round trip most users never look at.
+   */
+  const loadHistory = useCallback(async (cursor?: string) => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const page = await fetchConversationHistory(cursor ? { cursor } : undefined);
+      setHistory((prev) =>
+        cursor ? dedupeConversations([...prev, ...page.conversations]) : page.conversations,
+      );
+      setHistoryCursor(page.nextCursor);
+    } catch (error) {
+      console.warn('[Cellix] Failed to load chat history:', error);
+      setHistoryError("Couldn't load your chat history.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    void loadHistory();
+  }, [historyOpen, loadHistory]);
+
+  const handleOpenHistoryConversation = async (targetId: string) => {
+    setOpeningId(targetId);
+    try {
+      const opened = await onOpenHistoryConversation(targetId);
+      if (opened) {
+        closeAll();
+      } else {
+        setHistoryError("Couldn't open that chat.");
+      }
+    } finally {
+      setOpeningId(null);
+    }
+  };
+
+  const query = historyQuery.trim().toLowerCase();
+  const filteredHistory = query
+    ? history.filter(
+        (entry) =>
+          entry.title.toLowerCase().includes(query) ||
+          entry.lastMessage.toLowerCase().includes(query),
+      )
+    : history;
+  const historyGroups = groupConversationsByRecency(filteredHistory);
+
+  /** conversationIds already open as tabs — marked so they read as "current". */
+  const openConversationIds = new Set(
+    sessions.map((chatSession) => chatSession.conversationId).filter(Boolean) as string[],
   );
+  const activeConversationId =
+    sessions.find((chatSession) => chatSession.id === activeSessionId)?.conversationId ?? null;
 
   const closeAll = () => {
     setHistoryOpen(false);
@@ -168,59 +239,80 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                 placeholder="Search chats..."
                 aria-label="Search chats"
               />
-              <div className="cellix-chat-history-section">Today</div>
+
+              {historyError && (
+                <div className="cellix-chat-history-error" role="alert">
+                  {historyError}
+                  <button
+                    type="button"
+                    className="cellix-chat-history-retry"
+                    onClick={() => void loadHistory()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
               <div className="cellix-chat-history-list">
-                {filteredSessions.length === 0 ? (
+                {historyLoading && history.length === 0 ? (
+                  <div className="cellix-chat-history-empty">Loading chats…</div>
+                ) : historyGroups.length === 0 ? (
                   <div className="cellix-chat-history-empty">
-                    {sessions.length === 0 ? 'No chats yet' : 'No chats found'}
+                    {history.length === 0 ? 'No chats yet' : 'No chats found'}
                   </div>
                 ) : (
-                  filteredSessions.map((chatSession) => {
-                    const active = chatSession.id === activeSessionId;
-                    return (
-                      <div
-                        key={chatSession.id}
-                        className={`cellix-chat-history-item ${active ? 'active' : ''}`}
-                        role="menuitem"
-                        tabIndex={0}
-                        onClick={() => {
-                          onSelectSession(chatSession.id);
-                          closeAll();
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            onSelectSession(chatSession.id);
-                            closeAll();
-                          }
-                        }}
-                        title={chatSession.title}
-                      >
-                        <MessageSquare size={13} />
-                        <span>{chatSession.title}</span>
-                        {active && <Pin size={11} className="cellix-chat-history-pin" />}
-                        <button
-                          type="button"
-                          className="cellix-chat-history-delete"
-                          title="Remove chat"
-                          aria-label="Remove chat"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onCloseSession(chatSession.id);
-                          }}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    );
-                  })
+                  historyGroups.map((group) => (
+                    <React.Fragment key={group.label}>
+                      <div className="cellix-chat-history-section">{group.label}</div>
+                      {group.conversations.map((entry) => {
+                        const active = entry.conversationId === activeConversationId;
+                        const opening = openingId === entry.conversationId;
+                        const open = openConversationIds.has(entry.conversationId);
+                        return (
+                          <div
+                            key={entry.conversationId}
+                            className={`cellix-chat-history-item ${active ? 'active' : ''}`}
+                            role="menuitem"
+                            tabIndex={0}
+                            aria-busy={opening}
+                            onClick={() => void handleOpenHistoryConversation(entry.conversationId)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                void handleOpenHistoryConversation(entry.conversationId);
+                              }
+                            }}
+                            title={entry.title}
+                          >
+                            {opening ? (
+                              <span className="cellix-spinner cellix-chat-tab-spinner" />
+                            ) : (
+                              <MessageSquare size={13} />
+                            )}
+                            <span>{entry.title}</span>
+                            {active ? (
+                              <Pin size={11} className="cellix-chat-history-pin" />
+                            ) : open ? (
+                              <span className="cellix-chat-history-badge">Open</span>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))
                 )}
               </div>
-              <button type="button" className="cellix-chat-history-archived">
-                <ChevronRight size={13} />
-                <Archive size={13} />
-                Archived
-              </button>
+
+              {historyCursor && (
+                <button
+                  type="button"
+                  className="cellix-chat-history-more"
+                  disabled={historyLoading}
+                  onClick={() => void loadHistory(historyCursor)}
+                >
+                  {historyLoading ? 'Loading…' : 'Load older chats'}
+                </button>
+              )}
             </div>
           )}
 
