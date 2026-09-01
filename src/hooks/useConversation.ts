@@ -22,6 +22,7 @@ import {
 } from '@/utils/actionGuard';
 import { probeSheetGuardStatesSafe, sheetsCreatedInBatch } from '@/engine/sheetGuardState';
 import type { OutcomeVerification } from '@/services/outcomeVerifier';
+import type { SheetGuardStates } from '@/engine/sheetGuardState';
 import { probeExcelCapabilities } from '@/services/capabilityProbe';
 import { parseSseEventBlock } from '@/utils/sseParser';
 import { handleToolRequest } from '@/services/toolRequestHandler';
@@ -413,6 +414,11 @@ function extractOverwriteGuardWriteCells(action: SheetAction): string[] {
 async function preflightOverwriteBlockedActions(
   actions: SheetAction[],
   changes: CellChange[],
+  /**
+   * Live per-sheet facts already gathered by `probeSheetGuardStatesSafe` a few
+   * lines above this call. Reused rather than re-probed — TASKS.md #162.
+   */
+  sheetStates?: SheetGuardStates,
 ): Promise<{
   safeActions: SheetAction[];
   safeChanges: CellChange[];
@@ -439,6 +445,26 @@ async function preflightOverwriteBlockedActions(
   // removed that guarantee. See TASKS.md #147.
   const createdHere = sheetsCreatedInBatch(actions);
 
+  /**
+   * A sheet that does not exist RIGHT NOW cannot be overwritten, whoever
+   * creates it and whenever.
+   *
+   * #147 skipped only sheets created in the SAME batch, which was enough while
+   * a build was one batch. TASKS.md #160's staging broke that: the writes now
+   * arrive in step 2 and the ADD_SHEETs live in step 1, so
+   * `sheetsCreatedInBatch(step2)` is empty and every write hit the throwing
+   * `worksheets.getItem()` — 16 failed Office.js round trips and 16 identical
+   * "probe failed" warnings in a single observed run. It degraded safely (that
+   * is #147 working) but the work and the noise were pure waste.
+   *
+   * The probe that ran moments earlier already knew these sheets were absent;
+   * the information was simply not passed here. TASKS.md #162.
+   */
+  const knownAbsent = new Set<string>();
+  for (const [key, state] of sheetStates ?? []) {
+    if (!state.exists) knownAbsent.add(key);
+  }
+
   return Excel.run(async (ctx) => {
     const activeWs = ctx.workbook.worksheets.getActiveWorksheet();
     activeWs.load('name');
@@ -450,7 +476,7 @@ async function preflightOverwriteBlockedActions(
 
     for (const action of actions) {
       const targetSheet = String(action.sheetName ?? '').trim().toLowerCase();
-      if (targetSheet && createdHere.has(targetSheet)) {
+      if (targetSheet && (createdHere.has(targetSheet) || knownAbsent.has(targetSheet))) {
         safeActions.push(action);
         continue;
       }
@@ -1348,6 +1374,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               const preflight = await preflightOverwriteBlockedActions(
                 sanitized.actions,
                 event.data.changes ?? [],
+                sheetStates,
               );
               actionsForPreview = preflight.safeActions;
               changesForPreview = preflight.safeChanges;
