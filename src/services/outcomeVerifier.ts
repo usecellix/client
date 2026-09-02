@@ -40,6 +40,14 @@ export interface OutcomeMismatch {
   actual: string;
   /** True when the cell holds an Excel error (#REF!, #NAME?, ...). */
   isFormulaError: boolean;
+  /**
+   * The formula the ChangeSet wrote here, when it wrote one.
+   *
+   * `expected` holds the recorded `after` VALUE, which for a formula cell is
+   * not the formula text — so without this a repair has the symptom and not
+   * the cause. TASKS.md #168.
+   */
+  formula?: string;
 }
 
 export interface OutcomeVerification {
@@ -184,6 +192,7 @@ export async function verifyAppliedOutcome(
             expected: String(change.after ?? ''),
             actual: String(actual),
             isFormulaError: true,
+            ...(change.formula ? { formula: String(change.formula) } : {}),
           });
           continue;
         }

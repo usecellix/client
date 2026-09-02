@@ -11,6 +11,8 @@ import {
   describeOutcome,
   verifyAppliedOutcomeSafe,
 } from '@/services/outcomeVerifier';
+import { buildRepairRequest } from '@/services/repairRequest';
+import { recalculateWorkbookSafe } from '@/services/recalculate';
 import { frontendTelemetry } from '@/services/frontendTelemetry';
 import {
   getContextForSend,
@@ -125,8 +127,18 @@ const App: React.FC = () => {
         // Never throws and never blocks: the write already happened, so a
         // read-back problem must not turn a real success into a failure. It
         // reports, and reporting honestly is the entire point (§3.7).
+        // TASKS.md #172 — settle the workbook before judging it. A cross-sheet
+        // formula written in the same batch as the sheet it references can hold
+        // a stale result until Excel recalculates, and reporting that as a
+        // failure is worse than not checking at all.
+        await recalculateWorkbookSafe();
+
         const verification = await verifyAppliedOutcomeSafe(meta?.changes ?? []);
         const outcomeMessage = describeOutcome(verification);
+        // TASKS.md #168 — the same read-back, turned into an actionable fix.
+        // Null whenever no Excel error literal came back, so a clean apply and
+        // an unpredictable-but-harmless value difference both stay silent.
+        const outcomeRepair = buildRepairRequest(verification);
         if (outcomeMessage) {
           console.warn('[Cellix] Post-apply verification found problems:', verification);
           frontendTelemetry.logAction(
@@ -149,7 +161,7 @@ const App: React.FC = () => {
             { changeSetId: meta?.changeSetId, verified: verification.verified },
           );
         }
-        meta?.onOutcomeVerified?.(verification, outcomeMessage);
+        meta?.onOutcomeVerified?.(verification, outcomeMessage, outcomeRepair);
 
         frontendTelemetry.logAcceptSuccess(actions, {
           changeSetId: meta?.changeSetId,

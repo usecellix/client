@@ -22,6 +22,7 @@ import {
 } from '@/utils/actionGuard';
 import { probeSheetGuardStatesSafe, sheetsCreatedInBatch } from '@/engine/sheetGuardState';
 import type { OutcomeVerification } from '@/services/outcomeVerifier';
+import type { RepairRequest } from '@/services/repairRequest';
 import type { SheetGuardStates } from '@/engine/sheetGuardState';
 import { probeExcelCapabilities } from '@/services/capabilityProbe';
 import { parseSseEventBlock } from '@/utils/sseParser';
@@ -199,6 +200,11 @@ export interface PreviewActionsMeta {
   onOutcomeVerified?: (
     verification: OutcomeVerification,
     message: string | null,
+    /**
+     * A ready-to-send follow-up that repairs the erroring cells, or null when
+     * there is nothing a formula fix can address. TASKS.md #168.
+     */
+    repair: RepairRequest | null,
   ) => void;
 }
 
@@ -1832,6 +1838,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       applyingActionsRef.current = true;
 
       let outcomeWarning: string | null = null;
+      // A holder rather than a bare `let`: the assignment happens inside the
+      // onOutcomeVerified callback, which TypeScript's control-flow analysis
+      // cannot see, so a plain `let` narrows to `never` at the read below.
+      const outcome: { repair: RepairRequest | null } = { repair: null };
       try {
         if (onActions) {
           await onActions(block.actions, block.explanation, {
@@ -1839,8 +1849,12 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             changes: block.changes,
             // TASKS.md #150: the read-back's verdict comes back here so the UI
             // can say so. A clean verification passes `null` and stays silent.
-            onOutcomeVerified: (_verification, message) => {
+            onOutcomeVerified: (_verification, message, repair) => {
               outcomeWarning = message;
+              // #150 could only report. The read-back now also carries a
+              // concrete next step, so a run that wrote a broken formula
+              // offers the fix instead of leaving it in the workbook.
+              outcome.repair = repair;
             },
           });
         }
@@ -1866,6 +1880,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         // re-teaching: never let incomplete work look finished.
         if (outcomeWarning) {
           updateTurn(turnId, (t) => ({ ...t, error: outcomeWarning ?? undefined }));
+        }
+
+        // TASKS.md #168 — a repairable failure offers the repair. Exposed on
+        // the turn rather than sent automatically: the write already landed in
+        // the user's workbook, so the follow-up that rewrites those cells is
+        // their call, the same consent rule Accept itself follows.
+        if (outcome.repair) {
+          const repair = outcome.repair;
+          console.warn(
+            `[Cellix] ${repair.cellCount} cell(s) returned ${repair.errors.join('/')} — repair available`,
+          );
+          updateTurn(turnId, (t) => ({ ...t, repairSuggestion: repair }));
         }
 
         setActiveClarification(null);

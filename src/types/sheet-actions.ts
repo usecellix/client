@@ -3,6 +3,8 @@ export interface FormatSpec {
   italic?: boolean;
   underline?: boolean;
   fontSize?: number;
+  /** Font family, e.g. 'Aptos Narrow'. TASKS.md #169. */
+  fontName?: string;
   fontColor?: string;
   fillColor?: string;
   clearFill?: boolean;
@@ -62,7 +64,9 @@ export type SheetActionType =
   | 'CREATE_TABLE'
   | 'DELETE_TABLE'
   | 'CREATE_CHART'
+  | 'DATA_VALIDATION'
   | 'DEFINE_NAMED_RANGE'
+  | 'HIDE_GRIDLINES'
   | 'AUTOFIT_COLUMNS'
   | 'CLARIFY'
   | 'CHECKPOINT'

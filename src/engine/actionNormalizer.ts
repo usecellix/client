@@ -17,8 +17,10 @@ function isRichAction(action: SheetAction): boolean {
     'BATCH_SET',
     'CREATE_TABLE',
     'CREATE_CHART',
+    'DATA_VALIDATION',
     'DEFINE_NAMED_RANGE',
     'AUTOFIT_COLUMNS',
+    'HIDE_GRIDLINES',
     'CLARIFY',
     'CHECKPOINT',
     'ADD_SHEET',
@@ -254,12 +256,32 @@ export function toRichAction(action: SheetAction): RichAction | null {
         hasHeaders: r.hasHeaders !== false,
         explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
+    case 'DATA_VALIDATION':
+      return {
+        type: 'DATA_VALIDATION',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        validation: (r.validation ?? { kind: 'list' }) as RichAction extends {
+          type: 'DATA_VALIDATION';
+          validation: infer V;
+        }
+          ? V
+          : never,
+      } as RichAction;
     case 'DEFINE_NAMED_RANGE':
       return {
         type: 'DEFINE_NAMED_RANGE',
         name: String(r.name ?? ''),
         formula: String(r.formula ?? ''),
         comment: r.comment as string | undefined,
+      } as RichAction;
+    case 'HIDE_GRIDLINES':
+      return {
+        type: 'HIDE_GRIDLINES',
+        sheetName: String(r.sheetName ?? ''),
+        // Default is HIDE: the action's name says so, and a model emitting it
+        // without the flag plainly means to hide.
+        showGridlines: r.showGridlines === true,
       } as RichAction;
     case 'AUTOFIT_COLUMNS':
       return {

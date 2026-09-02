@@ -54,6 +54,8 @@ import {
   pruneSpuriousAddSheets,
 } from './overwriteGuard';
 import { selectActionRanges } from './selectRanges';
+import { handleDataValidation } from './handlers/validation.handler';
+import { handleHideGridlines } from './handlers/gridlines.handler';
 import { resolveWorksheet } from './sheetResolve';
 import { CellChange } from '@/types/changeSet';
 
@@ -260,8 +262,12 @@ export class RichActionEngine {
       case 'AGGREGATE_TABLE':
         await handleAggregateTable(action, ctx);
         return;
+      case 'DATA_VALIDATION':
+        return handleDataValidation(action, ctx);
       case 'DEFINE_NAMED_RANGE':
         return handleDefineNamedRange(action, ctx);
+      case 'HIDE_GRIDLINES':
+        return handleHideGridlines(action, ctx);
       case 'AUTOFIT_COLUMNS':
         return handleAutofitColumns(action, ctx);
       case 'WRITE_TABLE':
