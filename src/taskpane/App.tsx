@@ -4,6 +4,7 @@ import { CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { useConversation, PreviewActionsMeta } from '@/hooks/useConversation';
 import { ActionEngine } from '@/utils/actionEngine';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
+import type { SheetCreationOutcome } from '@/engine/handlers/sheet.handler';
 import { CellChange } from '@/types/changeSet';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
@@ -71,12 +72,14 @@ const App: React.FC = () => {
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;
       let sortedRangeChanges: CellChange[] | undefined;
+      let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       try {
         if (previewManager.active) {
           const result = await previewManager.accept();
           createdConditionalFormatIds = result?.createdConditionalFormatIds;
           createdChartIds = result?.createdChartIds;
           sortedRangeChanges = result?.sortedRangeChanges;
+          sheetNameMismatches = result?.sheetNameMismatches;
         } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
           // Already applied earlier — do not re-run INSERT_COLUMN / writes.
         } else {
@@ -90,6 +93,7 @@ const App: React.FC = () => {
           createdConditionalFormatIds = result.createdConditionalFormatIds;
           createdChartIds = result.createdChartIds;
           sortedRangeChanges = result.sortedRangeChanges;
+          sheetNameMismatches = result.sheetNameMismatches;
         }
 
         if (meta?.changeSetId) {
@@ -125,7 +129,31 @@ const App: React.FC = () => {
         // Never throws and never blocks: the write already happened, so a
         // read-back problem must not turn a real success into a failure. It
         // reports, and reporting honestly is the entire point (§3.7).
-        const verification = await verifyAppliedOutcomeSafe(meta?.changes ?? []);
+        //
+        // Structural gap this closes (COMPETITIVE_STUDY_SHORTCUT.md:71, "Main"
+        // -> "Main 2"): the ChangeSet's own cell rows only ever name the sheet
+        // the plan INTENDED, so reading back cells alone cannot detect a
+        // create that landed under a different name. `expectedSheetNames`
+        // checks the sheet set directly; `sheetNameMismatches` is the direct
+        // catch from the handler itself (Part 1) when it fired.
+        const expectedSheetNames = actions
+          .filter((a) => a.type === 'ADD_SHEET' || a.type === 'CREATE_SHEET')
+          .map((a) => String(a.sheetName ?? a.name ?? '').trim())
+          .filter(Boolean);
+        const verification = await verifyAppliedOutcomeSafe(meta?.changes ?? [], {
+          expectedSheetNames,
+        });
+        if (sheetNameMismatches?.length) {
+          for (const mismatch of sheetNameMismatches) {
+            verification.mismatches.push({
+              sheet: mismatch.requestedName,
+              cell: '(sheet)',
+              expected: mismatch.requestedName,
+              actual: mismatch.actualName,
+              isFormulaError: false,
+            });
+          }
+        }
         const outcomeMessage = describeOutcome(verification);
         if (outcomeMessage) {
           console.warn('[Cellix] Post-apply verification found problems:', verification);
@@ -249,6 +277,9 @@ const App: React.FC = () => {
     newChat,
     selectSession,
     closeSession,
+    renameSession,
+    deleteSession,
+    deleteHistoryConversation,
     openConversationFromHistory,
     toggleThinking,
     markAnswerComplete,
@@ -463,6 +494,9 @@ const App: React.FC = () => {
       onNewChat={newChat}
       onSelectSession={selectSession}
       onCloseSession={closeSession}
+      onRenameSession={renameSession}
+      onDeleteSession={deleteSession}
+      onDeleteHistoryConversation={deleteHistoryConversation}
       onOpenHistoryConversation={openConversationFromHistory}
       onAcceptActions={handleAcceptActions}
       onAcceptAllActions={handleAcceptAllActions}

@@ -29,16 +29,24 @@ export interface ConversationHistoryPage {
  * auditService.ts — each service owns its own so error semantics don't get
  * coupled across modules.
  */
-async function historyFetch<T>(url: string): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+async function historyFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> | undefined),
+  };
   if (url.includes('.ngrok-free.app')) {
     headers['ngrok-skip-browser-warning'] = 'true';
   }
 
-  const response = await fetch(url, { credentials: 'include', headers });
+  const response = await fetch(url, { credentials: 'include', ...init, headers });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     throw new Error(`Conversation history API ${response.status}: ${text || response.statusText}`);
+  }
+
+  // 204 No Content (delete) has no body to parse.
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   const body: unknown = await response.json();
@@ -66,4 +74,20 @@ export async function fetchConversationById(
   conversationId: string,
 ): Promise<StoredConversation> {
   return historyFetch<StoredConversation>(getConversationByIdEndpoint(conversationId));
+}
+
+/** Rename a conversation (TASKS.md #177). Returns the saved (trimmed) title. */
+export async function renameConversation(
+  conversationId: string,
+  title: string,
+): Promise<{ conversationId: string; title: string }> {
+  return historyFetch(getConversationByIdEndpoint(conversationId), {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  });
+}
+
+/** Delete a conversation (TASKS.md #177). Hard delete — not reversible. */
+export async function deleteConversation(conversationId: string): Promise<void> {
+  await historyFetch<void>(getConversationByIdEndpoint(conversationId), { method: 'DELETE' });
 }

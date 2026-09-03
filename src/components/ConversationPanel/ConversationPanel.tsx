@@ -764,6 +764,12 @@ interface ConversationPanelProps {
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
+  /** Rename an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onRenameSession: (sessionId: string, title: string) => void;
+  /** Delete an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onDeleteSession: (sessionId: string) => Promise<void>;
+  /** Delete a history row that isn't necessarily an open tab (TASKS.md #177). */
+  onDeleteHistoryConversation: (conversationId: string) => Promise<void>;
   /** Open a past conversation from server-backed history (TASKS.md #172). */
   onOpenHistoryConversation: (conversationId: string) => Promise<boolean>;
   onAcceptActions: (turnId: string, blockId: string) => void;
@@ -803,6 +809,9 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onNewChat,
   onSelectSession,
   onCloseSession,
+  onRenameSession,
+  onDeleteSession,
+  onDeleteHistoryConversation,
   onOpenHistoryConversation,
   onAcceptActions,
   onAcceptAllActions,
@@ -899,6 +908,9 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         isWaitingForResponse={isWaitingForResponse}
         onSelectSession={onSelectSession}
         onCloseSession={onCloseSession}
+        onRenameSession={onRenameSession}
+        onDeleteSession={onDeleteSession}
+        onDeleteHistoryConversation={onDeleteHistoryConversation}
         onNewChat={onNewChat}
         onOpenHistoryConversation={onOpenHistoryConversation}
         // Checkpoints icon temporarily hidden (not removed) — feature, panel,

@@ -17,6 +17,7 @@ import {
   handleDeleteSheet,
   handleRenameSheet,
   handleCopySheet,
+  SheetCreationOutcome,
 } from './handlers/sheet.handler';
 import {
   handleCreateTable,
@@ -91,12 +92,15 @@ export class RichActionEngine {
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
     sortedRangeChanges?: CellChange[];
+    /** ADD_SHEET/CREATE_SHEET outcomes where the live sheet name diverged from what was requested. */
+    sheetNameMismatches?: SheetCreationOutcome[];
   }> {
     const errors: string[] = [];
     let applied = 0;
     const createdConditionalFormatIds: CreatedConditionalFormatId[] = [];
     const createdChartIds: CreatedChartId[] = [];
     const sortedRangeChanges: CellChange[] = [];
+    const sheetNameMismatches: SheetCreationOutcome[] = [];
     const prepared = annotateDestOverwriteForCreatedSheets(
       pruneSpuriousAddSheets(actions),
     );
@@ -136,6 +140,14 @@ export class RichActionEngine {
             }
             if (result && 'sortedRangeChanges' in result && result.sortedRangeChanges) {
               sortedRangeChanges.push(...result.sortedRangeChanges);
+            }
+            if (
+              result &&
+              'requestedName' in result &&
+              'actualName' in result &&
+              result.requestedName !== result.actualName
+            ) {
+              sheetNameMismatches.push(result);
             }
             applied += 1;
           } catch (err: unknown) {
@@ -183,6 +195,7 @@ export class RichActionEngine {
       ...(createdConditionalFormatIds.length > 0 ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
       ...(sortedRangeChanges.length > 0 ? { sortedRangeChanges } : {}),
+      ...(sheetNameMismatches.length > 0 ? { sheetNameMismatches } : {}),
     };
   }
 
@@ -195,6 +208,7 @@ export class RichActionEngine {
         createdChartId?: string;
         sortedRangeChanges?: CellChange[];
       }
+    | SheetCreationOutcome
     | void
   > {
     // Last line of defense: never silently overwrite occupied cells.

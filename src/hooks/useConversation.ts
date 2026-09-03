@@ -58,7 +58,11 @@ import {
   messagesToTurns,
   StoredConversation,
 } from '@/utils/rehydrateConversation';
-import { fetchConversationById } from '@/services/conversationHistoryService';
+import {
+  deleteConversation as deleteConversationOnServer,
+  fetchConversationById,
+  renameConversation as renameConversationOnServer,
+} from '@/services/conversationHistoryService';
 import { getConversationByIdEndpoint } from '@/lib/apiConfig';
 import type {
   ResponseInternalDetails,
@@ -115,6 +119,15 @@ interface UseConversationReturn {
   clearConversation: () => void;
   selectSession: (sessionId: string) => void;
   closeSession: (sessionId: string) => void;
+  /** Rename an open tab, and its server conversation if it has one (TASKS.md #177). */
+  renameSession: (sessionId: string, title: string) => void;
+  /** Delete an open tab, and its server conversation if it has one (TASKS.md #177). */
+  deleteSession: (sessionId: string) => Promise<void>;
+  /**
+   * Delete a conversation from server-backed history that isn't necessarily an
+   * open tab (TASKS.md #177) — closes the tab too if it happens to be open.
+   */
+  deleteHistoryConversation: (conversationId: string) => Promise<void>;
   /**
    * Open a past conversation from server-backed history (TASKS.md #172).
    * Resolves false when the fetch failed, so the caller can surface that rather
@@ -2058,6 +2071,89 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   /**
+   * Rename a session (TASKS.md #177) — updates the local tab immediately and,
+   * when the session has a server `conversationId`, persists the title there
+   * too so it survives a reload/history-panel view.
+   *
+   * The local update is optimistic and unconditional: a session with no
+   * `conversationId` yet (nothing sent) is local-only and has nothing to sync,
+   * and a server failure on an existing conversation is logged rather than
+   * rolled back — losing a rename on a flaky connection is a much smaller
+   * problem than losing it silently with no feedback at all, and the next
+   * successful rename or reload will reconcile the two anyway.
+   */
+  const renameSession = useCallback(
+    (sessionId: string, title: string): void => {
+      const trimmed = title.trim();
+      if (!trimmed) return;
+
+      const target = sessionsRef.current.find((session) => session.id === sessionId);
+      updateSession(sessionId, (session) => ({
+        ...session,
+        title: trimmed,
+        updatedAt: new Date().toISOString(),
+      }));
+
+      if (target?.conversationId) {
+        void renameConversationOnServer(target.conversationId, trimmed).catch((error) => {
+          console.warn('[Cellix] Failed to persist chat rename:', error);
+        });
+      }
+    },
+    [updateSession],
+  );
+
+  /**
+   * Delete a session (TASKS.md #177) — closes the local tab (reusing
+   * `closeSession`'s active-session fallback logic exactly, so deleting the
+   * active chat behaves the same as closing it) and, when it has a server
+   * `conversationId`, deletes it there too. This is a hard delete with no
+   * undo, matching #177's scope decision.
+   *
+   * Resolves after the server delete settles (or is skipped) so a caller can
+   * show a spinner and know when it's safe to assume the row is gone — but
+   * the local tab closes immediately regardless of server outcome, since the
+   * user's "delete" intent applies to what they can see whether or not the
+   * network cooperates.
+   */
+  const deleteSession = useCallback(
+    async (sessionId: string): Promise<void> => {
+      const target = sessionsRef.current.find((session) => session.id === sessionId);
+      closeSession(sessionId);
+
+      if (target?.conversationId) {
+        try {
+          await deleteConversationOnServer(target.conversationId);
+        } catch (error) {
+          console.warn('[Cellix] Failed to delete chat on the server:', error);
+          throw error;
+        }
+      }
+    },
+    [closeSession],
+  );
+
+  /**
+   * Delete a conversation that is server-side history but not (or no longer)
+   * an open local tab (TASKS.md #177) — the common case when deleting from
+   * the history menu rather than from an open tab. If it *is* also open,
+   * closes that tab too so the two views can't disagree.
+   */
+  const deleteHistoryConversation = useCallback(
+    async (conversationId: string): Promise<void> => {
+      const openSession = sessionsRef.current.find(
+        (session) => session.conversationId === conversationId,
+      );
+      if (openSession) {
+        await deleteSession(openSession.id);
+        return;
+      }
+      await deleteConversationOnServer(conversationId);
+    },
+    [deleteSession],
+  );
+
+  /**
    * Open a conversation from server-backed history (TASKS.md #172).
    *
    * If that conversation is already an open tab — the common case right after
@@ -2207,6 +2303,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     clearConversation,
     selectSession,
     closeSession,
+    renameSession,
+    deleteSession,
+    deleteHistoryConversation,
     openConversationFromHistory,
     isLoadingHistoryConversation,
     selectTurn,

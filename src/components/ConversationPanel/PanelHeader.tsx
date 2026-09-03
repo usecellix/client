@@ -1,14 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Check,
   ExternalLink,
   Flag,
   LogOut,
   MessageSquare,
+  Pencil,
   Pin,
   RotateCcw,
   Settings,
   Sparkles,
   SquarePen,
+  Trash2,
   User,
   X,
 } from 'lucide-react';
@@ -20,6 +23,7 @@ import { RestoreResult } from '@/types/checkpoint';
 import {
   ConversationSummary,
   fetchConversationHistory,
+  renameConversation,
 } from '@/services/conversationHistoryService';
 import {
   dedupeConversations,
@@ -32,6 +36,12 @@ interface PanelHeaderProps {
   isWaitingForResponse: boolean;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
+  /** Rename an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onRenameSession: (sessionId: string, title: string) => void;
+  /** Delete an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onDeleteSession: (sessionId: string) => Promise<void>;
+  /** Delete a history row that isn't necessarily an open tab (TASKS.md #177). */
+  onDeleteHistoryConversation: (conversationId: string) => Promise<void>;
   onNewChat: () => void;
   /**
    * Open a past conversation from server-backed history (TASKS.md #172).
@@ -55,6 +65,9 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   isWaitingForResponse,
   onSelectSession,
   onCloseSession,
+  onRenameSession,
+  onDeleteSession,
+  onDeleteHistoryConversation,
   onNewChat,
   onOpenHistoryConversation,
   showCheckpointsButton = false,
@@ -74,7 +87,99 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
+  /** `{ kind, id }` of the row currently in inline rename edit (TASKS.md #177). */
+  const [renaming, setRenaming] = useState<{ kind: 'tab' | 'history'; id: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  /** `{ kind, id }` of the row awaiting a second click to confirm deletion. */
+  const [confirmingDelete, setConfirmingDelete] = useState<{
+    kind: 'tab' | 'history';
+    id: string;
+  } | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const headerRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renaming]);
+
+  const startRename = (kind: 'tab' | 'history', id: string, currentTitle: string) => {
+    setConfirmingDelete(null);
+    setRenaming({ kind, id });
+    setRenameDraft(currentTitle);
+  };
+
+  const cancelRename = () => {
+    setRenaming(null);
+    setRenameDraft('');
+  };
+
+  const commitRename = () => {
+    if (!renaming) return;
+    const trimmed = renameDraft.trim();
+    if (trimmed) {
+      if (renaming.kind === 'tab') {
+        onRenameSession(renaming.id, trimmed);
+      } else {
+        // A history row with no open tab has no local session to rename, so
+        // the server call goes straight through the history endpoint rather
+        // than useConversation's tab-oriented onRenameSession.
+        void renameConversation(renaming.id, trimmed)
+          .then(() => {
+            setHistory((prev) =>
+              prev.map((entry) =>
+                entry.conversationId === renaming.id ? { ...entry, title: trimmed } : entry,
+              ),
+            );
+          })
+          .catch((error) => {
+            console.warn('[Cellix] Failed to rename chat:', error);
+            setHistoryError("Couldn't rename that chat.");
+          });
+      }
+    }
+    cancelRename();
+  };
+
+  /** Two-click confirm — a destructive, unrecoverable action gets no single-click trigger. */
+  const requestDelete = (kind: 'tab' | 'history', id: string) => {
+    if (confirmingDelete?.kind === kind && confirmingDelete.id === id) {
+      void commitDelete(kind, id);
+      return;
+    }
+    setRenaming(null);
+    setConfirmingDelete({ kind, id });
+  };
+
+  const commitDelete = async (kind: 'tab' | 'history', id: string) => {
+    setConfirmingDelete(null);
+    setDeletingId(id);
+    try {
+      if (kind === 'tab') {
+        await onDeleteSession(id);
+        // The tab may have been the source of a history row too — drop it
+        // from the loaded list so the menu doesn't show a stale entry
+        // pointing at a conversation that's now gone.
+        const removedConversationId = sessions.find((s) => s.id === id)?.conversationId;
+        if (removedConversationId) {
+          setHistory((prev) =>
+            prev.filter((entry) => entry.conversationId !== removedConversationId),
+          );
+        }
+      } else {
+        await onDeleteHistoryConversation(id);
+        setHistory((prev) => prev.filter((entry) => entry.conversationId !== id));
+      }
+    } catch (error) {
+      console.warn('[Cellix] Failed to delete chat:', error);
+      setHistoryError("Couldn't delete that chat.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   /**
    * Fetched on open rather than on mount — history is behind a menu almost
@@ -138,6 +243,8 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
     setHistoryOpen(false);
     setSettingsOpen(false);
     setCheckpointsOpen(false);
+    setRenaming(null);
+    setConfirmingDelete(null);
   };
 
   useEffect(() => {
