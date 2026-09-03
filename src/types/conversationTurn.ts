@@ -1,3 +1,4 @@
+import type { RepairRequest } from '@/services/repairRequest';
 import { SheetAction } from '@/hooks/useSseStream';
 import { CellChange } from '@/types/changeSet';
 import type {
@@ -139,6 +140,14 @@ export interface ConversationTurn {
   phase: TurnPhase;
   blocks: TurnBlock[];
   error?: string;
+  /**
+   * A ready-to-send follow-up that repairs cells the post-apply read-back found
+   * holding Excel errors. Present only when the applied change actually left a
+   * #REF!/#NAME?/... behind; the UI offers it rather than sending it, since the
+   * write already landed and rewriting the user's cells is their call.
+   * TASKS.md #168.
+   */
+  repairSuggestion?: RepairRequest;
 }
 
 export function truncateTabLabel(text: string, max = 18): string {
