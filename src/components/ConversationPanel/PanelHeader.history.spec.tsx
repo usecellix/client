@@ -56,6 +56,9 @@ function renderHeader(
       isWaitingForResponse={false}
       onSelectSession={vi.fn()}
       onCloseSession={vi.fn()}
+      onRenameSession={vi.fn()}
+      onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+      onDeleteHistoryConversation={vi.fn().mockResolvedValue(undefined)}
       onNewChat={vi.fn()}
       onOpenHistoryConversation={onOpenHistoryConversation}
       conversationId={null}

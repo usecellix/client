@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationPanel from '@/components/ConversationPanel/ConversationPanel';
 import { CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { useConversation, PreviewActionsMeta } from '@/hooks/useConversation';
+import { useCreditBalance } from '@/hooks/useCreditBalance';
 import { ActionEngine } from '@/utils/actionEngine';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
 import type { SheetCreationOutcome } from '@/engine/handlers/sheet.handler';
@@ -268,6 +269,9 @@ const App: React.FC = () => {
     }
   }, [workbookKey]);
 
+  const { account: creditAccount, isLowBalance: isLowCreditBalance, applyCreditsEvent } =
+    useCreditBalance();
+
   const {
     sessions,
     activeSessionId,
@@ -303,6 +307,7 @@ const App: React.FC = () => {
     autoApplyActions: !previewEnabled,
     previewEnabled,
     isChangeSetApplied,
+    onCredits: applyCreditsEvent,
   });
 
   useEffect(() => {
@@ -523,6 +528,8 @@ const App: React.FC = () => {
       workbookId={workbookId}
       onRestoreCheckpoint={handleRestoreCheckpoint}
       isApplyingActions={isApplying}
+      creditAccount={creditAccount}
+      isLowCreditBalance={isLowCreditBalance}
     />
   );
 };

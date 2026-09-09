@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
+  Coins,
   ExternalLink,
   Flag,
   LogOut,
@@ -29,6 +30,7 @@ import {
   dedupeConversations,
   groupConversationsByRecency,
 } from '@/utils/conversationHistoryGrouping';
+import { CreditAccountSummary } from '@/services/billingService';
 
 interface PanelHeaderProps {
   sessions: ChatSession[];
@@ -57,6 +59,11 @@ interface PanelHeaderProps {
   workbookId?: string;
   conversationId: string | null;
   onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
+  /** Credit balance indicator — CREDIT_SYSTEM.md §5's "petrol gauge, not a
+   *  countdown timer", always visible rather than something to dig for.
+   *  `null` while loading or when no account has been provisioned yet. */
+  creditAccount?: CreditAccountSummary | null;
+  isLowBalance?: boolean;
 }
 
 export const PanelHeader: React.FC<PanelHeaderProps> = ({
@@ -74,6 +81,8 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   workbookId,
   conversationId,
   onRestoreCheckpoint,
+  creditAccount = null,
+  isLowBalance = false,
 }) => {
   const { data: session } = useSession();
   const userEmail = session?.user?.email?.trim() || 'Signed in';
@@ -321,6 +330,27 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
         </div>
 
         <div className="cellix-topbar-icons">
+          {creditAccount && (
+            <button
+              type="button"
+              className={`cellix-credit-chip ${isLowBalance ? 'low' : ''}`}
+              onClick={() => {
+                const next = !settingsOpen;
+                closeAll();
+                setSettingsOpen(next);
+              }}
+              title={
+                isLowBalance
+                  ? `Low balance — ${creditAccount.availableBalance} credits remaining`
+                  : `${creditAccount.availableBalance} credits remaining`
+              }
+              aria-label="Credit balance"
+            >
+              <Coins size={13} />
+              <span>{creditAccount.availableBalance}</span>
+            </button>
+          )}
+
           <button
             type="button"
             className={`cellix-topbar-icon-btn ${historyOpen ? 'active' : ''}`}
@@ -375,17 +405,73 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                         const active = entry.conversationId === activeConversationId;
                         const opening = openingId === entry.conversationId;
                         const open = openConversationIds.has(entry.conversationId);
+                        const isRenaming =
+                          renaming?.kind === 'history' && renaming.id === entry.conversationId;
+                        const isConfirmingDelete =
+                          confirmingDelete?.kind === 'history' &&
+                          confirmingDelete.id === entry.conversationId;
+                        const isDeleting = deletingId === entry.conversationId;
+
+                        if (isRenaming) {
+                          return (
+                            <div
+                              key={entry.conversationId}
+                              className="cellix-chat-history-item cellix-chat-history-item-renaming"
+                              role="menuitem"
+                            >
+                              <MessageSquare size={13} />
+                              <input
+                                ref={renameInputRef}
+                                className="cellix-chat-rename-input"
+                                value={renameDraft}
+                                onChange={(event) => setRenameDraft(event.target.value)}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    commitRename();
+                                  } else if (event.key === 'Escape') {
+                                    event.preventDefault();
+                                    cancelRename();
+                                  }
+                                }}
+                                onBlur={commitRename}
+                                aria-label="Rename chat"
+                              />
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="cellix-chat-history-action"
+                                title="Confirm rename"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  commitRename();
+                                }}
+                              >
+                                <Check size={12} />
+                              </span>
+                            </div>
+                          );
+                        }
+
                         return (
                           <div
                             key={entry.conversationId}
-                            className={`cellix-chat-history-item ${active ? 'active' : ''}`}
+                            className={`cellix-chat-history-item ${active ? 'active' : ''} ${
+                              isConfirmingDelete ? 'confirming-delete' : ''
+                            }`}
                             role="menuitem"
                             tabIndex={0}
-                            aria-busy={opening}
-                            onClick={() => void handleOpenHistoryConversation(entry.conversationId)}
+                            aria-busy={opening || isDeleting}
+                            onClick={() => {
+                              if (isConfirmingDelete) return;
+                              void handleOpenHistoryConversation(entry.conversationId);
+                            }}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter' || event.key === ' ') {
                                 event.preventDefault();
+                                if (isConfirmingDelete) return;
                                 void handleOpenHistoryConversation(entry.conversationId);
                               }
                             }}
@@ -396,12 +482,61 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                             ) : (
                               <MessageSquare size={13} />
                             )}
-                            <span>{entry.title}</span>
+                            <span className="cellix-chat-history-item-title">{entry.title}</span>
                             {active ? (
                               <Pin size={11} className="cellix-chat-history-pin" />
                             ) : open ? (
                               <span className="cellix-chat-history-badge">Open</span>
                             ) : null}
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className="cellix-chat-history-action"
+                              title="Rename chat"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                startRename('history', entry.conversationId, entry.title);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  startRename('history', entry.conversationId, entry.title);
+                                }
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </span>
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className={`cellix-chat-history-action cellix-chat-history-action-delete ${
+                                isConfirmingDelete ? 'confirming' : ''
+                              }`}
+                              title={
+                                isConfirmingDelete
+                                  ? 'Click again to permanently delete this chat'
+                                  : 'Delete chat (click twice to confirm)'
+                              }
+                              aria-busy={isDeleting}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestDelete('history', entry.conversationId);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  requestDelete('history', entry.conversationId);
+                                }
+                              }}
+                            >
+                              {isDeleting ? (
+                                <span className="cellix-spinner cellix-chat-tab-spinner" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                            </span>
                           </div>
                         );
                       })}
@@ -495,6 +630,23 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             <User size={13} />
             <span>{userEmail}</span>
           </div>
+
+          {creditAccount && (
+            <>
+              <div className="cellix-settings-menu-meta cellix-credit-summary">
+                <Coins size={13} />
+                <span>
+                  {creditAccount.availableBalance} credits · {creditAccount.planTier} plan
+                </span>
+              </div>
+              {isLowBalance && (
+                <div className="cellix-credit-low-notice">
+                  Running low — add credits or upgrade to keep going without interruption.
+                </div>
+              )}
+              <div className="cellix-settings-menu-divider" />
+            </>
+          )}
 
           <button
             type="button"

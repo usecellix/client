@@ -787,6 +787,8 @@ interface ConversationPanelProps {
   workbookId?: string;
   onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
   isApplyingActions?: boolean;
+  creditAccount?: import('@/services/billingService').CreditAccountSummary | null;
+  isLowCreditBalance?: boolean;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -829,6 +831,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   workbookId,
   onRestoreCheckpoint,
   isApplyingActions = false,
+  creditAccount = null,
+  isLowCreditBalance = false,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const showStartScreen = turns.length === 0;
@@ -920,6 +924,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         workbookId={workbookId}
         conversationId={conversationId}
         onRestoreCheckpoint={onRestoreCheckpoint}
+        creditAccount={creditAccount}
+        isLowBalance={isLowCreditBalance}
       />
 
       <div

@@ -5,7 +5,7 @@ import {
   markPendingWorkbookContextStale,
   setPendingWorkbookContext,
 } from '@/utils/pendingWorkbookContext';
-import { getConversationEndpoint } from '@/lib/apiConfig';
+import { getContinueRunEndpoint, getConversationEndpoint } from '@/lib/apiConfig';
 import { SheetAction } from '@/types/sheet-actions';
 import { RichAction } from '@/action.types';
 import {
@@ -25,13 +25,17 @@ import type { OutcomeVerification } from '@/services/outcomeVerifier';
 import type { RepairRequest } from '@/services/repairRequest';
 import type { SheetGuardStates } from '@/engine/sheetGuardState';
 import { probeExcelCapabilities } from '@/services/capabilityProbe';
-import { parseSseEventBlock } from '@/utils/sseParser';
+import { parseSseEventBlock, SseCreditsData } from '@/utils/sseParser';
 import { handleToolRequest } from '@/services/toolRequestHandler';
 import { navigateToCell } from '@/services/rangeFetchService';
 import { shouldAcceptIncomingClarification } from '@/utils/clarification.util';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
-import { buildThoughtSummary } from '@/utils/thoughtSummary';
-import { buildClientStatusMessage, isSimpleCreateTask } from '@/utils/statusMessage';
+import {
+  buildThoughtSummary,
+  isCompletenessWarningThought,
+  stillWorkingMessage,
+} from '@/utils/thoughtSummary';
+import { buildClientStatusMessage, isLikelyChitchat, isSimpleCreateTask } from '@/utils/statusMessage';
 import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
 import { shouldPreviewActions } from '@/utils/previewPolicy';
 import { ClarificationPayload } from '@/types/cellix.types';
@@ -162,6 +166,9 @@ export interface UseConversationOptions {
   autoApplyActions?: boolean;
   previewEnabled?: boolean;
   isChangeSetApplied?: (changeSetId?: string) => boolean;
+  /** Emitted once per completed debit (CREDIT_SYSTEM_SCHEMA.md §6) — lets the
+   *  balance indicator update live instead of only on next mount/refetch. */
+  onCredits?: (event: SseCreditsData) => void;
 }
 
 export interface SendMessageOptions {
@@ -197,6 +204,9 @@ interface PendingActions {
   stepIndex?: number;
   stepTotal?: number;
   stepLabel?: string;
+  /** Step-wise run this wave belongs to — TASKS.md #153. */
+  runId?: string;
+  stepwise?: boolean;
 }
 
 export interface PreviewActionsMeta {
@@ -238,6 +248,14 @@ interface TurnRuntime {
    * description with a canned one right before the answer revealed).
    */
   hasLiveThinking: boolean;
+  /**
+   * `Date.now()` of the last time this turn's status/thinking line actually
+   * changed — a real backend event OR the "still working" ticker below.
+   * Drives the ticker's own escalation: it only writes a new tier once enough
+   * time has passed since the LAST update of either kind, so it never fights
+   * a real backend message that just arrived.
+   */
+  lastLiveUpdateAt: number;
 }
 
 const THINKING_ID = 'thinking_main';
@@ -385,6 +403,7 @@ function createRuntime(mode: AssistantMode = DEFAULT_ASSISTANT_MODE): TurnRuntim
     aborted: false,
     mode,
     hasLiveThinking: false,
+    lastLiveUpdateAt: Date.now(),
   };
 }
 
@@ -408,6 +427,8 @@ function createActionBlock(
     stepIndex: pending.stepIndex,
     stepTotal: pending.stepTotal,
     stepLabel: pending.stepLabel,
+    runId: pending.runId,
+    stepwise: pending.stepwise,
   };
 }
 
@@ -561,6 +582,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     autoApplyActions = false,
     previewEnabled = true,
     isChangeSetApplied,
+    onCredits,
   } = options;
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -807,7 +829,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         const finalized = finalizeSteps(
           upsertThinking(turn.blocks, preservedThought, {
             loading: false,
-            expanded: /blocked|cannot create|verification/i.test(preservedThought),
+            expanded: isCompletenessWarningThought(preservedThought),
             visible: true,
           }),
           turn.userMessage,
@@ -923,9 +945,82 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     ],
   );
 
+  /**
+   * Fire-and-forget background loop that keeps the thinking line moving
+   * during a long, opaque wait — a single non-streaming Planner call for a
+   * large build can run 30s-4min with nothing for the backend to report in
+   * between. Polls rather than a single timer so it naturally stops as soon
+   * as `responseGate` opens (a real response arrived) without needing manual
+   * cleanup/cancellation plumbing — the loop just exits on its own next tick.
+   *
+   * Never overwrites a real backend update: it only writes when the time
+   * since the LAST update of any kind (`lastLiveUpdateAt`, stamped by both
+   * real events and this ticker's own writes) has crossed the next escalation
+   * tier, so a real status event arriving resets the clock exactly as if the
+   * ticker itself had just spoken.
+   */
+  const runStillWorkingTicker = useCallback(
+    (turnId: string, runtime: TurnRuntime) => {
+      const POLL_MS = 3000;
+      const tick = async () => {
+        while (!runtime.aborted && !runtime.responseGate.isOpen()) {
+          await delay(POLL_MS);
+          if (runtime.aborted || runtime.responseGate.isOpen()) break;
+          const elapsed = Date.now() - runtime.lastLiveUpdateAt;
+          const message = stillWorkingMessage(elapsed);
+          if (!message) continue;
+          runtime.lastLiveUpdateAt = Date.now();
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            blocks: appendThinkingLog(upsertStatus(turn.blocks, message, true, true), message, {
+              loading: true,
+              expanded: false,
+            }),
+          }));
+        }
+      };
+      void tick();
+    },
+    [updateTurn],
+  );
+
   const runVisualTimeline = useCallback(
     async (turnId: string, runtime: TurnRuntime, opts: TimelineOptions) => {
+      runStillWorkingTicker(turnId, runtime);
       const isAborted = () => runtime.aborted;
+
+      // Greetings/small talk (backend's own CHITCHAT route — see
+      // `isLikelyChitchat`'s docblock) skip workbook context entirely and
+      // reply in well under a second via plain `chunk` streaming. Running the
+      // full "Reading your worksheet… Analyzing your spreadsheet…"
+      // choreography (with its hard minimum delays meant to pace a real
+      // multi-second build) for a bare "hi" was pure wasted wait — nothing
+      // about it was ever true for that message. Show a single lightweight
+      // "Thinking…" step instead and resolve as soon as the real reply lands.
+      if (isLikelyChitchat(opts.userMessage)) {
+        await delay(150);
+        if (isAborted()) return;
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          blocks: upsertStep(turn.blocks, STEP_READING_ID, 'Thinking…', 'running'),
+        }));
+        runtime.analyzingGate.open();
+        await waitWithMin(runtime.responseGate, 200);
+        if (isAborted()) return;
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          blocks: upsertStep(turn.blocks, STEP_READING_ID, 'Thinking…', 'done'),
+        }));
+        if (!runtime.pendingResponse) {
+          await runtime.responseGate.wait();
+        }
+        const chitchatResponse = runtime.pendingResponse;
+        if (chitchatResponse && !revealScheduledRef.current.has(turnId)) {
+          revealFinalResponse(turnId, chitchatResponse);
+        }
+        return;
+      }
+
       const simple = isSimpleCreateTask(opts.userMessage, opts.sheetIsEmpty);
       const statusLabel = buildClientStatusMessage(opts.userMessage, opts.sheetIsEmpty);
 
@@ -1114,7 +1209,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         revealFinalResponse(turnId, response);
       }
     },
-    [revealFinalResponse, updateTurn],
+    [revealFinalResponse, runStillWorkingTicker, updateTurn],
   );
 
   const signalResponse = useCallback(
@@ -1156,7 +1251,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           if (event.type === 'status' && /analyz/i.test(event.data.message)) {
             const runtime = runtimeRef.current.get(turnId);
             runtime?.analyzingGate.open();
-            if (runtime) runtime.hasLiveThinking = true;
+            if (runtime) {
+              runtime.hasLiveThinking = true;
+              runtime.lastLiveUpdateAt = Date.now();
+            }
             updateTurn(turnId, (turn) => ({
               ...turn,
               blocks: appendThinkingLog(
@@ -1174,7 +1272,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             if (!message.trim()) continue;
             const runtime = runtimeRef.current.get(turnId);
             runtime?.analyzingGate.open();
-            if (runtime) runtime.hasLiveThinking = true;
+            if (runtime) {
+              runtime.hasLiveThinking = true;
+              runtime.lastLiveUpdateAt = Date.now();
+            }
             updateTurn(turnId, (turn) => ({
               ...turn,
               blocks: appendThinkingLog(
@@ -1203,6 +1304,70 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               answer: event.data.answer,
               matches: event.data.matches,
             });
+            continue;
+          }
+
+          if (event.type === 'credits') {
+            onCredits?.(event.data);
+            continue;
+          }
+
+          if (event.type === 'wave_ready') {
+            // Still needed for the ORIGINAL send flow: `runVisualTimeline` is
+            // blocked on `runtime.responseGate.wait()`, and `signalResponse`
+            // is what opens that gate so it can proceed to
+            // `revealFinalResponse` (which sets phase itself). A continuation
+            // never runs `runVisualTimeline` at all, so for that path this
+            // call is inert — harmless, not load-bearing.
+            const runtime = runtimeRef.current.get(turnId);
+            if (runtime && !runtime.pendingResponse) {
+              signalResponse(turnId, { type: 'answer', answer: '' });
+            }
+
+            // The explicit restore a continuation actually needs.
+            // `continueStepwiseRun` set `phase: 'processing'` when it started
+            // (so the wave's own live status/thinking updates could render,
+            // see that function's own comment), and — unlike the send flow —
+            // NOTHING else in the continuation path ever calls
+            // `revealFinalResponse` to set it back. Whether or not another
+            // wave follows, this stream is ending and whatever card it
+            // produced needs to actually become visible.
+            //
+            // Live incident (Sept 9, 2026): a `hasMore: true` card generated
+            // via `/continue` was correct in every server log but never
+            // rendered — invisible, no error, nothing in the DOM. Root cause:
+            // this branch used to rely SOLELY on `signalResponse` above, which
+            // — for a continuation — has no `runVisualTimeline` waiting on it,
+            // so it does nothing. `phase` stayed stuck at 'processing',
+            // `isTurnPresentationComplete` returned false,
+            // `previewActionsReady`/`showActionButtons` went false for the
+            // active turn, and `ActionResponseCard` renders every PENDING
+            // block as `null` whenever `showActionButtons` is false.
+            updateTurn(turnId, (turn) => {
+              const withoutStatusBlocks = withoutStatus(turn.blocks);
+              // A completeness warning (TASKS.md #171/#187 — "proceeded under
+              // an assumption", "could not fully plan N steps") landed in the
+              // thinking log via `appendThinkingLog` as this wave streamed in,
+              // same as it always does. But `revealFinalResponse` — the ONLY
+              // place that decides whether the thinking block starts expanded
+              // — never runs for a continuation (see this branch's own
+              // comment). Without this, that warning is technically present
+              // but collapsed behind a disclosure nothing ever opens: a live
+              // report where a truncated plan got silently pruned from 10
+              // subtasks to 3, and the user saw two "Applied" cards with zero
+              // indication 70% of the request never got built.
+              const thinking = withoutStatusBlocks.find(
+                (b): b is ThinkingBlock => b.type === 'thinking',
+              );
+              const blocks =
+                thinking && isCompletenessWarningThought(thinking.content)
+                  ? withoutStatusBlocks.map((b) =>
+                      b.id === thinking.id ? { ...b, expanded: true } : b,
+                    )
+                  : withoutStatusBlocks;
+              return { ...turn, phase: 'complete', blocks };
+            });
+            setIsWaitingForResponse(false);
             continue;
           }
 
@@ -1413,6 +1578,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               stepTotal: event.data.stepTotal,
               stepLabel: event.data.stepLabel,
               irreversibleActionTypes: event.data.irreversibleActionTypes,
+              runId: event.data.runId,
+              stepwise: event.data.stepwise,
             };
 
             if (runtime && isActionMode && pendingActions.actions.length > 0) {
@@ -1517,7 +1684,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           if (event.type === 'tool_request') {
             const runtime = runtimeRef.current.get(turnId);
             runtime?.analyzingGate.open();
-            if (runtime) runtime.hasLiveThinking = true;
+            if (runtime) {
+              runtime.hasLiveThinking = true;
+              runtime.lastLiveUpdateAt = Date.now();
+            }
             updateTurn(turnId, (turn) => ({
               ...turn,
               blocks: upsertThinking(
@@ -1531,13 +1701,24 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'error') {
+            // CREDIT_SYSTEM.md CD-4 — the gate check blocked dispatch before any
+            // LLM call. Clear, non-alarming copy per CREDIT_SYSTEM.md §5, not the
+            // generic apply-error mapping below.
+            const isInsufficientCredit = event.data.code === 'INSUFFICIENT_CREDIT';
+            const message = isInsufficientCredit
+              ? `You're out of credits for this action${
+                  typeof event.data.requiredCredits === 'number'
+                    ? ` (needs ${event.data.requiredCredits}, have ${event.data.availableBalance ?? 0})`
+                    : ''
+                }. Add credits or upgrade your plan to continue.`
+              : toUserFacingApplyError(event.data.message);
             updateTurn(turnId, (turn) => ({
               ...turn,
               phase: 'error',
               // Map here too: this path rendered raw engine/host strings like
               // Office.js "The requested resource doesn't exist." straight into
               // chat. The mapper passes clean short messages through unchanged.
-              error: toUserFacingApplyError(event.data.message),
+              error: message,
               blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
             }));
             runtimeRef.current.get(turnId)!.aborted = true;
@@ -1562,6 +1743,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       isChangeSetApplied,
       onActions,
       onClearPreview,
+      onCredits,
       onPreviewActions,
       pushHistory,
       signalResponse,
@@ -1825,6 +2007,115 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
   const applyingActionsRef = useRef(false);
 
+  /**
+   * Advances a step-wise Tier 3 run (TASKS.md #153, STEPWISE_EXECUTION.md §3).
+   *
+   * The backend has generated NOTHING past the card being decided, so this call
+   * is what causes the next wave to exist at all. It streams back exactly like
+   * the original request, and is pumped through the same `processStream` onto
+   * the same turn, so the next wave's card appends to this conversation turn
+   * rather than opening a new one.
+   *
+   * Never throws: a continuation that fails leaves the already-accepted waves
+   * applied and the turn showing why it stopped, which is strictly better than
+   * unwinding work the user already approved.
+   */
+  const continueStepwiseRun = useCallback(
+    async (
+      turnId: string,
+      runId: string,
+      decision: 'accepted' | 'rejected' | 'skipped',
+    ): Promise<void> => {
+      const runtime = runtimeRef.current.get(turnId) ?? createRuntime('action');
+      runtimeRef.current.set(turnId, runtime);
+      runtime.aborted = false;
+      // Reset the clock the ticker measures against — otherwise a user who took
+      // five minutes to click Accept would make it think five minutes of
+      // silence had already passed and jump straight to the most escalated
+      // "still going" tier the instant this continuation starts.
+      runtime.lastLiveUpdateAt = Date.now();
+      setIsWaitingForResponse(true);
+      revealScheduledRef.current.delete(turnId);
+      runStillWorkingTicker(turnId, runtime);
+
+      // The turn re-enters "working" — the build is not finished, and showing
+      // it as complete between waves would be the same false-completeness the
+      // staged-accept work keeps guarding against.
+      //
+      // This is also what makes progress VISIBLE at all: `TurnRenderer` hides
+      // every status/step/thinking block while `turn.phase === 'complete'`
+      // (`hideProgress`), which it still was here — set by the PREVIOUS wave's
+      // resolution and never reset. Without this, every `status`/`thinking`
+      // SSE event the next wave sends was written into turn state correctly
+      // but silently suppressed at render time: a live "no loading or
+      // anything" report (Sept 8, 2026) traced to exactly this — the backend
+      // was genuinely working, the UI just never showed it.
+      //
+      // An immediate status line fills the gap between the click and the
+      // first real backend event (which can be seconds away for a large
+      // wave) — the moment that most reads as "did anything happen?".
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        phase: 'processing',
+        blocks: upsertStatus(
+          turn.blocks.filter((b) => b.type !== 'answer' || b.id !== answerBlockId(turnId)),
+          decision === 'accepted' ? 'Preparing the next step…' : 'Continuing…',
+          true,
+          true,
+        ),
+      }));
+
+      // Readback (observed post-apply sheet state, so the next wave plans
+      // against reality rather than the shadow workbook's prediction) is NOT
+      // sent yet. This hook's `getContextForSend().workbookContext.sheets` is
+      // `SheetSnapshot[]` (types/cellix.types.ts — `sheetName`, `colCount`,
+      // `headers`, `sampleData`) which shares no fields with the backend's
+      // `SheetContext[]` (agents/types/agent.types.ts — `name`, `values`,
+      // `formulas`, `numberFormats`). Sending it produced a live "Cannot read
+      // properties of undefined (reading 'length')" crash: the backend merged
+      // a malformed sheet object into its context and the next wave's Executor
+      // read `.values.length` on it. The backend now rejects a mismatched
+      // shape defensively too (`AgentRunStateService.applyReadback`), but
+      // there is no reason to send data that can never be used until a real
+      // translator between the two shapes exists — that is a distinct,
+      // separately-scoped task, not something to bolt on here.
+      const readback: unknown[] | undefined = undefined;
+
+      try {
+        const endpoint = getContinueRunEndpoint();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (endpoint.includes('.ngrok-free.app')) {
+          headers['ngrok-skip-browser-warning'] = 'true';
+        }
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify({ runId, decision, readback }),
+        });
+
+        if (!response.ok) {
+          throw new Error(await getUserFacingErrorMessage(response));
+        }
+
+        await processStream(response, turnId);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Could not continue this build';
+        console.error('[Cellix] Stepwise continue failed:', message);
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          error: `${message} — the steps you already accepted are still applied.`,
+          blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+        }));
+      } finally {
+        setIsWaitingForResponse(false);
+      }
+    },
+    [getUserFacingErrorMessage, processStream, runStillWorkingTicker, updateTurn],
+  );
+
   const acceptActions = useCallback(
     async (turnId: string, blockId: string): Promise<boolean> => {
       if (applyingActionsRef.current) return false;
@@ -1908,6 +2199,16 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         }
 
         setActiveClarification(null);
+
+        // TASKS.md #153 — this card was one wave of a PAUSED run: nothing past
+        // it has been generated yet, so accepting it is what triggers the next
+        // wave. Awaited rather than fired-and-forgotten so `acceptActions`
+        // resolving means "the build actually advanced", which is what
+        // Accept All's sequential gate depends on.
+        if (block.stepwise && block.runId) {
+          await continueStepwiseRun(turnId, block.runId, 'accepted');
+        }
+
         return true;
       } catch (error) {
         const rawMessage =
@@ -1928,7 +2229,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         applyingActionsRef.current = false;
       }
     },
-    [onActions, onChangeSetApplied, updateTurn],
+    [continueStepwiseRun, onActions, onChangeSetApplied, updateTurn],
   );
 
   /**
@@ -1968,6 +2269,13 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const rejectActions = useCallback(
     async (turnId: string, blockId: string) => {
       await onClearPreview?.();
+
+      // Captured before the state update, because the block is what carries the
+      // run correlation and the update below rewrites the block list.
+      const rejectedBlock = getActiveSession()
+        ?.turns.find((t) => t.id === turnId)
+        ?.blocks.find((b): b is ActionBlock => b.id === blockId && b.type === 'actions');
+
       updateTurn(turnId, (t) => {
         const siblingActionBlocks = t.blocks.filter((b) => b.type === 'actions') as ActionBlock[];
         // A pending wave that depends on the one being rejected (directly or
@@ -1985,8 +2293,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           ),
         };
       });
+
+      // TASKS.md #153 — rejecting one wave of a step-wise run does NOT abort the
+      // build (STEPWISE_EXECUTION.md SD-4): the server cascade-skips whatever
+      // depended on this wave and carries on with the independent remainder.
+      // Without this call the run would simply stall, since nothing else asks
+      // the backend to generate the next wave.
+      if (rejectedBlock?.stepwise && rejectedBlock.runId) {
+        await continueStepwiseRun(turnId, rejectedBlock.runId, 'rejected');
+      }
     },
-    [onClearPreview, updateTurn],
+    [continueStepwiseRun, getActiveSession, onClearPreview, updateTurn],
   );
 
   const toggleThinking = useCallback(
@@ -2061,6 +2378,24 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     (sessionId: string) => {
       const session = sessionsRef.current.find((entry) => entry.id === sessionId);
       if (!session) return;
+      if (sessionId === activeSessionIdRef.current) return;
+
+      // Abort any in-flight stream before switching, exactly as newChat/closeSession/
+      // openConversationFromHistory already do — updateTurn/syncConversationId key off
+      // activeSessionIdRef.current, so a late chunk would otherwise land in (or clobber
+      // the conversationId of) the tab we're leaving instead of the one that sent it.
+      abortControllerRef.current?.abort();
+      if (activeTurnId) {
+        const runtime = runtimeRef.current.get(activeTurnId);
+        if (runtime) {
+          runtime.aborted = true;
+          runtimeRef.current.delete(activeTurnId);
+        }
+        revealScheduledRef.current.delete(activeTurnId);
+      }
+      void onClearPreview?.();
+      setIsWaitingForResponse(false);
+
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
       applySessionContext(session);
@@ -2069,7 +2404,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       setActiveClarification(null);
       schedulePersist();
     },
-    [applySessionContext, schedulePersist],
+    [activeTurnId, applySessionContext, onClearPreview, schedulePersist],
   );
 
   const closeSession = useCallback(

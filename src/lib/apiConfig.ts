@@ -60,6 +60,11 @@ export function getToolResultEndpoint(): string {
   return `${getApiBaseUrl()}${CONVERSATION_PATH}/tool-result`;
 }
 
+/** Advances a step-wise Tier 3 run (TASKS.md #153, STEPWISE_EXECUTION.md §3). */
+export function getContinueRunEndpoint(): string {
+  return `${getApiBaseUrl()}${CONVERSATION_PATH}/continue`;
+}
+
 export function getCompareEndpoint(): string {
   return `${getApiBaseUrl()}${COMPARE_PATH}`;
 }
@@ -101,5 +106,18 @@ export function getCheckpointListEndpoint(workbookId: string): string {
 
 export function getCheckpointRestoreEndpoint(checkpointId: string): string {
   return `${getApiBaseUrl()}/audit/checkpoint/restore/${encodeURIComponent(checkpointId)}`;
+}
+
+/** Current credit balance (all 3 buckets) + plan tier — CREDIT_SYSTEM_SCHEMA.md §5. */
+export function getBillingAccountEndpoint(): string {
+  return `${getApiBaseUrl()}/billing/account`;
+}
+
+/** Paginated credit ledger history — CREDIT_SYSTEM_SCHEMA.md §5. */
+export function getBillingLedgerEndpoint(cursor?: string): string {
+  const query = new URLSearchParams();
+  if (cursor) query.set('cursor', cursor);
+  const suffix = query.toString();
+  return `${getApiBaseUrl()}/billing/ledger${suffix ? `?${suffix}` : ''}`;
 }
 

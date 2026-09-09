@@ -489,6 +489,8 @@ function UserMessageRow({
   );
 }
 
+const ACTIONS_PRESENTATION_ORDER = 5;
+
 function blockPresentationOrder(block: TurnBlock): number {
   switch (block.type) {
     case 'step':
@@ -504,10 +506,54 @@ function blockPresentationOrder(block: TurnBlock): number {
     case 'plan_only':
       return 4;
     case 'actions':
-      return 5;
+      return ACTIONS_PRESENTATION_ORDER;
     default:
       return 6;
   }
+}
+
+/**
+ * Sorts a turn's blocks for display. For a single-shot turn this is just
+ * `blockPresentationOrder` — status/thinking naturally precede the one
+ * resulting `actions` card, since that is the order they were created in
+ * too. A STEPWISE turn (TASKS.md #153) breaks that assumption: each
+ * continuation appends a NEW status/thinking block chronologically AFTER
+ * earlier waves' `actions` cards already exist and have been accepted, but
+ * `blockPresentationOrder` alone would still hoist it above every card —
+ * showing "Thinking... Step 21" floating above already-Applied Step 1/Step 2
+ * cards instead of below them, where the user is actually looking for what
+ * happens next.
+ *
+ * Fix: only hoist a status/thinking block ABOVE the accepted action cards
+ * that came before it in real arrival order. Once at least one `actions`
+ * block exists earlier in `turn.blocks`, any later status/thinking/answer
+ * block sorts as if it were an `actions`-tier block itself (order 5, not
+ * 1/2/3) — so it renders in its true chronological position, after those
+ * cards, while ties among same-tier blocks still respect creation order via
+ * the index tiebreaker below. The very first wave's progress blocks (nothing
+ * yet in `actions`) are completely unaffected — they still hoist to the top
+ * exactly as before.
+ */
+export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
+  const firstActionsIndex = blocks.findIndex((b) => b.type === 'actions');
+
+  return blocks
+    .map((block, index) => ({ block, index }))
+    .sort((a, b) => {
+      const rank = (entry: { block: TurnBlock; index: number }) => {
+        const isProgressBlock =
+          entry.block.type === 'status' || entry.block.type === 'thinking' || entry.block.type === 'answer';
+        const arrivesAfterAnActionsBlock =
+          firstActionsIndex !== -1 && entry.index > firstActionsIndex;
+        if (isProgressBlock && arrivesAfterAnActionsBlock) {
+          return ACTIONS_PRESENTATION_ORDER;
+        }
+        return blockPresentationOrder(entry.block);
+      };
+      const order = rank(a) - rank(b);
+      return order !== 0 ? order : a.index - b.index;
+    })
+    .map(({ block }) => block);
 }
 
 const TurnRenderer: React.FC<TurnRendererProps> = ({
@@ -533,20 +579,18 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
 
   const revertibleActionBlocks = turn.blocks.filter(
     (b): b is ActionBlock =>
-      b.type === 'actions' && b.proposalStatus === 'accepted' && Boolean(b.changeSetId),
+      b.type === 'actions' &&
+      b.proposalStatus === 'accepted' &&
+      Boolean(b.changeSetId) &&
+      // Mirrors the pre-accept warning in ActionResponseCard: an accepted block whose
+      // actions were already flagged irreversible (e.g. FORMAT_MATCHING_ROWS fill color —
+      // never captured by the shadow workbook) has no real inverse to apply. Showing the
+      // button anyway lets revert() report a "successful" no-op (inverseActions: []) while
+      // the sheet visibly doesn't change back.
+      !b.irreversibleActionTypes?.length,
   );
 
-  const orderedBlocks = useMemo(
-    () =>
-      turn.blocks
-        .map((block, index) => ({ block, index }))
-        .sort((a, b) => {
-          const order = blockPresentationOrder(a.block) - blockPresentationOrder(b.block);
-          return order !== 0 ? order : a.index - b.index;
-        })
-        .map(({ block }) => block),
-    [turn.blocks],
-  );
+  const orderedBlocks = useMemo(() => orderBlocksForDisplay(turn.blocks), [turn.blocks]);
 
   const { followUps, followUpHandler, followUpsDisabled } = useMemo(() => {
     const answerBlock = turn.blocks.find(

@@ -68,6 +68,13 @@ export interface ActionBlock {
   stepTotal?: number;
   stepLabel?: string;
   /**
+   * Step-wise run this card belongs to (TASKS.md #153). Present only when the
+   * run is PAUSED on this card: the backend has generated nothing beyond it,
+   * and deciding this card is what triggers the next wave's generation.
+   */
+  runId?: string;
+  stepwise?: boolean;
+  /**
    * Action types in this batch with no defined inverse (per the backend's
    * reversibility-catalog.ts). Surfaced here so the user is warned before
    * Accept, not only discovered later when a revert fails.
