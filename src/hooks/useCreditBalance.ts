@@ -63,14 +63,28 @@ export function useCreditBalance(): UseCreditBalanceReturn {
     }));
   }, []);
 
+  // Fixed 2026-09-10 (credit-system-v2 session): this used to require
+  // `planTier !== 'free'` AND `planCredits > 0`, both of which are ALWAYS
+  // false for a Free-tier account — its balance lives entirely in
+  // `oneTimeCredits` (FREE_TIER_ONE_TIME_CREDITS), never `planCredits`. So
+  // the nudge was silently disabled for exactly the users most likely to
+  // actually run out. Now checks whichever bucket the account's tier
+  // actually uses: `oneTimeCredits` for a one-time-grant account (free —
+  // and beta/solo/firm subscribers also carry a stale oneTimeCredits of 0,
+  // so this branch is a no-op for them once planCredits is nonzero),
+  // `planCredits` for a subscription account.
+  const startingGrant = account
+    ? account.planTier === 'free'
+      ? account.oneTimeCredits
+      : account.planCredits
+    : 0;
   const isLowBalance =
     account !== null &&
-    account.planTier !== 'free' &&
-    account.planCredits > 0 &&
-    // 20% of the current plan allotment can't be derived from balance alone
-    // without knowing the cycle's starting grant, so this approximates it
-    // against the low, fixed floor that matters in practice for a nudge.
-    account.availableBalance <= Math.max(20, account.planCredits * 0.2);
+    startingGrant > 0 &&
+    // 20% of the current cycle's starting grant can't be derived from
+    // balance alone without knowing that grant amount, so this approximates
+    // it against the low, fixed floor that matters in practice for a nudge.
+    account.availableBalance <= Math.max(20, startingGrant * 0.2);
 
   return { account, isLoading, isLowBalance, applyCreditsEvent, refresh };
 }

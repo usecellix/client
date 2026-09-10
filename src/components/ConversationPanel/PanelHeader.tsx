@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Pencil,
   Pin,
+  PlusCircle,
   RotateCcw,
   Settings,
   Sparkles,
@@ -30,7 +31,15 @@ import {
   dedupeConversations,
   groupConversationsByRecency,
 } from '@/utils/conversationHistoryGrouping';
-import { CreditAccountSummary } from '@/services/billingService';
+import { createTopupSession, CreditAccountSummary, TopupPackId } from '@/services/billingService';
+import { getPricingPageUrl } from '@/lib/apiConfig';
+
+/** Mirrors cellix_backend's TOPUP_PACKS (credit/topup-packs.ts) — display-only, the real price/credit amounts are enforced server-side. */
+const TOPUP_PACK_OPTIONS: Array<{ id: TopupPackId; credits: number; priceLabel: string }> = [
+  { id: 'small', credits: 300, priceLabel: '₹149' },
+  { id: 'medium', credits: 1000, priceLabel: '₹399' },
+  { id: 'large', credits: 2200, priceLabel: '₹799' },
+];
 
 interface PanelHeaderProps {
   sessions: ChatSession[];
@@ -90,6 +99,9 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [checkpointsOpen, setCheckpointsOpen] = useState(false);
+  const [topupOpen, setTopupOpen] = useState(false);
+  const [topupLoadingPack, setTopupLoadingPack] = useState<TopupPackId | null>(null);
+  const [topupError, setTopupError] = useState<string | null>(null);
   const [historyQuery, setHistoryQuery] = useState('');
   const [history, setHistory] = useState<ConversationSummary[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
@@ -252,8 +264,33 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
     setHistoryOpen(false);
     setSettingsOpen(false);
     setCheckpointsOpen(false);
+    setTopupOpen(false);
+    setTopupError(null);
     setRenaming(null);
     setConfirmingDelete(null);
+  };
+
+  /**
+   * Buys a one-time top-up pack. Authed via the task pane's own session
+   * (createTopupSession/getBillingTopupEndpoint's docblocks explain why this
+   * can't be a marketing-site redirect the way subscribing can) — opens the
+   * returned Razorpay short_url in a new tab for the actual payment, same
+   * "leave the pane only for the payment page itself" pattern the guest
+   * subscribe flow already uses on the marketing site.
+   */
+  const handleBuyTopup = async (packId: TopupPackId) => {
+    setTopupError(null);
+    setTopupLoadingPack(packId);
+    try {
+      const { url } = await createTopupSession(packId);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      closeAll();
+    } catch (error) {
+      console.warn('[Cellix] Failed to start top-up checkout:', error);
+      setTopupError('Could not start checkout — please try again.');
+    } finally {
+      setTopupLoadingPack(null);
+    }
   };
 
   useEffect(() => {
@@ -627,6 +664,38 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                   Running low — add credits or upgrade to keep going without interruption.
                 </div>
               )}
+              {topupOpen ? (
+                <div className="cellix-topup-picker">
+                  {TOPUP_PACK_OPTIONS.map((pack) => (
+                    <button
+                      key={pack.id}
+                      type="button"
+                      className="cellix-topup-pack-btn"
+                      disabled={topupLoadingPack !== null}
+                      onClick={() => void handleBuyTopup(pack.id)}
+                    >
+                      <span className="cellix-topup-pack-credits">{pack.credits} credits</span>
+                      <span className="cellix-topup-pack-price">
+                        {topupLoadingPack === pack.id ? 'Opening…' : pack.priceLabel}
+                      </span>
+                    </button>
+                  ))}
+                  {topupError && <p className="cellix-topup-error">{topupError}</p>}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="cellix-settings-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setTopupError(null);
+                    setTopupOpen(true);
+                  }}
+                >
+                  <PlusCircle size={13} />
+                  <span>Buy more credits</span>
+                </button>
+              )}
               <div className="cellix-settings-menu-divider" />
             </>
           )}
@@ -637,6 +706,7 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             role="menuitem"
             onClick={() => {
               closeAll();
+              window.open(getPricingPageUrl(), '_blank', 'noopener,noreferrer');
             }}
           >
             <Sparkles size={13} />

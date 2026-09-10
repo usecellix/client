@@ -1,8 +1,10 @@
-import { getBillingAccountEndpoint, getBillingLedgerEndpoint } from '@/lib/apiConfig';
+import { getBillingAccountEndpoint, getBillingLedgerEndpoint, getBillingTopupEndpoint } from '@/lib/apiConfig';
+
+export type TopupPackId = 'small' | 'medium' | 'large';
 
 export interface CreditAccountSummary {
   billingEntityType: 'user' | 'org';
-  planTier: 'free' | 'solo' | 'firm' | 'enterprise';
+  planTier: 'free' | 'beta' | 'solo' | 'firm' | 'enterprise';
   planCredits: number;
   purchasedCredits: number;
   oneTimeCredits: number;
@@ -65,4 +67,17 @@ export async function fetchCreditAccount(): Promise<CreditAccountSummary | null>
 
 export async function fetchCreditLedger(cursor?: string): Promise<CreditLedgerPage> {
   return billingFetch<CreditLedgerPage>(getBillingLedgerEndpoint(cursor));
+}
+
+/**
+ * Buys a one-time top-up pack, using the task pane's existing authed
+ * session — see getBillingTopupEndpoint's own docblock for why this can't
+ * be a marketing-site redirect the way subscribing can. Returns a Razorpay
+ * short_url; the caller opens it in a new tab for the actual payment.
+ */
+export async function createTopupSession(packId: TopupPackId): Promise<{ url: string }> {
+  return billingFetch<{ url: string }>(getBillingTopupEndpoint(), {
+    method: 'POST',
+    body: JSON.stringify({ packId }),
+  });
 }

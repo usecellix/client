@@ -140,3 +140,38 @@ export function getBillingLedgerEndpoint(cursor?: string): string {
   return `${getApiBaseUrl()}/billing/ledger${suffix ? `?${suffix}` : ''}`;
 }
 
+/**
+ * Buys a one-time top-up pack — authed (uses the task pane's existing
+ * session), unlike subscribing/upgrading. A top-up debits/credits a
+ * SPECIFIC signed-in user's account, so — unlike "Upgrade the plan," which
+ * can redirect to the marketing site's guest-checkout flow — this can't be a
+ * plain external redirect: the marketing site has no session with this
+ * backend to authenticate the call. Returns a Razorpay short_url for the
+ * caller to open in a new tab for the actual payment.
+ */
+export function getBillingTopupEndpoint(): string {
+  return `${getApiBaseUrl()}/billing/checkout/topup`;
+}
+
+const DEFAULT_MARKETING_SITE_URL = 'http://localhost:5173';
+
+/**
+ * The marketing site (CELLIX-landing-page) — where the task pane's
+ * "Upgrade the plan" action sends the user, since subscribing/changing plans
+ * is a marketing-site-driven flow (pricing comparison, guest checkout).
+ * Matches the backend's own CHECKOUT_SUCCESS_URL/CHECKOUT_CANCEL_URL default
+ * dev port.
+ */
+export function getMarketingSiteUrl(): string {
+  const envValue = (import.meta as any)?.env?.VITE_MARKETING_SITE_URL as string | undefined;
+  if (typeof envValue === 'string' && envValue.trim()) {
+    return envValue.trim().replace(/\/+$/, '');
+  }
+  return DEFAULT_MARKETING_SITE_URL;
+}
+
+/** Opens the marketing site's pricing page — the entry point for upgrading/changing plans. */
+export function getPricingPageUrl(): string {
+  return `${getMarketingSiteUrl()}/pricing`;
+}
+
