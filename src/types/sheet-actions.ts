@@ -242,6 +242,8 @@ export interface SheetAction {
   filter?: RangeFilterSpec;
   /** MOVE_RANGE / COPY_FILTERED_RANGE use copy|move; CLEAR_RANGE uses the clear modes. */
   mode?: 'copy' | 'move' | 'contents' | 'formats' | 'all';
+  /** CLEAR_RANGE — also delete every chart on the sheet (whole-sheet clear intent). TASKS.md #181. */
+  clearCharts?: boolean;
   groupByColumn?: string;
   groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
   aggregations?: Array<{

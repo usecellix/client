@@ -330,27 +330,10 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
         </div>
 
         <div className="cellix-topbar-icons">
-          {creditAccount && (
-            <button
-              type="button"
-              className={`cellix-credit-chip ${isLowBalance ? 'low' : ''}`}
-              onClick={() => {
-                const next = !settingsOpen;
-                closeAll();
-                setSettingsOpen(next);
-              }}
-              title={
-                isLowBalance
-                  ? `Low balance — ${creditAccount.availableBalance} credits remaining`
-                  : `${creditAccount.availableBalance} credits remaining`
-              }
-              aria-label="Credit balance"
-            >
-              <Coins size={13} />
-              <span>{creditAccount.availableBalance}</span>
-            </button>
-          )}
-
+          {/* The balance moved out of the top bar and onto the card above the
+              composer (TASKS.md #200) — one place for it, next to the work it
+              is spent on, rather than a number in the chrome. The settings menu
+              still lists the full plan/balance summary. */}
           <button
             type="button"
             className={`cellix-topbar-icon-btn ${historyOpen ? 'active' : ''}`}

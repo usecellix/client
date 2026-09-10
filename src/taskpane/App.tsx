@@ -67,10 +67,7 @@ const App: React.FC = () => {
     async (actions: SheetAction[], explanation: string, meta?: PreviewActionsMeta) => {
       if (!actions.length) return;
 
-      frontendTelemetry.logAcceptClick(actions, {
-        changeSetId: meta?.changeSetId,
-        source: 'applyActionsWithAudit',
-      });
+      frontendTelemetry.logApplyStart(actions, { changeSetId: meta?.changeSetId });
 
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;

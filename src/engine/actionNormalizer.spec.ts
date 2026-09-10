@@ -11,6 +11,52 @@ describe('actionNormalizer', () => {
     expect(rich).toEqual([{ type: 'DELETE_SHEET', sheetName: 'Cellix' }]);
   });
 
+  it('routes a bare CLEAR_RANGE to the rich engine', () => {
+    // "clear all data in the sheet" is answered by the Tier 0 local lane, which
+    // emits CLEAR_RANGE directly rather than a legacy CLEAR_* shape. The type
+    // was only ever a conversion *target*, so it landed in `unsupported` and
+    // Accept failed with "Unsupported action(s): CLEAR_RANGE".
+    const { rich, unsupported } = partitionActions([
+      { type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents' } as SheetAction,
+    ]);
+
+    expect(unsupported).toHaveLength(0);
+    expect(rich).toEqual([
+      { type: 'CLEAR_RANGE', sheetName: '', range: 'A1:XFD1048576', mode: 'contents' },
+    ]);
+  });
+
+  it('defaults a CLEAR_RANGE with no mode to clearing contents', () => {
+    const { rich } = partitionActions([
+      { type: 'CLEAR_RANGE', sheetName: 'Main', range: 'A1:C10' } as SheetAction,
+    ]);
+    expect(rich).toEqual([
+      { type: 'CLEAR_RANGE', sheetName: 'Main', range: 'A1:C10', mode: 'contents' },
+    ]);
+  });
+
+  // TASKS.md #181 — a whole-sheet CLEAR_RANGE carries clearCharts so the
+  // handler also deletes stranded charts, not just cell contents.
+  it('passes clearCharts through a CLEAR_RANGE', () => {
+    const { rich } = partitionActions([
+      {
+        type: 'CLEAR_RANGE',
+        range: 'A1:XFD1048576',
+        mode: 'contents',
+        clearCharts: true,
+      } as SheetAction,
+    ]);
+    expect(rich).toEqual([
+      {
+        type: 'CLEAR_RANGE',
+        sheetName: '',
+        range: 'A1:XFD1048576',
+        mode: 'contents',
+        clearCharts: true,
+      },
+    ]);
+  });
+
   it('routes CREATE_SHEET to ADD_SHEET in the rich engine', () => {
     const { rich } = partitionActions([{ type: 'CREATE_SHEET', sheetName: 'Summary' }]);
     expect(rich).toEqual([{ type: 'ADD_SHEET', name: 'Summary' }]);

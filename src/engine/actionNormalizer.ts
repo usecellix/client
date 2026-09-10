@@ -23,6 +23,13 @@ function isRichAction(action: SheetAction): boolean {
     'HIDE_GRIDLINES',
     'CLARIFY',
     'CHECKPOINT',
+    // Address-based clear. Emitted directly by the Tier 0 local lane
+    // (`tryLocalClearSheetActions`) and by `convertLegacyToRich` for the
+    // CLEAR_CELL/CLEAR_CONTENT/CLEAR_FORMAT/CLEAR_ALL family. It was only ever
+    // listed as a conversion *target*, so an action that arrived already in
+    // this shape matched neither branch and was reported as unsupported —
+    // "clear all data in the sheet" failed on Accept.
+    'CLEAR_RANGE',
     'ADD_SHEET',
     'DELETE_SHEET',
     'SORT_RANGE',
@@ -122,6 +129,15 @@ export function toRichAction(action: SheetAction): RichAction | null {
         targetRange: String(r.targetRange),
         explicitOverwriteConfirmed: r.explicitOverwriteConfirmed === true,
       } as RichAction;
+    case 'CLEAR_RANGE':
+      return {
+        type: 'CLEAR_RANGE',
+        sheetName: String(r.sheetName ?? ''),
+        range: String(r.range ?? ''),
+        mode:
+          r.mode === 'formats' ? 'formats' : r.mode === 'all' ? 'all' : 'contents',
+        ...(r.clearCharts === true ? { clearCharts: true } : {}),
+      };
     case 'BATCH_SET':
       return {
         type: 'BATCH_SET',

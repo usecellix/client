@@ -30,6 +30,25 @@ export function getApiBaseUrl(): string {
   return DEFAULT_API_BASE_URL;
 }
 
+/** Marketing site. Swap for the pricing page once it exists. */
+const DEFAULT_UPGRADE_URL = 'https://www.usecellix.com';
+
+/**
+ * Where the Upgrade button sends people.
+ *
+ * Defaults in CODE rather than only in `.env`, because Vite freezes
+ * `import.meta.env` when the dev server starts and never re-reads `.env` on
+ * HMR — an env-only value meant the button stayed invisible after being
+ * configured until someone restarted the server, which is a confusing way for
+ * a button to be missing. `VITE_UPGRADE_URL` still overrides per environment.
+ * TASKS.md #204.
+ */
+export function getUpgradeUrl(): string {
+  const envValue = (import.meta as any)?.env?.VITE_UPGRADE_URL as string | undefined;
+  const trimmed = typeof envValue === 'string' ? envValue.trim() : '';
+  return trimmed || DEFAULT_UPGRADE_URL;
+}
+
 export function getStreamEndpoint(): string {
   return `${getApiBaseUrl()}${STREAM_PATH}`;
 }

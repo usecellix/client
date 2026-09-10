@@ -2073,12 +2073,18 @@
   color: var(--cx-brand-700);
 }
 
+/* Floating composer (#198): the dock used to paint an opaque white band with
+   a full-width divider across the bottom of the panel, which read as a fixed
+   toolbar bolted to the frame. `.cellix-panel` is --cx-gray-50, so dropping the
+   band (and the input area's own white) lets that tint run behind the field and
+   the shell's white surface + shadow lift off it — the same change #192 made
+   for the question card, now applied to the composer itself. */
 .cellix-composer-dock {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--cx-white);
-  border-top: 1px solid var(--cx-border);
+  background: transparent;
+  border-top: 0;
 }
 
 .cellix-input-area {
@@ -2096,6 +2102,7 @@
   position: static;
   padding-top: 6px;
   overflow: visible;
+  background: transparent;
 }
 
 .cellix-input-shell {
@@ -2105,12 +2112,19 @@
   border-radius: var(--cx-radius-md);
   padding: 0;
   overflow: visible;
+  box-shadow:
+    0 1px 2px rgba(17, 24, 39, 0.04),
+    0 6px 16px rgba(17, 24, 39, 0.06);
   transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
 }
 
+/* Focus ring KEEPS the lift — replacing the shadow outright dropped the field
+   flat onto the page at the exact moment it became the active element. */
 .cellix-input-shell:focus-within {
   border-color: var(--cx-brand-700);
-  box-shadow: 0 0 0 3px rgba(67, 56, 202, 0.18);
+  box-shadow:
+    0 0 0 3px rgba(67, 56, 202, 0.18),
+    0 6px 16px rgba(17, 24, 39, 0.06);
 }
 
 .cellix-input-shell.processing {
@@ -4051,4 +4065,447 @@
 .cellix-btn-accept-all:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------------------
+   Docked question - Cursor-style card (TASKS.md #182, #184-#187)
+
+   The pending question is lifted out of the transcript and docked at the
+   bottom of the panel, above the composer, the way Cursor asks its own.
+   Inline, it scrolled away into the history while the composer sat disabled
+   with no visible cause.
+
+   Deliberately FLAT (#187): one uniform surface, one hairline outline, and no
+   internal boxes at all - no tinted header band, no divider under it, no
+   bordered option rows. The only chrome is the letter badge, and selection is
+   carried by that badge filling in plus the row's own faint wash. Every extra
+   border was competing with the composer's outline directly beneath it for the
+   same small strip of panel.
+
+   The inline (transcript) variant is untouched: it stays submit-on-click,
+   because an answered question there is a record, not a control.
+--------------------------------------------------------------------------- */
+/* Question card seated on the real input field (#191).
+
+   Final structure, from the reference: the composer keeps its NORMAL
+   appearance - full width, its own 1.5px brand outline, its own radius, white
+   fill - because it is still the real input field and must look like one. The
+   question card is the only thing that changes: inset 20px on each side so it
+   is visibly narrower than the field beneath it, outlined in the theme colour,
+   top corners rounded, bottom border dropped, and seated directly on the field
+   with no vertical gap.
+
+   Every previous attempt restyled the composer as well - a grey fill (#190), a
+   flattened shell (#188/#189), a wash and a gutter - and that is what stopped
+   it reading as an input. The composer is left alone here; only the card is
+   styled, and it sits on top like a tab on a toolbar.
+--------------------------------------------------------------------------- */
+/* Floating (#192): the card was white on white — the dock's band and
+   `.cellix-panel` were both opaque behind it, so its border was the only thing
+   separating it from the sheet, and it read as an outline drawn on a page
+   rather than a card above one. The transparency that fixes it now lives on
+   the base dock rules (#198), since the composer needed exactly the same
+   treatment; all that stays here is the geometry specific to having a card. */
+.cellix-composer-dock.has-question {
+  padding-top: 8px;
+}
+
+.cellix-composer-dock.has-question .cellix-input-area {
+  /* Seat the card directly on the field - no vertical gap between the two. */
+  padding-top: 0;
+}
+
+/* Inset 20px each side - narrower than the full-width field below. Theme
+   outline, and no bottom edge: the field's own top border closes the card.
+   The shadow is bottom-heavy but the field paints after this in DOM order, so
+   the spill behind the join is covered rather than doubling the seam. */
+.cellix-choices.is-docked {
+  margin: 0 20px;
+  padding: 2px 0 3px;
+  background: var(--cx-white);
+  border: 1px solid var(--cx-brand-400);
+  border-bottom: 0;
+  border-radius: var(--cx-radius-md) var(--cx-radius-md) 0 0;
+  box-shadow:
+    0 1px 2px rgba(17, 24, 39, 0.04),
+    0 6px 16px rgba(17, 24, 39, 0.07);
+}
+
+.cellix-choices-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 9px 1px;
+}
+
+.cellix-choices-head-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cx-brand-600);
+}
+
+.cellix-choices-collapse {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cx-gray-500);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.cellix-choices-collapse:hover {
+  color: var(--cx-gray-700);
+}
+
+.cellix-choices-prompt {
+  display: flex;
+  gap: 6px;
+  padding: 2px 9px 4px;
+}
+
+.cellix-choices-index {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--cx-gray-900);
+  line-height: 1.45;
+}
+
+.cellix-choices.is-docked .cellix-choices-question {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--cx-gray-900);
+}
+
+.cellix-choices.is-docked .cellix-choices-list {
+  gap: 0;
+  padding: 0 5px;
+  /* A long option list must not push the composer off-screen. */
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+/* No border, no fill - just badge + text on the card's own surface. */
+.cellix-choices.is-docked .cellix-choices-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.38;
+  color: var(--cx-gray-700);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.cellix-choices.is-docked .cellix-choices-option:hover:not(:disabled) {
+  background: var(--cx-gray-50, #f9fafb);
+  color: var(--cx-gray-900);
+}
+
+.cellix-choices.is-docked .cellix-choices-option.is-selected {
+  background: var(--cx-brand-50);
+  color: var(--cx-gray-900);
+  font-weight: 500;
+}
+
+/* The keyboard-shortcut badge, Cursor's A/B/C/D/E - the card's only chrome. */
+.cellix-choices-key {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 4px;
+  background: var(--cx-gray-100, #f3f4f6);
+  color: var(--cx-gray-500);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.cellix-choices.is-docked .cellix-choices-option.is-selected .cellix-choices-key {
+  background: var(--cx-brand-600);
+  color: #fff;
+}
+
+.cellix-choices-option-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Only present when "Other" is the live selection, or the question had no
+   choices at all - never left stranded behind a changed mind. */
+.cellix-choices-other-input.is-docked {
+  display: block;
+  width: calc(100% - 18px);
+  margin: 2px 9px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--cx-border);
+  border-radius: 6px;
+  background: var(--cx-white);
+  font-size: 12px;
+  color: var(--cx-gray-900);
+  outline: none;
+}
+
+.cellix-choices-other-input.is-docked:focus {
+  border-color: var(--cx-brand-500);
+}
+
+.cellix-choices-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 5px 9px 1px;
+}
+
+.cellix-choices-skip,
+.cellix-choices-continue {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
+}
+
+.cellix-choices-skip {
+  border: 0;
+  background: transparent;
+  color: var(--cx-gray-500);
+}
+
+.cellix-choices-skip:hover:not(:disabled) {
+  color: var(--cx-gray-700);
+}
+
+.cellix-choices-continue {
+  border: 0;
+  background: var(--cx-brand-600);
+  color: #fff;
+}
+
+.cellix-choices-continue:hover:not(:disabled) {
+  background: var(--cx-brand-700);
+}
+
+.cellix-choices-skip:disabled,
+.cellix-choices-continue:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cellix-choices-skip kbd,
+.cellix-choices-continue kbd {
+  font-family: inherit;
+  font-size: 9.5px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.07);
+  color: inherit;
+}
+
+.cellix-choices-continue kbd {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Answered question, resolved in place (TASKS.md #194).
+
+   Sits in the turn that asked, where the question was. The answer used to be
+   sent as its own user turn, which put the chosen option in a separate bubble
+   below — detached from the question, and reading as if the user had typed a
+   fresh unrelated prompt. */
+.cellix-question-answered {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--cx-brand-100);
+  border-radius: var(--cx-radius-md);
+  background: var(--cx-brand-50);
+}
+
+.cellix-question-answered-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--cx-brand-600);
+}
+
+.cellix-question-answered-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The question itself, kept with the answer - an answer alone stops making
+   sense once the card scrolls away from whatever prompted it. */
+.cellix-question-answered-question {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--cx-gray-700);
+  word-break: break-word;
+}
+
+.cellix-question-answered-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--cx-brand-600);
+}
+
+.cellix-question-answered-value {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--cx-gray-900);
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------------------
+   Low-credit card (TASKS.md #199)
+
+   Same seated geometry as the docked question card: inset 20px on each side so
+   it is narrower than the full-width field, rounded top, no bottom edge, and
+   no vertical gap — the field's own top border closes it, so the two read as
+   one control.
+
+   Amber rather than the brand indigo. `.cellix-credit-chip.low` in the header
+   already established that palette for exactly this state, and a warning drawn
+   in the composer's own accent would not read as a warning at all.
+--------------------------------------------------------------------------- */
+/* Default (healthy balance): a soft left-to-right brand wash, the reference's
+   tinted bar rendered in our indigo instead of its amber. Kept light enough to
+   stay information rather than a standing alarm — the card is on screen
+   constantly now that the top-bar chip is gone, and a saturated strip parked
+   there permanently would train the eye to skip it, which is exactly the eye
+   you need when the balance DOES run low. */
+.cellix-credit-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 20px;
+  /* Tight: the row is one line of text and two controls, so its height should
+     be set by the 20px dismiss button and nothing else. */
+  padding: 3px 5px 3px 9px;
+  background: linear-gradient(
+    90deg,
+    var(--cx-brand-100) 0%,
+    var(--cx-brand-50) 55%,
+    var(--cx-gray-50) 100%
+  );
+  border: 1px solid var(--cx-brand-200, #c7d2fe);
+  border-bottom: 0;
+  border-radius: var(--cx-radius-md) var(--cx-radius-md) 0 0;
+  color: var(--cx-gray-700);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* Low balance: the same wash in the header chip's established warning amber. */
+.cellix-credit-card.is-low {
+  background: linear-gradient(90deg, #fde68a 0%, #fef3c7 55%, #fffbeb 100%);
+  border-color: #fbbf24;
+  color: #92400e;
+}
+
+.cellix-credit-card-icon {
+  flex-shrink: 0;
+  color: var(--cx-gray-500);
+}
+
+.cellix-credit-card.is-low .cellix-credit-card-icon {
+  color: #b45309;
+}
+
+.cellix-credit-card-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.cellix-credit-card-copy strong {
+  font-weight: 700;
+}
+
+.cellix-credit-card-upgrade {
+  flex-shrink: 0;
+  /* Pulls Upgrade tight against the dismiss × so the two read as one group at
+     the end of the bar, as in the reference. */
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--cx-brand-600);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.cellix-credit-card-upgrade:hover {
+  background: var(--cx-brand-700);
+}
+
+.cellix-credit-card.is-low .cellix-credit-card-upgrade {
+  background: #d97706;
+}
+
+.cellix-credit-card.is-low .cellix-credit-card-upgrade:hover {
+  background: #b45309;
+}
+
+.cellix-credit-card-dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cx-gray-500);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.cellix-credit-card-dismiss:hover {
+  background: var(--cx-gray-100);
+  color: var(--cx-gray-700);
+}
+
+.cellix-credit-card.is-low .cellix-credit-card-dismiss {
+  color: #b45309;
+}
+
+.cellix-credit-card.is-low .cellix-credit-card-dismiss:hover {
+  background: #fef3c7;
+  color: #92400e;
 }

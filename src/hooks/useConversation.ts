@@ -181,6 +181,21 @@ export interface SendMessageOptions {
    * thread. The turn must already exist in the active session.
    */
   regenerateTurnId?: string;
+  /**
+   * Set when this request is the ANSWER to a question the given turn asked.
+   * The turn is continued in place — its blocks are kept, its question block
+   * is resolved with the answer, and the reply streams onto the same turn —
+   * instead of opening a new one. Without this an answer read as an unrelated
+   * new prompt, detached from the question that prompted it. TASKS.md #194.
+   */
+  answerForTurnId?: string;
+  /**
+   * The bare choice to record on the question block, when the message actually
+   * SENT carries extra context the user never typed. Without this the card
+   * would echo the whole composed "Answering ...: ..." string back at them.
+   * TASKS.md #196.
+   */
+  answerDisplayValue?: string;
 }
 
 interface PendingResponse {
@@ -677,6 +692,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
   const turns = activeSession?.turns ?? [];
+  // Read inside callbacks that must not re-create on every turn change.
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
   const awaitingInput = turns.some((turn) => turn.phase === 'awaiting_input');
 
   const applySessionContext = useCallback((session: ChatSession | null) => {
@@ -1768,17 +1786,40 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       const session = ensureActiveSession();
       setActiveClarification(null);
 
+      const answeringTurnId = sendOptions?.answerForTurnId;
       updateSession(session.id, (current) => ({
         ...current,
-        turns: current.turns.map((turn) =>
-          turn.phase === 'awaiting_input' ? { ...turn, phase: 'complete' } : turn,
-        ),
+        turns: current.turns.map((turn) => {
+          if (turn.phase !== 'awaiting_input') return turn;
+          // The turn being answered resolves its question in place and stays
+          // open for the reply; any other stale prompt just closes.
+          if (turn.id !== answeringTurnId) return { ...turn, phase: 'complete' };
+          // Exactly one block, matching the one the docked card was showing
+          // (ConversationPanel picks the first unanswered question in the
+          // turn). Stamping every unanswered block put the same answer under
+          // two different questions in a turn that had asked twice.
+          let stamped = false;
+          return {
+            ...turn,
+            phase: 'processing',
+            blocks: turn.blocks.map((block) => {
+              if (stamped || block.type !== 'question' || block.answeredWith) return block;
+              stamped = true;
+              return { ...block, answeredWith: sendOptions?.answerDisplayValue ?? trimmed };
+            }),
+          };
+        }),
       }));
 
       const regenerateTurnId = sendOptions?.regenerateTurnId;
-      const turnId = regenerateTurnId ?? `turn_${Date.now()}`;
+      const answerForTurnId = sendOptions?.answerForTurnId;
+      const turnId = answerForTurnId ?? regenerateTurnId ?? `turn_${Date.now()}`;
       const timestamp = new Date();
       const mode = sendOptions?.mode ?? DEFAULT_ASSISTANT_MODE;
+      // Abort any runtime already registered for this turn before replacing it —
+      // an orphaned ticker is unreachable and un-stoppable. TASKS.md #197.
+      const supersededRuntime = runtimeRef.current.get(turnId);
+      if (supersededRuntime) supersededRuntime.aborted = true;
       const runtime = createRuntime(mode);
       runtimeRef.current.set(turnId, runtime);
       revealScheduledRef.current.delete(turnId);
@@ -1805,7 +1846,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       // Regenerate/edit-and-resend: replace the existing turn in place
       // (same id, same position) instead of appending a new one, so the
       // message doesn't duplicate itself further down the thread.
-      updateSession(session.id, (current) => {
+      if (!answerForTurnId) updateSession(session.id, (current) => {
         const existingIndex = regenerateTurnId
           ? current.turns.findIndex((t) => t.id === regenerateTurnId)
           : -1;
@@ -1974,7 +2015,35 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       promptContext?: string,
       options?: SendMessageOptions,
     ) => {
-      await sendMessage(answer, sheetData, workbookContext, promptContext, options);
+      // Anchor the answer to the turn that actually asked, so the reply
+      // continues that turn rather than opening a detached one.
+      const asking = turnsRef.current.find(
+        (turn) =>
+          turn.phase === 'awaiting_input' &&
+          turn.blocks.some((block) => block.type === 'question' && !block.answeredWith),
+      );
+      const askedBlock = asking?.blocks.find(
+        (block): block is Extract<TurnBlock, { type: 'question' }> =>
+          block.type === 'question' && !block.answeredWith,
+      );
+
+      // Send the QUESTION along with the choice. A bare "After the last row
+      // (recommended)" reaches the server as an ordinary new prompt with
+      // nothing marking it as a reply, and the router reads it literally — one
+      // live run turned "clear the sheet" into an INSERT_ROW because the
+      // answer to "where should the new row go?" was parsed as a fresh
+      // instruction to add a row. Pairing them restores the link the UI shows
+      // but the payload had dropped. TASKS.md #196.
+      const payload =
+        askedBlock && asking
+          ? `Replying to your question "${askedBlock.question}" about my earlier ` +
+            `request "${asking.userMessage}": ${answer}`
+          : answer;
+
+      await sendMessage(payload, sheetData, workbookContext, promptContext, {
+        ...options,
+        ...(asking ? { answerForTurnId: asking.id, answerDisplayValue: answer } : {}),
+      });
     },
     [sendMessage],
   );
@@ -2338,17 +2407,32 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     abortControllerRef.current?.abort();
     void onClearPreview?.();
     setActiveClarification(null);
-    if (activeTurnId) {
-      const runtime = runtimeRef.current.get(activeTurnId);
-      if (runtime) runtime.aborted = true;
-      updateTurn(activeTurnId, (turn) => ({
-        ...turn,
-        phase: 'complete',
-        blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
-      }));
+
+    // EVERY runtime, not just the active turn's. Stop previously reached only
+    // `activeTurnId`, so a ticker left running on any other turn kept
+    // announcing progress with no way to silence it. TASKS.md #197.
+    for (const runtime of runtimeRef.current.values()) {
+      runtime.aborted = true;
     }
+
+    // And every turn still claiming to be working — the user pressed Stop; a
+    // turn left in `processing` goes on showing a spinner nothing will ever
+    // resolve.
+    updateSession(activeSessionIdRef.current ?? '', (current) => ({
+      ...current,
+      turns: current.turns.map((turn) =>
+        turn.phase === 'processing'
+          ? {
+              ...turn,
+              phase: 'complete',
+              blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+            }
+          : turn,
+      ),
+    }));
+
     setIsWaitingForResponse(false);
-  }, [activeTurnId, onClearPreview, updateTurn]);
+  }, [onClearPreview, updateSession]);
 
   const newChat = useCallback(() => {
     abortControllerRef.current?.abort();

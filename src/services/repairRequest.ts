@@ -32,7 +32,8 @@ import { OutcomeVerification, OutcomeMismatch } from './outcomeVerifier';
  * model to force the predicted value back would fight the host rather than fix
  * a bug. Those still get reported by `describeOutcome`; they just do not
  * generate a repair. A missing sheet is likewise excluded — that is a
- * structural failure needing a rebuild, not a formula fix.
+ * structural failure needing a rebuild, not a formula fix — and so is any
+ * formula error whose formula reads from a sheet that does not exist.
  */
 
 export interface RepairRequest {
@@ -75,6 +76,10 @@ export function buildRepairRequest(result: OutcomeVerification): RepairRequest |
     (mismatch) => mismatch.isFormulaError && mismatch.actual !== '(sheet missing)',
   );
   if (failures.length === 0) return null;
+  // A formula reading from a sheet that doesn't exist is the same structural
+  // failure as a missing sheet — and the errors cascade (a grand total over
+  // those rows fails too), so a partial repair would chase symptoms.
+  if (failures.some((f) => f.missingReferencedSheets?.length)) return null;
 
   const groups = groupFailures(failures);
   const errors = [...new Set(failures.map((f) => normalizeError(f.actual)))];

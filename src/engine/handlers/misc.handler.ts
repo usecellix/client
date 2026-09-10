@@ -230,5 +230,15 @@ export async function handleClearRange(
         ? Excel.ClearApplyTo.formats
         : Excel.ClearApplyTo.all;
   range.clear(applyTo);
+  // Excel.RangeClear only ever touches cell contents/formatting — a chart
+  // floats over the grid and survives it untouched, so "clear the sheet" left
+  // an otherwise-empty sheet with a stranded chart still on it (TASKS.md #181).
+  if (action.clearCharts) {
+    worksheet.charts.load('items');
+    await ctx.sync();
+    for (const chart of worksheet.charts.items) {
+      chart.delete();
+    }
+  }
   await ctx.sync();
 }

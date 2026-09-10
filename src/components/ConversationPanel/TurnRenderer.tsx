@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
+import { Check, CheckCircle2, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
 import {
   ActionBlock,
   AnswerBlock,
@@ -88,6 +88,12 @@ interface TurnRendererProps {
   onRunAsAction: (message: string) => void;
   /** Powers the inline Revert control on this turn's header, when present. */
   onRevertChangeSet?: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
+  /**
+   * The pending question is rendered docked above the composer (Cursor /
+   * Claude Code style) rather than inline in the transcript, so the block is
+   * skipped here to avoid rendering it twice. TASKS.md #182.
+   */
+  dockedQuestions?: boolean;
 }
 
 function PlanBlockView({
@@ -161,6 +167,7 @@ function BlockRenderer({
   onRunAsAction,
   onAnswerQuestion,
   showActionButtons = true,
+  dockedQuestions = false,
 }: {
   block: TurnBlock;
   turn: ConversationTurn;
@@ -175,6 +182,7 @@ function BlockRenderer({
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onRunAsAction: (message: string) => void;
   onAnswerQuestion: (answer: string) => void;
+  dockedQuestions?: boolean;
 }) {
   if (block.type === 'thinking' && block.visible === false) return null;
   if (block.type === 'status' && block.visible === false) return null;
@@ -235,7 +243,27 @@ function BlockRenderer({
 
   if (block.type === 'question') {
     if (block.revealState === 'hidden') return null;
+
+    // Answered: resolve in place, inside the turn that asked. The answer used
+    // to be sent as its own user turn, so the choice appeared detached from
+    // the question further down the thread. TASKS.md #194.
+    if (block.answeredWith) {
+      return (
+        <div className="cellix-question-answered cellix-block-enter">
+          <CheckCircle2 size={13} className="cellix-question-answered-icon" />
+          <div className="cellix-question-answered-copy">
+            <span className="cellix-question-answered-label">Answered</span>
+            <span className="cellix-question-answered-question">{block.question}</span>
+            <span className="cellix-question-answered-value">{block.answeredWith}</span>
+          </div>
+        </div>
+      );
+    }
+
     if (turn.phase !== 'awaiting_input' || !onAnswerQuestion) return null;
+    // Docked above the composer instead - see ConversationPanel's
+    // pendingQuestion. Rendering it here too would show it twice.
+    if (dockedQuestions) return null;
 
     return (
       <QuestionChoicesPanel
@@ -524,18 +552,27 @@ function blockPresentationOrder(block: TurnBlock): number {
  * cards instead of below them, where the user is actually looking for what
  * happens next.
  *
- * Fix: only hoist a status/thinking block ABOVE the accepted action cards
- * that came before it in real arrival order. Once at least one `actions`
- * block exists earlier in `turn.blocks`, any later status/thinking/answer
- * block sorts as if it were an `actions`-tier block itself (order 5, not
- * 1/2/3) — so it renders in its true chronological position, after those
- * cards, while ties among same-tier blocks still respect creation order via
- * the index tiebreaker below. The very first wave's progress blocks (nothing
- * yet in `actions`) are completely unaffected — they still hoist to the top
- * exactly as before.
+ * Fix: only hoist a status/thinking block ABOVE the anchor blocks that came
+ * before it in real arrival order. Once an anchor exists earlier in
+ * `turn.blocks`, any later status/thinking/answer block sorts as if it were an
+ * `actions`-tier block itself (order 5, not 1/2/3) — so it renders in its true
+ * chronological position, after those cards, while ties among same-tier blocks
+ * still respect creation order via the index tiebreaker below. The very first
+ * wave's progress blocks (nothing anchoring them yet) are completely
+ * unaffected — they still hoist to the top exactly as before.
+ *
+ * An ANSWERED question is an anchor for the same reason an `actions` card is
+ * (TASKS.md #195). Answering continues the turn in place, so the work the
+ * answer kicks off arrives after the question block — but `question` ranks 3
+ * while `status`/`thinking` rank 1/2, which floated all of that progress back
+ * ABOVE the card the user had just answered. An UNanswered question is
+ * deliberately not an anchor: nothing follows it yet, and it still belongs
+ * below the progress that produced it.
  */
 export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
-  const firstActionsIndex = blocks.findIndex((b) => b.type === 'actions');
+  const firstAnchorIndex = blocks.findIndex(
+    (b) => b.type === 'actions' || (b.type === 'question' && Boolean(b.answeredWith)),
+  );
 
   return blocks
     .map((block, index) => ({ block, index }))
@@ -543,9 +580,9 @@ export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
       const rank = (entry: { block: TurnBlock; index: number }) => {
         const isProgressBlock =
           entry.block.type === 'status' || entry.block.type === 'thinking' || entry.block.type === 'answer';
-        const arrivesAfterAnActionsBlock =
-          firstActionsIndex !== -1 && entry.index > firstActionsIndex;
-        if (isProgressBlock && arrivesAfterAnActionsBlock) {
+        const arrivesAfterAnAnchor =
+          firstAnchorIndex !== -1 && entry.index > firstAnchorIndex;
+        if (isProgressBlock && arrivesAfterAnAnchor) {
           return ACTIONS_PRESENTATION_ORDER;
         }
         return blockPresentationOrder(entry.block);
@@ -573,6 +610,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onRegenerate,
   onRunAsAction,
   onRevertChangeSet,
+  dockedQuestions = false,
 }) => {
   const hideProgress = turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
   const actionDialogueReady = showActionButtons && isTurnPresentationComplete(turn);
@@ -678,6 +716,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     onAnswerComplete={onAnswerComplete}
                     onRunAsAction={onRunAsAction}
                     onAnswerQuestion={onAnswerQuestion}
+                    dockedQuestions={dockedQuestions}
                   />
                 </React.Fragment>
               );

@@ -48,6 +48,26 @@ export interface OutcomeMismatch {
    * the cause. TASKS.md #168.
    */
   formula?: string;
+  /**
+   * Sheets the erroring formula references that do not exist in the workbook.
+   * A `#REF!` from `=SUM(February!G:G)` with no February sheet is a missing
+   * sheet, not a formula bug — rewriting the formula cannot fix it.
+   */
+  missingReferencedSheets?: string[];
+}
+
+/** `February!G:G`, `'Jan 2026'!A1` — the sheet names a formula reads from. */
+const FORMULA_SHEET_REF = /(?:'((?:[^']|'')+)'|([A-Za-z_À-￿][\w.À-￿]*))!/g;
+
+export function referencedSheetNames(formula: string): string[] {
+  const names = new Set<string>();
+  // String literals ("Paid!") are not references.
+  const code = formula.replace(/"(?:[^"]|"")*"/g, '""');
+  for (const match of code.matchAll(FORMULA_SHEET_REF)) {
+    const name = (match[1]?.replace(/''/g, "'") ?? match[2] ?? '').trim();
+    if (name) names.add(name);
+  }
+  return [...names];
 }
 
 export interface OutcomeVerification {
@@ -260,6 +280,29 @@ export async function verifyAppliedOutcome(
         }
       }
     }
+
+    // Attribute formula errors to missing sheets where that is the cause, so
+    // the UI says "February doesn't exist" instead of offering to rewrite a
+    // formula that is already correct.
+    const referenced = new Set(
+      mismatches.filter((m) => m.isFormulaError && m.formula).flatMap((m) => referencedSheetNames(m.formula!)),
+    );
+    if (referenced.size > 0) {
+      const probes = [...referenced].map((name) => ({
+        name,
+        item: ctx.workbook.worksheets.getItemOrNullObject(name),
+      }));
+      probes.forEach(({ item }) => item.load('isNullObject'));
+      await ctx.sync();
+      const absent = new Set(probes.filter((p) => p.item.isNullObject).map((p) => p.name));
+      if (absent.size > 0) {
+        for (const mismatch of mismatches) {
+          if (!mismatch.isFormulaError || !mismatch.formula) continue;
+          const missing = referencedSheetNames(mismatch.formula).filter((name) => absent.has(name));
+          if (missing.length > 0) mismatch.missingReferencedSheets = missing;
+        }
+      }
+    }
   });
 
   return { verified, mismatches, unreadable, skipped: false };
@@ -319,6 +362,13 @@ export function describeOutcome(result: OutcomeVerification): string | null {
       .map((m) => `"${m.expected}" -> "${m.actual}"`)
       .join(', ');
     return `Applied, but ${renamedSheets.length} sheet(s) were created under a different name than requested: ${sample}${renamedSheets.length > 3 ? ' …' : ''}.`;
+  }
+
+  const absentSheets = [...new Set(errors.flatMap((m) => m.missingReferencedSheets ?? []))];
+  if (absentSheets.length > 0) {
+    const names = absentSheets.slice(0, 3).join(', ');
+    const more = absentSheets.length > 3 ? ` +${absentSheets.length - 3} more` : '';
+    return `Applied, but ${errors.length} formula cell(s) show errors because they read from sheet(s) that don't exist: ${names}${more}. The formulas will work once those sheets are created.`;
   }
 
   if (errors.length > 0) {

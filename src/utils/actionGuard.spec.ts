@@ -76,3 +76,63 @@ describe('actionGuard header cosmetics (Spec 24 follow-up)', () => {
     expect(isHeaderFormatCorrectionMessage('After the last row (recommended)')).toBe(false);
   });
 });
+
+/**
+ * TASKS.md #205 — live report: typing plain "clear the sheet" on a 2-cell
+ * workbook answered with "Where should the new row go? I will not overwrite
+ * your header row (row 1)."
+ *
+ * The SERVER had already done this correctly — planner and executor produced
+ * `CLEAR_CONTENT A1:A2` stamped `explicitOverwriteConfirmed: true`, verified,
+ * one action. The client's own header guard then blocked it for touching row
+ * 0, which left `safe.length === 0`, which made `useConversation` raise
+ * CLARIFY_ROW_PLACEMENT — a question about ADDING a row, asked because a
+ * request to REMOVE one had been thrown away.
+ */
+describe('actionGuard confirmed clears (TASKS.md #205)', () => {
+  const layout = computeSheetLayout([['Amount'], [5000]]);
+
+  const confirmedClear: SheetAction = {
+    type: 'CLEAR_CONTENT',
+    sheetName: 'Sheet1',
+    range: 'A1:A2',
+    row: HEADER_ROW,
+    col: 0,
+    rowCount: 2,
+    colCount: 1,
+    explicitOverwriteConfirmed: true,
+  } as SheetAction;
+
+  it('keeps a confirmed CLEAR_CONTENT that spans the header row', () => {
+    const result = sanitizeActions([confirmedClear], layout);
+
+    expect(result.actions).toHaveLength(1);
+    expect(result.blocked).toHaveLength(0);
+    expect(result.requiresClarification).toBe(false);
+  });
+
+  it('still blocks an UNCONFIRMED clear on the header row', () => {
+    const { explicitOverwriteConfirmed: _omitted, ...unconfirmed } =
+      confirmedClear as SheetAction & { explicitOverwriteConfirmed?: boolean };
+
+    const result = sanitizeActions([unconfirmed as SheetAction], layout);
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.blocked).toHaveLength(1);
+  });
+
+  it('never offers row-placement for a blocked removal — there is no new row to place', () => {
+    expect(
+      blockedActionsAreDataWrites([{ type: 'CLEAR_CONTENT', row: HEADER_ROW } as SheetAction]),
+    ).toBe(false);
+    expect(
+      blockedActionsAreDataWrites([{ type: 'DELETE_ROW', row: HEADER_ROW } as SheetAction]),
+    ).toBe(false);
+    // A genuine content write still does.
+    expect(
+      blockedActionsAreDataWrites([
+        { type: 'SET_CELL', row: HEADER_ROW, col: 0, value: 'x' } as SheetAction,
+      ]),
+    ).toBe(true);
+  });
+});

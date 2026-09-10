@@ -54,6 +54,7 @@ vi.mock('@/services/frontendTelemetry', () => ({
     installConsoleCapture: vi.fn(),
     setContext: vi.fn(),
     logAcceptClick: vi.fn(),
+    logApplyStart: vi.fn(),
     logAcceptSuccess: vi.fn(),
     logAcceptFail: vi.fn(),
     logReject: vi.fn(),

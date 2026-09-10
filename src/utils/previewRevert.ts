@@ -43,6 +43,7 @@ export const DEFERRED_PREVIEW_ACTION_TYPES = new Set<SheetAction['type']>([
   'CLEAR_CONTENT',
   'CLEAR_FORMAT',
   'CLEAR_ALL',
+  'CLEAR_RANGE',
   'FILL_DOWN',
   'FILL_RIGHT',
   'FORMAT_RANGE',

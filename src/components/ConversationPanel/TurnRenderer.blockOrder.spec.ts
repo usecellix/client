@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { orderBlocksForDisplay } from './TurnRenderer';
-import { ActionBlock, StatusBlock, ThinkingBlock, TurnBlock } from '@/types/conversationTurn';
+import {
+  ActionBlock,
+  QuestionBlock,
+  StatusBlock,
+  ThinkingBlock,
+  TurnBlock,
+} from '@/types/conversationTurn';
 
 /**
  * Live report: in a stepwise (TASKS.md #153) multi-wave turn, a NEW
@@ -32,6 +38,16 @@ function actionCard(id: string, stepIndex: number): ActionBlock {
     proposalStatus: 'accepted',
     stepIndex,
     stepTotal: 6,
+  };
+}
+
+function question(id: string, answeredWith?: string): QuestionBlock {
+  return {
+    id,
+    type: 'question',
+    question: 'Where should the new row go?',
+    options: ['After the last row'],
+    ...(answeredWith ? { answeredWith } : {}),
   };
 }
 
@@ -86,5 +102,35 @@ describe('orderBlocksForDisplay', () => {
     const ordered = orderBlocksForDisplay(blocks);
 
     expect(ordered.map((b) => b.id)).toEqual(['s1', 't1']);
+  });
+
+  // TASKS.md #195 — answering continues the turn IN PLACE (#194), so the work
+  // the answer kicks off arrives after the question block. `question` ranks 3
+  // while status/thinking rank 1/2, which floated all of that progress back
+  // above the card the user had just answered.
+  it('keeps progress that follows an ANSWERED question below it', () => {
+    const blocks: TurnBlock[] = [
+      thinking('t1', 'First pass'),
+      question('q1', 'After the last row (recommended)'),
+      status('s2', 'Planning your request...'),
+      thinking('t2', 'Second pass'),
+    ];
+
+    const ordered = orderBlocksForDisplay(blocks);
+
+    expect(ordered.map((b) => b.id)).toEqual(['t1', 'q1', 's2', 't2']);
+  });
+
+  // An unanswered question anchors nothing: no work has followed it yet, and it
+  // still belongs below the progress that produced it.
+  it('leaves an UNANSWERED question below the progress that produced it', () => {
+    const blocks: TurnBlock[] = [
+      status('s1', 'Reading your worksheet...'),
+      question('q1'),
+    ];
+
+    const ordered = orderBlocksForDisplay(blocks);
+
+    expect(ordered.map((b) => b.id)).toEqual(['s1', 'q1']);
   });
 });

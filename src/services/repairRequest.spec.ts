@@ -93,6 +93,19 @@ describe('buildRepairRequest', () => {
     expect(buildRepairRequest(verification([missing]))).toBeNull();
   });
 
+  it('offers no repair when the errors come from formulas reading sheets that do not exist', () => {
+    // Live 2026-09-10: 36 cells on Main, all correct formulas over missing
+    // month sheets — plus a grand total over them that cascaded to #REF!.
+    const missingMonth: OutcomeMismatch = {
+      ...refError,
+      cell: 'B7',
+      formula: '=SUM(February!G:G)',
+      missingReferencedSheets: ['February'],
+    };
+    const cascaded: OutcomeMismatch = { ...refError, cell: 'B3', formula: '=SUM(B6:B17)' };
+    expect(buildRepairRequest(verification([missingMonth, cascaded]))).toBeNull();
+  });
+
   it('still builds a repair when the formula text was not captured', () => {
     const noFormula = { ...refError, formula: undefined };
     const repair = buildRepairRequest(verification([noFormula]))!;

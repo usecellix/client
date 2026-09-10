@@ -41,6 +41,12 @@ export interface QuestionBlock {
   question: string;
   options?: string[];
   revealState?: 'hidden' | 'visible';
+  /**
+   * What the user replied. Set when the question is answered, which resolves
+   * the block in place inside the turn that asked it rather than the answer
+   * appearing as a separate user turn further down the thread. TASKS.md #194.
+   */
+  answeredWith?: string;
 }
 
 export interface ActionBlock {
