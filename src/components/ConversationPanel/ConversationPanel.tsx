@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, KeyboardEvent } from 'react';
+import React, { useRef, useEffect, useMemo, useState, KeyboardEvent } from 'react';
 import {
   ArrowRight,
   AtSign,
@@ -18,13 +18,15 @@ import { AssistantMode, ASSISTANT_MODES, ASSISTANT_MODE_META } from '@/types/mod
 import { SheetCompareView, CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { isTurnPresentationComplete } from '@/utils/turnPresentation';
-import { LastChangeRevert } from '@/components/ChangeHistoryPanel/LastChangeRevert';
 import { RestoreResult } from '@/types/checkpoint';
 import { SheetAction } from '@/types/sheet-actions';
+import { TurnBlock } from '@/types/conversationTurn';
 import { useSession } from '@/auth/auth-client';
 import { TextAnimate } from '@/components/ui/text-animate';
 import PanelHeader from './PanelHeader';
 import TurnRenderer from './TurnRenderer';
+import QuestionChoicesPanel from './QuestionChoicesPanel';
+import CreditUpgradeCard from './CreditUpgradeCard';
 
 /* global Excel */
 
@@ -765,6 +767,14 @@ interface ConversationPanelProps {
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
+  /** Rename an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onRenameSession: (sessionId: string, title: string) => void;
+  /** Delete an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onDeleteSession: (sessionId: string) => Promise<void>;
+  /** Delete a history row that isn't necessarily an open tab (TASKS.md #177). */
+  onDeleteHistoryConversation: (conversationId: string) => Promise<void>;
+  /** Open a past conversation from server-backed history (TASKS.md #172). */
+  onOpenHistoryConversation: (conversationId: string) => Promise<boolean>;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
@@ -786,6 +796,8 @@ interface ConversationPanelProps {
   workbookId?: string;
   onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
   isApplyingActions?: boolean;
+  creditAccount?: import('@/services/billingService').CreditAccountSummary | null;
+  isLowCreditBalance?: boolean;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -808,6 +820,10 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onNewChat,
   onSelectSession,
   onCloseSession,
+  onRenameSession,
+  onDeleteSession,
+  onDeleteHistoryConversation,
+  onOpenHistoryConversation,
   onAcceptActions,
   onAcceptAllActions,
   onRejectActions,
@@ -825,6 +841,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   workbookId,
   onRestoreCheckpoint,
   isApplyingActions = false,
+  creditAccount = null,
+  isLowCreditBalance = false,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const showStartScreen = turns.length === 0;
@@ -839,6 +857,37 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     }
     onAnswerQuestion(answer);
   };
+
+  // The one question actually awaiting an answer, lifted out of the transcript
+  // so it can be docked directly above the composer the way Cursor and Claude
+  // Code ask theirs. A question buried mid-scroll reads as history: the user
+  // has to find it before they can answer it, and the composer underneath sits
+  // disabled with no visible reason. Docking it puts the question, its choices,
+  // and the input the user would otherwise type into in one place.
+  //
+  // Only ever one: the newest turn still in `awaiting_input`. Older turns keep
+  // their answered questions inline as part of the record. TASKS.md #182.
+  // Dismissed for this session only — the balance keeps falling, so a nudge
+  // permanently silenced on one click would go quiet exactly when it starts to
+  // matter. TASKS.md #199.
+  const [creditNoticeDismissed, setCreditNoticeDismissed] = useState(false);
+
+  // Lifted out of QuestionChoicesPanel so the optional-details composer can
+  // submit the chosen option and the typed detail as one answer. TASKS.md #186.
+  const [questionSelection, setQuestionSelection] = useState<string | null>(null);
+
+  const pendingQuestion = useMemo(() => {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const turn = turns[i];
+      if (turn.phase !== 'awaiting_input') continue;
+      const block = turn.blocks.find(
+        (b): b is Extract<TurnBlock, { type: 'question' }> =>
+          b.type === 'question' && b.revealState !== 'hidden',
+      );
+      if (block) return block;
+    }
+    return null;
+  }, [turns]);
 
   // Sticky-to-bottom, like Claude/Cursor/Codex chat panes: only auto-scroll
   // when the user is already at (or near) the bottom, or when a brand-new
@@ -871,27 +920,98 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     }
   }, [turns, activeTurnId, isWaitingForResponse, activeClarification]);
 
+  // A new question must never inherit the previous one's selection.
+  useEffect(() => {
+    setQuestionSelection(null);
+  }, [pendingQuestion?.id]);
+
+  // Dismissing is a "not now", not a "never". Bring the card back the moment
+  // the balance actually crosses into low — that is a different, newly urgent
+  // fact from the healthy balance the user waved away, and it is the one
+  // moment the nudge exists for. TASKS.md #203.
+  useEffect(() => {
+    if (isLowCreditBalance) setCreditNoticeDismissed(false);
+  }, [isLowCreditBalance]);
+
   const composerInput = (
     <PanelInput
-      onSend={onSend}
+      onSend={
+        pendingQuestion
+          ? (text) =>
+              handleQuestionAnswer(
+                questionSelection ? `${questionSelection} — ${text}` : text,
+              )
+          : onSend
+      }
       onStop={onStop}
       disabled={isWaitingForResponse}
       isProcessing={isWaitingForResponse}
-      isWaitingClarification={isWaitingClarification}
+      // The docked card is the thing asking; this field is optional detail
+      // alongside it, so it stays live instead of being blocked by the flag.
+      isWaitingClarification={pendingQuestion ? false : isWaitingClarification}
       mode={mode}
       onModeChange={onModeChange}
       placeholder={
-        mode === 'ask'
-          ? 'Ask anything about your workbook - use @ for references'
-          : mode === 'plan'
-            ? 'Describe what you want to plan - use @ for references'
-            : 'Describe the change you want to make - use @ for references'
+        pendingQuestion
+          ? 'Add more optional details'
+          : mode === 'ask'
+            ? 'Ask anything about your workbook - use @ for references'
+            : mode === 'plan'
+              ? 'Describe what you want to plan - use @ for references'
+              : 'Describe the change you want to make - use @ for references'
       }
     />
   );
 
+  // Question card above, composer below — Cursor's arrangement. #185 removed
+  // the composer entirely because it could only render disabled behind a
+  // "⏸ Answer the question above first…" nag; it comes back here as Cursor's
+  // "Add more optional details" field, live rather than blocked, so a choice
+  // can be qualified in prose instead of forcing Other. Sending from it
+  // answers the question (folding in the selected option) rather than starting
+  // a new turn. TASKS.md #186.
+  // Shown whenever a balance is known — not only when it is low. The header
+  // chip that used to carry this was removed (TASKS.md #200), so this card is
+  // now the only place the balance appears while working; gating it on
+  // `isLowCreditBalance` would hide the number entirely for most users, and
+  // that rule deliberately never fires on the free tier at all.
+  // Not on the start screen (TASKS.md #202). `composerDock` is the SAME element
+  // in both places — centred over the illustration when there are no turns, and
+  // pinned to the bottom once the conversation starts — so the card followed it
+  // onto a screen whose whole job is the greeting and the empty-state art. The
+  // balance belongs next to work in progress, not in front of a blank slate;
+  // the settings menu still carries it before anything has been asked.
+  const showCreditNotice =
+    Boolean(creditAccount) &&
+    !creditNoticeDismissed &&
+    !pendingQuestion &&
+    !showStartScreen;
+
   const composerDock = (
-    <div className="cellix-composer-dock">
+    <div
+      className={`cellix-composer-dock${
+        pendingQuestion || showCreditNotice ? ' has-question' : ''
+      }`}
+    >
+      {showCreditNotice && creditAccount && (
+        <CreditUpgradeCard
+          balance={creditAccount.availableBalance}
+          isLow={isLowCreditBalance}
+          onDismiss={() => setCreditNoticeDismissed(true)}
+        />
+      )}
+      {pendingQuestion && (
+        <QuestionChoicesPanel
+          key={pendingQuestion.id}
+          question={pendingQuestion.question}
+          options={pendingQuestion.options}
+          onSelect={handleQuestionAnswer}
+          disabled={isWaitingForResponse}
+          selected={questionSelection}
+          onSelectedChange={setQuestionSelection}
+          docked
+        />
+      )}
       {composerInput}
     </div>
   );
@@ -904,7 +1024,11 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         isWaitingForResponse={isWaitingForResponse}
         onSelectSession={onSelectSession}
         onCloseSession={onCloseSession}
+        onRenameSession={onRenameSession}
+        onDeleteSession={onDeleteSession}
+        onDeleteHistoryConversation={onDeleteHistoryConversation}
         onNewChat={onNewChat}
+        onOpenHistoryConversation={onOpenHistoryConversation}
         // Checkpoints icon temporarily hidden (not removed) — feature, panel,
         // and backend are all still intact behind this flag. Restore with
         // `showCheckpointsButton={!showStartScreen}` when it's wanted again.
@@ -912,6 +1036,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         workbookId={workbookId}
         conversationId={conversationId}
         onRestoreCheckpoint={onRestoreCheckpoint}
+        creditAccount={creditAccount}
+        isLowBalance={isLowCreditBalance}
       />
 
       <div
@@ -940,6 +1066,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               onRejectActions={onRejectActions}
               onResolveGstReconCollision={onResolveGstReconCollision}
               onAnswerQuestion={handleQuestionAnswer}
+              dockedQuestions
               onToggleThinking={onToggleThinking}
               onAnswerComplete={onAnswerComplete}
               onFollowUp={onFollowUp}
@@ -950,16 +1077,13 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           ))
         )}
 
-        {/* Revert for the most recent applied change lives at the end of the
-            conversation, where the change just happened — not behind the
-            composer's history icon. Full per-entry history is still there. */}
-        {!showStartScreen && (
-          <LastChangeRevert
-            conversationId={conversationId}
-            onRevert={onRevertHistoryEntry}
-            refreshKey={turns.length}
-          />
-        )}
+        {/* The standing "Last change · N cells · N min ago" bar was removed
+            (TASKS.md #207): every turn that applied something already offers
+            "Revert this change" in its own ↺ message-actions menu, anchored to
+            the change it made, and the top bar's Change History panel still
+            lists every entry. The bar restated the newest of those a third
+            time, at the cost of a permanent row above the composer.
+            `onRevertHistoryEntry` is still wired — it powers both survivors. */}
       </div>
 
       {(isComparing || compareResult) && (

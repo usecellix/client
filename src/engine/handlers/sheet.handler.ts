@@ -11,7 +11,25 @@ export async function handleDeleteSheet(
   await ctx.sync();
 }
 
-export async function handleAddSheet(action: AddSheetAction, ctx: Excel.RequestContext): Promise<void> {
+/**
+ * What actually happened to the sheet the caller asked for, versus what was
+ * asked. `sanitizeExcelSheetName` can truncate/strip characters, and Excel's
+ * own `worksheets.add` silently renames on any residual collision — neither
+ * is visible to a caller reading only `void`. This is the ground truth a
+ * `StructuralIntentChecker`-style comparison (or a manual read) needs to catch
+ * the `Main` -> `Main 2` class of failure (COMPETITIVE_STUDY_SHORTCUT.md:71).
+ */
+export interface SheetCreationOutcome {
+  requestedName: string;
+  actualName: string;
+  /** True when a sheet by (sanitized) name already existed and was reused instead of created. */
+  reusedExisting: boolean;
+}
+
+export async function handleAddSheet(
+  action: AddSheetAction,
+  ctx: Excel.RequestContext,
+): Promise<SheetCreationOutcome> {
   const sheets = ctx.workbook.worksheets;
   const name = sanitizeExcelSheetName(action.name);
   const existing = sheets.getItemOrNullObject(name);
@@ -20,7 +38,7 @@ export async function handleAddSheet(action: AddSheetAction, ctx: Excel.RequestC
   if (!existing.isNullObject) {
     existing.activate();
     await ctx.sync();
-    return;
+    return { requestedName: action.name, actualName: name, reusedExisting: true };
   }
 
   let created: Excel.Worksheet;
@@ -41,7 +59,10 @@ export async function handleAddSheet(action: AddSheetAction, ctx: Excel.RequestC
   }
 
   created.activate();
+  created.load('name');
   await ctx.sync();
+
+  return { requestedName: action.name, actualName: created.name, reusedExisting: false };
 }
 
 export async function handleRenameSheet(

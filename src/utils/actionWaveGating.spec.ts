@@ -44,6 +44,42 @@ describe('isWaveDependencySatisfied', () => {
     const b = block({ id: 'wave2', dependsOnChangeSetId: 'cs-missing' });
     expect(isWaveDependencySatisfied(b, [b])).toBe(false);
   });
+
+  // Live report (Sept 8, 2026): a 3-card progressive build where cards 1 and 2
+  // both showed "Applied" but card 3 stayed stuck on "Accept the earlier step
+  // first." A 3-link chain (card3 depends on card2, card2 depends on card1) was
+  // untested — only 2-block chains existed above. This reproduces the exact
+  // shape to check whether the gate itself is the bug, or whether the report is
+  // explained by something else (e.g. stale UI, a race in when proposalStatus
+  // actually flips to 'accepted').
+  it('is satisfied for the third link of a chain once only its DIRECT dependency (not the root) is accepted', () => {
+    const card1 = block({ id: 'card1', changeSetId: 'cs1', proposalStatus: 'accepted' });
+    const card2 = block({
+      id: 'card2',
+      changeSetId: 'cs2',
+      dependsOnChangeSetId: 'cs1',
+      proposalStatus: 'accepted',
+    });
+    const card3 = block({ id: 'card3', changeSetId: 'cs3', dependsOnChangeSetId: 'cs2' });
+    expect(isWaveDependencySatisfied(card3, [card1, card2, card3])).toBe(true);
+  });
+
+  it('is NOT satisfied for the third link when only the ROOT (card1) is accepted, not the direct parent (card2)', () => {
+    const card1 = block({ id: 'card1', changeSetId: 'cs1', proposalStatus: 'accepted' });
+    const card2 = block({
+      id: 'card2',
+      changeSetId: 'cs2',
+      dependsOnChangeSetId: 'cs1',
+      proposalStatus: 'pending', // NOT yet accepted
+    });
+    const card3 = block({ id: 'card3', changeSetId: 'cs3', dependsOnChangeSetId: 'cs2' });
+    // This is the failure shape that WOULD explain the report: if card3's
+    // dependsOnChangeSetId were ever wrongly seeded to point at card1 (the root)
+    // instead of card2 (its direct predecessor), accepting card1 alone would
+    // satisfy it even though card2 — the step actually between them — never
+    // got accepted. Confirms the gate checks the DIRECT link only.
+    expect(isWaveDependencySatisfied(card3, [card1, card2, card3])).toBe(false);
+  });
 });
 
 describe('describeBlockedReason', () => {

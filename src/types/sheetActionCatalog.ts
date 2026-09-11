@@ -3,7 +3,7 @@ import { SheetActionType } from './sheet-actions';
 /**
  * Every SheetActionType must have an entry here — adding a new wire-level
  * action type without one fails the build. This is the frontend's mirror of
- * cellix_backend/src/excel-ai/types/action-catalog.ts's ACTION_CATALOG, one
+ * Server/src/excel-ai/types/action-catalog.ts's ACTION_CATALOG, one
  * layer up: that file guarantees the backend's own union stays internally
  * consistent; this one lets a cross-repo test confirm the frontend at least
  * recognizes every wire type the backend's catalog can advertise or emit,
@@ -58,8 +58,10 @@ const SHEET_ACTION_CATALOG: Record<SheetActionType, true> = {
   CREATE_TABLE: true,
   DELETE_TABLE: true,
   CREATE_CHART: true,
+  DATA_VALIDATION: true,
   DEFINE_NAMED_RANGE: true,
   AUTOFIT_COLUMNS: true,
+  HIDE_GRIDLINES: true,
   CLARIFY: true,
   CHECKPOINT: true,
   ADD_SHEET: true,

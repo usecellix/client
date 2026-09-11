@@ -191,6 +191,22 @@ export const frontendTelemetry = {
     });
   },
 
+  /**
+   * The apply path starting — distinct from `accept.click` (the user's click),
+   * which the UI handlers log. Both used to emit `accept.click`, so every
+   * Accept showed up twice in frontend.log.
+   */
+  logApplyStart(actions: SheetAction[], meta?: { changeSetId?: string }): void {
+    enqueue({
+      level: 'action',
+      category: 'accept',
+      event: 'accept.apply_start',
+      message: `Applying ${actions.length} action(s)`,
+      changeSetId: meta?.changeSetId,
+      details: summarizeActions(actions),
+    });
+  },
+
   logAcceptSuccess(actions: SheetAction[], meta?: { changeSetId?: string; explanation?: string }): void {
     enqueue({
       level: 'action',

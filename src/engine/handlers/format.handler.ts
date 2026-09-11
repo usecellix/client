@@ -37,6 +37,7 @@ function toLegacyFormat(fmt: RichFormatSpec): FormatSpec {
     bold: fmt.bold,
     italic: fmt.italic,
     fontSize: fmt.fontSize,
+    fontName: fmt.fontName,
     fontColor: fmt.fontColor,
     fillColor: fmt.fillColor,
     numberFormat: fmt.numberFormat,
@@ -73,6 +74,7 @@ export function applyFormat(range: Excel.Range, format: FormatSpec): void {
   if (format.bold !== undefined) range.format.font.bold = format.bold;
   if (format.italic !== undefined) range.format.font.italic = format.italic;
   if (format.fontSize !== undefined) range.format.font.size = format.fontSize;
+  if (format.fontName !== undefined) range.format.font.name = format.fontName;
   if (format.fontColor !== undefined) range.format.font.color = format.fontColor;
   if (format.clearFill) {
     range.format.fill.clear();

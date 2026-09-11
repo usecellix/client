@@ -233,4 +233,68 @@ describe('useConversation — SSE-driven state transitions', () => {
     },
     10000,
   );
+
+  it(
+    'a greeting ("hi") skips the "Reading your worksheet…" choreography entirely — shows a single lightweight "Thinking…" step instead',
+    async () => {
+      // Mirrors the backend's real CHITCHAT route (conversation.service.ts's
+      // handleChitchat): plain `chunk` streaming, no `status`/`thinking`/
+      // `actions` events at all — reported live as "no need for that... show
+      // thinking and show how do we handle it better."
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          makeSseResponse([
+            sseBlock('chunk', { text: 'Hi there! ' }),
+            sseBlock('chunk', { text: 'What can I help you with?' }),
+            sseBlock('conversation_end', {}),
+          ]),
+        ),
+      );
+
+      const { result } = renderHook(() => useConversation({ workbookKey: 'chitchat-test' }));
+
+      const startedAt = Date.now();
+      await act(async () => {
+        await result.current.sendMessage('hi', [], WORKBOOK_CONTEXT, PROMPT_CONTEXT, {
+          mode: 'ask',
+        });
+      });
+      const elapsedMs = Date.now() - startedAt;
+
+      await waitFor(() => expect(result.current.turns).toHaveLength(1));
+      const turn = result.current.turns[0];
+
+      // The actual regression: the full reading→analyzing pacing has hard
+      // minimum delays (TIMING.readingMinRun + analyzingMinRun alone total
+      // 4000ms, before the reveal/gap delays around them) that ran
+      // regardless of how fast the real reply arrived. The chitchat fast
+      // path's only wait is `waitWithMin(gate, 200)` — comfortably under 2s
+      // even with test/CI slack, versus several multiples of that on the
+      // full path (confirmed by disabling the fast path locally: the
+      // identical scenario then took ~10s).
+      expect(elapsedMs).toBeLessThan(2000);
+
+      // Never shows the heavyweight worksheet-analysis labels — those imply
+      // real workbook work that never happened for a bare greeting.
+      expect(
+        turn.blocks.some(
+          (b) =>
+            (b.type === 'step' || b.type === 'status') &&
+            /reading your worksheet|analyzing your spreadsheet/i.test(b.label),
+        ),
+      ).toBe(false);
+      expect(
+        turn.blocks.some((b) => b.type === 'thinking' && /analyzing your spreadsheet/i.test(b.content)),
+      ).toBe(false);
+
+      expect(turn.phase).toBe('complete');
+      expect(
+        turn.blocks.some(
+          (b) => b.type === 'answer' && b.content === 'Hi there! What can I help you with?',
+        ),
+      ).toBe(true);
+    },
+    10000,
+  );
 });

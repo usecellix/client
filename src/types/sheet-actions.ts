@@ -3,6 +3,8 @@ export interface FormatSpec {
   italic?: boolean;
   underline?: boolean;
   fontSize?: number;
+  /** Font family, e.g. 'Aptos Narrow'. TASKS.md #169. */
+  fontName?: string;
   fontColor?: string;
   fillColor?: string;
   clearFill?: boolean;
@@ -62,7 +64,9 @@ export type SheetActionType =
   | 'CREATE_TABLE'
   | 'DELETE_TABLE'
   | 'CREATE_CHART'
+  | 'DATA_VALIDATION'
   | 'DEFINE_NAMED_RANGE'
+  | 'HIDE_GRIDLINES'
   | 'AUTOFIT_COLUMNS'
   | 'CLARIFY'
   | 'CHECKPOINT'
@@ -238,6 +242,8 @@ export interface SheetAction {
   filter?: RangeFilterSpec;
   /** MOVE_RANGE / COPY_FILTERED_RANGE use copy|move; CLEAR_RANGE uses the clear modes. */
   mode?: 'copy' | 'move' | 'contents' | 'formats' | 'all';
+  /** CLEAR_RANGE — also delete every chart on the sheet (whole-sheet clear intent). TASKS.md #181. */
+  clearCharts?: boolean;
   groupByColumn?: string;
   groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
   aggregations?: Array<{

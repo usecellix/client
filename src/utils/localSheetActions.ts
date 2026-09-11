@@ -182,7 +182,11 @@ function tryLocalClearSheetActions(
   if (/[A-Z]+\d+:[A-Z]+\d+/i.test(message)) return null;
 
   return {
-    actions: [{ type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents' }],
+    // Whole-sheet clear means "make it a plain workbook" — cell contents AND
+    // any charts left floating over the (now empty) grid. TASKS.md #181.
+    actions: [
+      { type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents', clearCharts: true },
+    ],
     explanation: 'Clear all data on the active sheet',
   };
 }
@@ -207,6 +211,39 @@ export function detectDeleteSheetIntent(message: string): boolean {
     /\b(delete|remove|drop)\b/.test(lower) &&
     (/\bsheets?\b/.test(lower) || /\btab(s)?\b/.test(lower))
   );
+}
+
+/**
+ * Words that, as the object of the delete verb, mean the user is deleting
+ * something *inside* a sheet rather than the sheet itself.
+ */
+const NON_SHEET_DELETE_OBJECT =
+  /\b(rows?|columns?|cols?|cells?|duplicates?|dupes|blanks?|values?|entries|entry|records?|data|contents?|formatting|formats?|formulas?|comments?|notes?|charts?|graphs?|tables?|filters?|borders?|colou?rs?|text|spaces?|errors?|headers?|totals?|lines?|items?|everything|anything)\b/i;
+
+/** "in/from/on the X sheet" places the sheet as a location, not the thing being deleted. */
+const SHEET_AS_LOCATION = /\b(in|from|on|within|inside|across)\b/i;
+
+/**
+ * detectDeleteSheetIntent only checks that a delete verb and the word
+ * "sheet"/"tab" both appear, so "Delete blank rows in the Summary sheet" and
+ * "Remove duplicates from this sheet" looked like sheet deletes and this lane
+ * proposed DELETE_SHEET before the backend was ever asked. This checks that the
+ * sheet is the verb's object: the words between the verb and "sheet"/"tab"
+ * (with real sheet names and @[mentions] removed, so a sheet called "Rows Data"
+ * still works) must not name something else or use the sheet as a location.
+ * Mirrors the server's local-sheet-actions.util.ts. TASKS.md #208.
+ */
+export function isSheetTheDeleteObject(message: string, availableSheets: string[]): boolean {
+  const match = /\b(?:delete|remove|drop)\b([\s\S]*?)\b(?:sheets?|tabs?)\b/i.exec(message);
+  if (!match) return false;
+
+  let objectPhrase = stripSheetMentions(match[1]);
+  const sortedSheets = [...availableSheets].sort((a, b) => b.length - a.length);
+  for (const sheet of sortedSheets) {
+    objectPhrase = objectPhrase.replace(new RegExp(`\\b${escapeRegex(sheet)}\\b`, 'gi'), ' ');
+  }
+
+  return !NON_SHEET_DELETE_OBJECT.test(objectPhrase) && !SHEET_AS_LOCATION.test(objectPhrase);
 }
 
 /**
@@ -381,6 +418,7 @@ export function tryLocalDeleteSheetActions(
   const availableSheets = (workbookContext?.sheets ?? [])
     .map((sheet) => sheet.sheetName)
     .filter(Boolean);
+  if (!isSheetTheDeleteObject(message, availableSheets)) return null;
 
   const hasMentions = extractSheetMentions(message).length > 0;
   if (availableSheets.length === 0 && !hasMentions) return null;

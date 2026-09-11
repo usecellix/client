@@ -1,3 +1,4 @@
+import type { RepairRequest } from '@/services/repairRequest';
 import { SheetAction } from '@/hooks/useSseStream';
 import { CellChange } from '@/types/changeSet';
 import type {
@@ -40,6 +41,12 @@ export interface QuestionBlock {
   question: string;
   options?: string[];
   revealState?: 'hidden' | 'visible';
+  /**
+   * What the user replied. Set when the question is answered, which resolves
+   * the block in place inside the turn that asked it rather than the answer
+   * appearing as a separate user turn further down the thread. TASKS.md #194.
+   */
+  answeredWith?: string;
 }
 
 export interface ActionBlock {
@@ -66,6 +73,13 @@ export interface ActionBlock {
   stepIndex?: number;
   stepTotal?: number;
   stepLabel?: string;
+  /**
+   * Step-wise run this card belongs to (TASKS.md #153). Present only when the
+   * run is PAUSED on this card: the backend has generated nothing beyond it,
+   * and deciding this card is what triggers the next wave's generation.
+   */
+  runId?: string;
+  stepwise?: boolean;
   /**
    * Action types in this batch with no defined inverse (per the backend's
    * reversibility-catalog.ts). Surfaced here so the user is warned before
@@ -154,6 +168,14 @@ export interface ConversationTurn {
   phase: TurnPhase;
   blocks: TurnBlock[];
   error?: string;
+  /**
+   * A ready-to-send follow-up that repairs cells the post-apply read-back found
+   * holding Excel errors. Present only when the applied change actually left a
+   * #REF!/#NAME?/... behind; the UI offers it rather than sending it, since the
+   * write already landed and rewriting the user's cells is their call.
+   * TASKS.md #168.
+   */
+  repairSuggestion?: RepairRequest;
 }
 
 export function truncateTabLabel(text: string, max = 18): string {

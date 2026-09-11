@@ -175,4 +175,54 @@ describe('localSheetActions', () => {
     expect(detectSheetDataGenerationIntent('add a total row below')).toBe(true);
     expect(detectSheetDataGenerationIntent('fill with sample rows')).toBe(true);
   });
+
+  // TASKS.md #208 — the sheet has to be the delete verb's object, not just
+  // mentioned as the place where rows/columns/duplicates get deleted.
+  describe('delete requests that only mention a sheet as a location (#208)', () => {
+    const guideContext: WorkbookContext = {
+      activeSheet: 'Purchase Register',
+      sheets: [
+        { sheetName: 'Purchase Register' },
+        { sheetName: 'Summary' },
+        { sheetName: 'Rows Data' },
+      ] as WorkbookContext['sheets'],
+    };
+
+    it.each([
+      'Delete blank rows in the Purchase Register sheet',
+      'Delete column C from this sheet',
+      'Remove duplicates from the Summary sheet',
+      'Remove the Narration column from the Summary sheet',
+      'Delete all rows where column A is blank in this sheet',
+      'Delete everything in the Summary sheet',
+      'Remove the header from this sheet',
+      'Delete the formatting on the Summary tab',
+    ])('does not propose DELETE_SHEET for %j', (message) => {
+      expect(tryLocalSheetActions(message, guideContext, 'action')).toBeNull();
+    });
+
+    it.each([
+      ['Delete the Summary sheet', ['Summary']],
+      ['Delete sheet Summary', ['Summary']],
+      ['Remove this sheet', ['Purchase Register']],
+      ['remove the tab called Summary', ['Summary']],
+      ['Delete the Rows Data sheet', ['Rows Data']],
+      ['Delete all the sheets except Summary', ['Purchase Register', 'Rows Data']],
+    ])('still deletes the sheet for %j', (message, expected) => {
+      const plan = tryLocalSheetActions(message, guideContext, 'action');
+      expect(plan?.actions).toEqual(
+        expected.map((sheetName) => ({ type: 'DELETE_SHEET', sheetName })),
+      );
+    });
+  });
+
+  // TASKS.md #181 — "clear all the data" / "clear the sheet" means make it a
+  // plain workbook, not just wipe cell values and leave a stranded chart
+  // floating over the empty grid.
+  it('asks to clear charts too on a whole-sheet clear', () => {
+    const plan = tryLocalSheetActions('clear all the data', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents', clearCharts: true },
+    ]);
+  });
 });

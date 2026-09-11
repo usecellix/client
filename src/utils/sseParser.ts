@@ -43,6 +43,13 @@ export interface SseActionsData {
   stepTotal?: number;
   stepLabel?: string;
   /**
+   * Step-wise run correlation (TASKS.md #153) — present only when this card is
+   * one wave of a run that is PAUSED waiting on a decision. Accepting it must
+   * be followed by POST /conversation/continue, or the build never advances.
+   */
+  runId?: string;
+  stepwise?: boolean;
+  /**
    * Action types in this batch with no defined inverse (per the backend's
    * reversibility-catalog.ts) — surfaced to warn the user before Accept.
    */
@@ -97,6 +104,38 @@ export interface SseSelectCellData {
   conversationId?: string;
 }
 
+/**
+ * Ends a step-wise run's stream WITHOUT ending the run — STEPWISE_EXECUTION.md
+ * §3. `hasMore: true` means the client should accept (or reject) the wave it
+ * was just shown and then POST /conversation/continue; `hasMore: false` means
+ * the build is genuinely finished.
+ */
+export interface SseWaveReadyData {
+  runId: string;
+  waveIndex: number;
+  waveTotal: number;
+  hasMore: boolean;
+  changeSetId?: string;
+  conversationId?: string;
+}
+
+/** Emitted once per completed debit — CREDIT_SYSTEM_SCHEMA.md §6. */
+export interface SseCreditsData {
+  planCredits: number;
+  purchasedCredits: number;
+  oneTimeCredits: number;
+  debited: number;
+  actionType: string;
+}
+
+export interface SseErrorData {
+  message: string;
+  /** Set when the gate check blocked dispatch — CREDIT_SYSTEM.md CD-4. */
+  code?: string;
+  availableBalance?: number;
+  requiredCredits?: number;
+}
+
 export type ParsedSseEvent =
   | { type: 'status'; data: { message: string } }
   // Agent progress from SseEmitter (THINKING / CHECKPOINT steps).
@@ -111,7 +150,9 @@ export type ParsedSseEvent =
   | { type: 'plan_only'; data: SsePlanData }
   | { type: 'matches'; data: SseMatchesData }
   | { type: 'select_cell'; data: SseSelectCellData }
-  | { type: 'error'; data: { message: string } }
+  | { type: 'credits'; data: SseCreditsData }
+  | { type: 'wave_ready'; data: SseWaveReadyData }
+  | { type: 'error'; data: SseErrorData }
   | { type: 'conversation_end'; data: { summary?: string; conversationId?: string } }
   | { type: 'done'; data: { message: string } };
 
@@ -161,6 +202,8 @@ function normalizeActionsData(p: Record<string, unknown>): SseActionsData {
     irreversibleActionTypes: Array.isArray(p.irreversibleActionTypes)
       ? (p.irreversibleActionTypes as string[])
       : undefined,
+    runId: typeof p.runId === 'string' ? p.runId : undefined,
+    stepwise: p.stepwise === true,
   };
 }
 
@@ -379,8 +422,49 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
             },
           }
         : null;
+    case 'wave_ready':
+      return parsed && typeof parsed.runId === 'string'
+        ? {
+            type: 'wave_ready',
+            data: {
+              runId: String(parsed.runId),
+              waveIndex: Number(parsed.waveIndex ?? 0),
+              waveTotal: Number(parsed.waveTotal ?? 0),
+              hasMore: Boolean(parsed.hasMore),
+              changeSetId:
+                typeof parsed.changeSetId === 'string' ? parsed.changeSetId : undefined,
+              conversationId:
+                typeof parsed.conversationId === 'string' ? parsed.conversationId : undefined,
+            },
+          }
+        : null;
+    case 'credits':
+      return parsed
+        ? {
+            type: 'credits',
+            data: {
+              planCredits: Number(parsed.planCredits ?? 0),
+              purchasedCredits: Number(parsed.purchasedCredits ?? 0),
+              oneTimeCredits: Number(parsed.oneTimeCredits ?? 0),
+              debited: Number(parsed.debited ?? 0),
+              actionType: String(parsed.actionType ?? ''),
+            },
+          }
+        : null;
     case 'error':
-      return { type: 'error', data: (parsed as { message: string }) ?? { message: rawData || 'Unknown error' } };
+      return {
+        type: 'error',
+        data: parsed
+          ? {
+              message: String(parsed.message ?? (rawData || 'Unknown error')),
+              code: typeof parsed.code === 'string' ? parsed.code : undefined,
+              availableBalance:
+                typeof parsed.availableBalance === 'number' ? parsed.availableBalance : undefined,
+              requiredCredits:
+                typeof parsed.requiredCredits === 'number' ? parsed.requiredCredits : undefined,
+            }
+          : { message: rawData || 'Unknown error' },
+      };
     case 'conversation_end':
       return {
         type: 'conversation_end',

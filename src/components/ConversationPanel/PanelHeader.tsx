@@ -1,12 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Archive,
-  ChevronRight,
+  Check,
+  Coins,
   ExternalLink,
   Flag,
   LogOut,
   MessageSquare,
+  Pencil,
   Pin,
+  PlusCircle,
   RotateCcw,
   Settings,
   Sparkles,
@@ -20,6 +22,24 @@ import { signOutUser } from '@/auth/useAuth';
 import { ChatSession } from '@/types/chatSession';
 import { CheckpointPanel } from '@/components/CheckpointPanel/CheckpointPanel';
 import { RestoreResult } from '@/types/checkpoint';
+import {
+  ConversationSummary,
+  fetchConversationHistory,
+  renameConversation,
+} from '@/services/conversationHistoryService';
+import {
+  dedupeConversations,
+  groupConversationsByRecency,
+} from '@/utils/conversationHistoryGrouping';
+import { createTopupSession, CreditAccountSummary, TopupPackId } from '@/services/billingService';
+import { getPricingPageUrl } from '@/lib/apiConfig';
+
+/** Mirrors cellix_backend's TOPUP_PACKS (credit/topup-packs.ts) — display-only, the real price/credit amounts are enforced server-side. */
+const TOPUP_PACK_OPTIONS: Array<{ id: TopupPackId; credits: number; priceLabel: string }> = [
+  { id: 'small', credits: 300, priceLabel: '₹149' },
+  { id: 'medium', credits: 1000, priceLabel: '₹399' },
+  { id: 'large', credits: 2200, priceLabel: '₹799' },
+];
 
 interface PanelHeaderProps {
   sessions: ChatSession[];
@@ -27,7 +47,19 @@ interface PanelHeaderProps {
   isWaitingForResponse: boolean;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
+  /** Rename an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onRenameSession: (sessionId: string, title: string) => void;
+  /** Delete an open tab, and its server conversation if it has one (TASKS.md #177). */
+  onDeleteSession: (sessionId: string) => Promise<void>;
+  /** Delete a history row that isn't necessarily an open tab (TASKS.md #177). */
+  onDeleteHistoryConversation: (conversationId: string) => Promise<void>;
   onNewChat: () => void;
+  /**
+   * Open a past conversation from server-backed history (TASKS.md #172).
+   * Resolves false on failure so the menu can say so instead of quietly
+   * swapping in an empty thread.
+   */
+  onOpenHistoryConversation: (conversationId: string) => Promise<boolean>;
   /** Checkpoints icon only makes sense once a conversation exists. Change
    *  History was removed from here — reverting a specific action is now done
    *  inline on that message (TurnRenderer's own Revert icon) instead of via
@@ -36,6 +68,11 @@ interface PanelHeaderProps {
   workbookId?: string;
   conversationId: string | null;
   onRestoreCheckpoint: (result: RestoreResult) => Promise<void>;
+  /** Credit balance indicator — CREDIT_SYSTEM.md §5's "petrol gauge, not a
+   *  countdown timer", always visible rather than something to dig for.
+   *  `null` while loading or when no account has been provisioned yet. */
+  creditAccount?: CreditAccountSummary | null;
+  isLowBalance?: boolean;
 }
 
 export const PanelHeader: React.FC<PanelHeaderProps> = ({
@@ -44,11 +81,17 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   isWaitingForResponse,
   onSelectSession,
   onCloseSession,
+  onRenameSession,
+  onDeleteSession,
+  onDeleteHistoryConversation,
   onNewChat,
+  onOpenHistoryConversation,
   showCheckpointsButton = false,
   workbookId,
   conversationId,
   onRestoreCheckpoint,
+  creditAccount = null,
+  isLowBalance = false,
 }) => {
   const { data: session } = useSession();
   const userEmail = session?.user?.email?.trim() || 'Signed in';
@@ -56,17 +99,198 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [checkpointsOpen, setCheckpointsOpen] = useState(false);
+  const [topupOpen, setTopupOpen] = useState(false);
+  const [topupLoadingPack, setTopupLoadingPack] = useState<TopupPackId | null>(null);
+  const [topupError, setTopupError] = useState<string | null>(null);
   const [historyQuery, setHistoryQuery] = useState('');
+  const [history, setHistory] = useState<ConversationSummary[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  /** `{ kind, id }` of the row currently in inline rename edit (TASKS.md #177). */
+  const [renaming, setRenaming] = useState<{ kind: 'tab' | 'history'; id: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  /** `{ kind, id }` of the row awaiting a second click to confirm deletion. */
+  const [confirmingDelete, setConfirmingDelete] = useState<{
+    kind: 'tab' | 'history';
+    id: string;
+  } | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const headerRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
-  const filteredSessions = sessions.filter((chatSession) =>
-    chatSession.title.toLowerCase().includes(historyQuery.trim().toLowerCase()),
+  useEffect(() => {
+    if (renaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renaming]);
+
+  const startRename = (kind: 'tab' | 'history', id: string, currentTitle: string) => {
+    setConfirmingDelete(null);
+    setRenaming({ kind, id });
+    setRenameDraft(currentTitle);
+  };
+
+  const cancelRename = () => {
+    setRenaming(null);
+    setRenameDraft('');
+  };
+
+  const commitRename = () => {
+    if (!renaming) return;
+    const trimmed = renameDraft.trim();
+    if (trimmed) {
+      if (renaming.kind === 'tab') {
+        onRenameSession(renaming.id, trimmed);
+      } else {
+        // A history row with no open tab has no local session to rename, so
+        // the server call goes straight through the history endpoint rather
+        // than useConversation's tab-oriented onRenameSession.
+        void renameConversation(renaming.id, trimmed)
+          .then(() => {
+            setHistory((prev) =>
+              prev.map((entry) =>
+                entry.conversationId === renaming.id ? { ...entry, title: trimmed } : entry,
+              ),
+            );
+          })
+          .catch((error) => {
+            console.warn('[Cellix] Failed to rename chat:', error);
+            setHistoryError("Couldn't rename that chat.");
+          });
+      }
+    }
+    cancelRename();
+  };
+
+  /** Two-click confirm — a destructive, unrecoverable action gets no single-click trigger. */
+  const requestDelete = (kind: 'tab' | 'history', id: string) => {
+    if (confirmingDelete?.kind === kind && confirmingDelete.id === id) {
+      void commitDelete(kind, id);
+      return;
+    }
+    setRenaming(null);
+    setConfirmingDelete({ kind, id });
+  };
+
+  const commitDelete = async (kind: 'tab' | 'history', id: string) => {
+    setConfirmingDelete(null);
+    setDeletingId(id);
+    try {
+      if (kind === 'tab') {
+        await onDeleteSession(id);
+        // The tab may have been the source of a history row too — drop it
+        // from the loaded list so the menu doesn't show a stale entry
+        // pointing at a conversation that's now gone.
+        const removedConversationId = sessions.find((s) => s.id === id)?.conversationId;
+        if (removedConversationId) {
+          setHistory((prev) =>
+            prev.filter((entry) => entry.conversationId !== removedConversationId),
+          );
+        }
+      } else {
+        await onDeleteHistoryConversation(id);
+        setHistory((prev) => prev.filter((entry) => entry.conversationId !== id));
+      }
+    } catch (error) {
+      console.warn('[Cellix] Failed to delete chat:', error);
+      setHistoryError("Couldn't delete that chat.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  /**
+   * Fetched on open rather than on mount — history is behind a menu almost
+   * nobody opens on every session, so paying for the request up front would be
+   * a round trip most users never look at.
+   */
+  const loadHistory = useCallback(async (cursor?: string) => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const page = await fetchConversationHistory(cursor ? { cursor } : undefined);
+      setHistory((prev) =>
+        cursor ? dedupeConversations([...prev, ...page.conversations]) : page.conversations,
+      );
+      setHistoryCursor(page.nextCursor);
+    } catch (error) {
+      console.warn('[Cellix] Failed to load chat history:', error);
+      setHistoryError("Couldn't load your chat history.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    void loadHistory();
+  }, [historyOpen, loadHistory]);
+
+  const handleOpenHistoryConversation = async (targetId: string) => {
+    setOpeningId(targetId);
+    try {
+      const opened = await onOpenHistoryConversation(targetId);
+      if (opened) {
+        closeAll();
+      } else {
+        setHistoryError("Couldn't open that chat.");
+      }
+    } finally {
+      setOpeningId(null);
+    }
+  };
+
+  const query = historyQuery.trim().toLowerCase();
+  const filteredHistory = query
+    ? history.filter(
+        (entry) =>
+          entry.title.toLowerCase().includes(query) ||
+          entry.lastMessage.toLowerCase().includes(query),
+      )
+    : history;
+  const historyGroups = groupConversationsByRecency(filteredHistory);
+
+  /** conversationIds already open as tabs — marked so they read as "current". */
+  const openConversationIds = new Set(
+    sessions.map((chatSession) => chatSession.conversationId).filter(Boolean) as string[],
   );
+  const activeConversationId =
+    sessions.find((chatSession) => chatSession.id === activeSessionId)?.conversationId ?? null;
 
   const closeAll = () => {
     setHistoryOpen(false);
     setSettingsOpen(false);
     setCheckpointsOpen(false);
+    setTopupOpen(false);
+    setTopupError(null);
+    setRenaming(null);
+    setConfirmingDelete(null);
+  };
+
+  /**
+   * Buys a one-time top-up pack. Authed via the task pane's own session
+   * (createTopupSession/getBillingTopupEndpoint's docblocks explain why this
+   * can't be a marketing-site redirect the way subscribing can) — opens the
+   * returned Razorpay short_url in a new tab for the actual payment, same
+   * "leave the pane only for the payment page itself" pattern the guest
+   * subscribe flow already uses on the marketing site.
+   */
+  const handleBuyTopup = async (packId: TopupPackId) => {
+    setTopupError(null);
+    setTopupLoadingPack(packId);
+    try {
+      const { url } = await createTopupSession(packId);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      closeAll();
+    } catch (error) {
+      console.warn('[Cellix] Failed to start top-up checkout:', error);
+      setTopupError('Could not start checkout — please try again.');
+    } finally {
+      setTopupLoadingPack(null);
+    }
   };
 
   useEffect(() => {
@@ -143,6 +367,10 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
         </div>
 
         <div className="cellix-topbar-icons">
+          {/* The balance moved out of the top bar and onto the card above the
+              composer (TASKS.md #200) — one place for it, next to the work it
+              is spent on, rather than a number in the chrome. The settings menu
+              still lists the full plan/balance summary. */}
           <button
             type="button"
             className={`cellix-topbar-icon-btn ${historyOpen ? 'active' : ''}`}
@@ -168,59 +396,185 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
                 placeholder="Search chats..."
                 aria-label="Search chats"
               />
-              <div className="cellix-chat-history-section">Today</div>
+
+              {historyError && (
+                <div className="cellix-chat-history-error" role="alert">
+                  {historyError}
+                  <button
+                    type="button"
+                    className="cellix-chat-history-retry"
+                    onClick={() => void loadHistory()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
               <div className="cellix-chat-history-list">
-                {filteredSessions.length === 0 ? (
+                {historyLoading && history.length === 0 ? (
+                  <div className="cellix-chat-history-empty">Loading chats…</div>
+                ) : historyGroups.length === 0 ? (
                   <div className="cellix-chat-history-empty">
-                    {sessions.length === 0 ? 'No chats yet' : 'No chats found'}
+                    {history.length === 0 ? 'No chats yet' : 'No chats found'}
                   </div>
                 ) : (
-                  filteredSessions.map((chatSession) => {
-                    const active = chatSession.id === activeSessionId;
-                    return (
-                      <div
-                        key={chatSession.id}
-                        className={`cellix-chat-history-item ${active ? 'active' : ''}`}
-                        role="menuitem"
-                        tabIndex={0}
-                        onClick={() => {
-                          onSelectSession(chatSession.id);
-                          closeAll();
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            onSelectSession(chatSession.id);
-                            closeAll();
-                          }
-                        }}
-                        title={chatSession.title}
-                      >
-                        <MessageSquare size={13} />
-                        <span>{chatSession.title}</span>
-                        {active && <Pin size={11} className="cellix-chat-history-pin" />}
-                        <button
-                          type="button"
-                          className="cellix-chat-history-delete"
-                          title="Remove chat"
-                          aria-label="Remove chat"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onCloseSession(chatSession.id);
-                          }}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    );
-                  })
+                  historyGroups.map((group) => (
+                    <React.Fragment key={group.label}>
+                      <div className="cellix-chat-history-section">{group.label}</div>
+                      {group.conversations.map((entry) => {
+                        const active = entry.conversationId === activeConversationId;
+                        const opening = openingId === entry.conversationId;
+                        const open = openConversationIds.has(entry.conversationId);
+                        const isRenaming =
+                          renaming?.kind === 'history' && renaming.id === entry.conversationId;
+                        const isConfirmingDelete =
+                          confirmingDelete?.kind === 'history' &&
+                          confirmingDelete.id === entry.conversationId;
+                        const isDeleting = deletingId === entry.conversationId;
+
+                        if (isRenaming) {
+                          return (
+                            <div
+                              key={entry.conversationId}
+                              className="cellix-chat-history-item cellix-chat-history-item-renaming"
+                              role="menuitem"
+                            >
+                              <MessageSquare size={13} />
+                              <input
+                                ref={renameInputRef}
+                                className="cellix-chat-rename-input"
+                                value={renameDraft}
+                                onChange={(event) => setRenameDraft(event.target.value)}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    commitRename();
+                                  } else if (event.key === 'Escape') {
+                                    event.preventDefault();
+                                    cancelRename();
+                                  }
+                                }}
+                                onBlur={commitRename}
+                                aria-label="Rename chat"
+                              />
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="cellix-chat-history-action"
+                                title="Confirm rename"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  commitRename();
+                                }}
+                              >
+                                <Check size={12} />
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div
+                            key={entry.conversationId}
+                            className={`cellix-chat-history-item ${active ? 'active' : ''} ${
+                              isConfirmingDelete ? 'confirming-delete' : ''
+                            }`}
+                            role="menuitem"
+                            tabIndex={0}
+                            aria-busy={opening || isDeleting}
+                            onClick={() => {
+                              if (isConfirmingDelete) return;
+                              void handleOpenHistoryConversation(entry.conversationId);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                if (isConfirmingDelete) return;
+                                void handleOpenHistoryConversation(entry.conversationId);
+                              }
+                            }}
+                            title={entry.title}
+                          >
+                            {opening ? (
+                              <span className="cellix-spinner cellix-chat-tab-spinner" />
+                            ) : (
+                              <MessageSquare size={13} />
+                            )}
+                            <span className="cellix-chat-history-item-title">{entry.title}</span>
+                            {active ? (
+                              <Pin size={11} className="cellix-chat-history-pin" />
+                            ) : open ? (
+                              <span className="cellix-chat-history-badge">Open</span>
+                            ) : null}
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className="cellix-chat-history-action"
+                              title="Rename chat"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                startRename('history', entry.conversationId, entry.title);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  startRename('history', entry.conversationId, entry.title);
+                                }
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </span>
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className={`cellix-chat-history-action cellix-chat-history-action-delete ${
+                                isConfirmingDelete ? 'confirming' : ''
+                              }`}
+                              title={
+                                isConfirmingDelete
+                                  ? 'Click again to permanently delete this chat'
+                                  : 'Delete chat (click twice to confirm)'
+                              }
+                              aria-busy={isDeleting}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestDelete('history', entry.conversationId);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  requestDelete('history', entry.conversationId);
+                                }
+                              }}
+                            >
+                              {isDeleting ? (
+                                <span className="cellix-spinner cellix-chat-tab-spinner" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))
                 )}
               </div>
-              <button type="button" className="cellix-chat-history-archived">
-                <ChevronRight size={13} />
-                <Archive size={13} />
-                Archived
-              </button>
+
+              {historyCursor && (
+                <button
+                  type="button"
+                  className="cellix-chat-history-more"
+                  disabled={historyLoading}
+                  onClick={() => void loadHistory(historyCursor)}
+                >
+                  {historyLoading ? 'Loading…' : 'Load older chats'}
+                </button>
+              )}
             </div>
           )}
 
@@ -297,12 +651,62 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             <span>{userEmail}</span>
           </div>
 
+          {creditAccount && (
+            <>
+              <div className="cellix-settings-menu-meta cellix-credit-summary">
+                <Coins size={13} />
+                <span>
+                  {creditAccount.availableBalance} credits · {creditAccount.planTier} plan
+                </span>
+              </div>
+              {isLowBalance && (
+                <div className="cellix-credit-low-notice">
+                  Running low — add credits or upgrade to keep going without interruption.
+                </div>
+              )}
+              {topupOpen ? (
+                <div className="cellix-topup-picker">
+                  {TOPUP_PACK_OPTIONS.map((pack) => (
+                    <button
+                      key={pack.id}
+                      type="button"
+                      className="cellix-topup-pack-btn"
+                      disabled={topupLoadingPack !== null}
+                      onClick={() => void handleBuyTopup(pack.id)}
+                    >
+                      <span className="cellix-topup-pack-credits">{pack.credits} credits</span>
+                      <span className="cellix-topup-pack-price">
+                        {topupLoadingPack === pack.id ? 'Opening…' : pack.priceLabel}
+                      </span>
+                    </button>
+                  ))}
+                  {topupError && <p className="cellix-topup-error">{topupError}</p>}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="cellix-settings-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setTopupError(null);
+                    setTopupOpen(true);
+                  }}
+                >
+                  <PlusCircle size={13} />
+                  <span>Buy more credits</span>
+                </button>
+              )}
+              <div className="cellix-settings-menu-divider" />
+            </>
+          )}
+
           <button
             type="button"
             className="cellix-settings-menu-item"
             role="menuitem"
             onClick={() => {
               closeAll();
+              window.open(getPricingPageUrl(), '_blank', 'noopener,noreferrer');
             }}
           >
             <Sparkles size={13} />

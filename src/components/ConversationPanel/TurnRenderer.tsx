@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
+import { Check, CheckCircle2, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
 import {
   ActionBlock,
   AnswerBlock,
@@ -89,6 +89,12 @@ interface TurnRendererProps {
   onRunAsAction: (message: string) => void;
   /** Powers the inline Revert control on this turn's header, when present. */
   onRevertChangeSet?: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
+  /**
+   * The pending question is rendered docked above the composer (Cursor /
+   * Claude Code style) rather than inline in the transcript, so the block is
+   * skipped here to avoid rendering it twice. TASKS.md #182.
+   */
+  dockedQuestions?: boolean;
   /** Overwrite / Create-new button choice on a GST-recon sheet-name collision card. */
   onResolveGstReconCollision: (
     turnId: string,
@@ -170,6 +176,7 @@ function BlockRenderer({
   onAnswerQuestion,
   onResolveGstReconCollision,
   showActionButtons = true,
+  dockedQuestions = false,
 }: {
   block: TurnBlock;
   turn: ConversationTurn;
@@ -184,6 +191,7 @@ function BlockRenderer({
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onRunAsAction: (message: string) => void;
   onAnswerQuestion: (answer: string) => void;
+  dockedQuestions?: boolean;
   onResolveGstReconCollision: (
     turnId: string,
     blockId: string,
@@ -250,7 +258,27 @@ function BlockRenderer({
 
   if (block.type === 'question') {
     if (block.revealState === 'hidden') return null;
+
+    // Answered: resolve in place, inside the turn that asked. The answer used
+    // to be sent as its own user turn, so the choice appeared detached from
+    // the question further down the thread. TASKS.md #194.
+    if (block.answeredWith) {
+      return (
+        <div className="cellix-question-answered cellix-block-enter">
+          <CheckCircle2 size={13} className="cellix-question-answered-icon" />
+          <div className="cellix-question-answered-copy">
+            <span className="cellix-question-answered-label">Answered</span>
+            <span className="cellix-question-answered-question">{block.question}</span>
+            <span className="cellix-question-answered-value">{block.answeredWith}</span>
+          </div>
+        </div>
+      );
+    }
+
     if (turn.phase !== 'awaiting_input' || !onAnswerQuestion) return null;
+    // Docked above the composer instead - see ConversationPanel's
+    // pendingQuestion. Rendering it here too would show it twice.
+    if (dockedQuestions) return null;
 
     return (
       <QuestionChoicesPanel
@@ -520,6 +548,8 @@ function UserMessageRow({
   );
 }
 
+const ACTIONS_PRESENTATION_ORDER = 5;
+
 function blockPresentationOrder(block: TurnBlock): number {
   switch (block.type) {
     case 'step':
@@ -536,10 +566,63 @@ function blockPresentationOrder(block: TurnBlock): number {
       return 4;
     case 'actions':
     case 'gst_recon_collision':
-      return 5;
+      return ACTIONS_PRESENTATION_ORDER;
     default:
       return 6;
   }
+}
+
+/**
+ * Sorts a turn's blocks for display. For a single-shot turn this is just
+ * `blockPresentationOrder` — status/thinking naturally precede the one
+ * resulting `actions` card, since that is the order they were created in
+ * too. A STEPWISE turn (TASKS.md #153) breaks that assumption: each
+ * continuation appends a NEW status/thinking block chronologically AFTER
+ * earlier waves' `actions` cards already exist and have been accepted, but
+ * `blockPresentationOrder` alone would still hoist it above every card —
+ * showing "Thinking... Step 21" floating above already-Applied Step 1/Step 2
+ * cards instead of below them, where the user is actually looking for what
+ * happens next.
+ *
+ * Fix: only hoist a status/thinking block ABOVE the anchor blocks that came
+ * before it in real arrival order. Once an anchor exists earlier in
+ * `turn.blocks`, any later status/thinking/answer block sorts as if it were an
+ * `actions`-tier block itself (order 5, not 1/2/3) — so it renders in its true
+ * chronological position, after those cards, while ties among same-tier blocks
+ * still respect creation order via the index tiebreaker below. The very first
+ * wave's progress blocks (nothing anchoring them yet) are completely
+ * unaffected — they still hoist to the top exactly as before.
+ *
+ * An ANSWERED question is an anchor for the same reason an `actions` card is
+ * (TASKS.md #195). Answering continues the turn in place, so the work the
+ * answer kicks off arrives after the question block — but `question` ranks 3
+ * while `status`/`thinking` rank 1/2, which floated all of that progress back
+ * ABOVE the card the user had just answered. An UNanswered question is
+ * deliberately not an anchor: nothing follows it yet, and it still belongs
+ * below the progress that produced it.
+ */
+export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
+  const firstAnchorIndex = blocks.findIndex(
+    (b) => b.type === 'actions' || (b.type === 'question' && Boolean(b.answeredWith)),
+  );
+
+  return blocks
+    .map((block, index) => ({ block, index }))
+    .sort((a, b) => {
+      const rank = (entry: { block: TurnBlock; index: number }) => {
+        const isProgressBlock =
+          entry.block.type === 'status' || entry.block.type === 'thinking' || entry.block.type === 'answer';
+        const arrivesAfterAnAnchor =
+          firstAnchorIndex !== -1 && entry.index > firstAnchorIndex;
+        if (isProgressBlock && arrivesAfterAnAnchor) {
+          return ACTIONS_PRESENTATION_ORDER;
+        }
+        return blockPresentationOrder(entry.block);
+      };
+      const order = rank(a) - rank(b);
+      return order !== 0 ? order : a.index - b.index;
+    })
+    .map(({ block }) => block);
 }
 
 const TurnRenderer: React.FC<TurnRendererProps> = ({
@@ -559,6 +642,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onRegenerate,
   onRunAsAction,
   onRevertChangeSet,
+  dockedQuestions = false,
   onResolveGstReconCollision,
 }) => {
   const hideProgress = turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
@@ -566,20 +650,18 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
 
   const revertibleActionBlocks = turn.blocks.filter(
     (b): b is ActionBlock =>
-      b.type === 'actions' && b.proposalStatus === 'accepted' && Boolean(b.changeSetId),
+      b.type === 'actions' &&
+      b.proposalStatus === 'accepted' &&
+      Boolean(b.changeSetId) &&
+      // Mirrors the pre-accept warning in ActionResponseCard: an accepted block whose
+      // actions were already flagged irreversible (e.g. FORMAT_MATCHING_ROWS fill color —
+      // never captured by the shadow workbook) has no real inverse to apply. Showing the
+      // button anyway lets revert() report a "successful" no-op (inverseActions: []) while
+      // the sheet visibly doesn't change back.
+      !b.irreversibleActionTypes?.length,
   );
 
-  const orderedBlocks = useMemo(
-    () =>
-      turn.blocks
-        .map((block, index) => ({ block, index }))
-        .sort((a, b) => {
-          const order = blockPresentationOrder(a.block) - blockPresentationOrder(b.block);
-          return order !== 0 ? order : a.index - b.index;
-        })
-        .map(({ block }) => block),
-    [turn.blocks],
-  );
+  const orderedBlocks = useMemo(() => orderBlocksForDisplay(turn.blocks), [turn.blocks]);
 
   const { followUps, followUpHandler, followUpsDisabled } = useMemo(() => {
     const answerBlock = turn.blocks.find(
@@ -667,6 +749,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     onAnswerComplete={onAnswerComplete}
                     onRunAsAction={onRunAsAction}
                     onAnswerQuestion={onAnswerQuestion}
+                    dockedQuestions={dockedQuestions}
                     onResolveGstReconCollision={onResolveGstReconCollision}
                   />
                 </React.Fragment>

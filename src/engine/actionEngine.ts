@@ -17,6 +17,7 @@ import {
   handleDeleteSheet,
   handleRenameSheet,
   handleCopySheet,
+  SheetCreationOutcome,
 } from './handlers/sheet.handler';
 import {
   handleCreateTable,
@@ -54,6 +55,8 @@ import {
   pruneSpuriousAddSheets,
 } from './overwriteGuard';
 import { selectActionRanges } from './selectRanges';
+import { handleDataValidation } from './handlers/validation.handler';
+import { handleHideGridlines } from './handlers/gridlines.handler';
 import { resolveWorksheet } from './sheetResolve';
 import { CellChange } from '@/types/changeSet';
 
@@ -91,12 +94,15 @@ export class RichActionEngine {
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
     sortedRangeChanges?: CellChange[];
+    /** ADD_SHEET/CREATE_SHEET outcomes where the live sheet name diverged from what was requested. */
+    sheetNameMismatches?: SheetCreationOutcome[];
   }> {
     const errors: string[] = [];
     let applied = 0;
     const createdConditionalFormatIds: CreatedConditionalFormatId[] = [];
     const createdChartIds: CreatedChartId[] = [];
     const sortedRangeChanges: CellChange[] = [];
+    const sheetNameMismatches: SheetCreationOutcome[] = [];
     const prepared = annotateDestOverwriteForCreatedSheets(
       pruneSpuriousAddSheets(actions),
     );
@@ -136,6 +142,14 @@ export class RichActionEngine {
             }
             if (result && 'sortedRangeChanges' in result && result.sortedRangeChanges) {
               sortedRangeChanges.push(...result.sortedRangeChanges);
+            }
+            if (
+              result &&
+              'requestedName' in result &&
+              'actualName' in result &&
+              result.requestedName !== result.actualName
+            ) {
+              sheetNameMismatches.push(result);
             }
             applied += 1;
           } catch (err: unknown) {
@@ -183,6 +197,7 @@ export class RichActionEngine {
       ...(createdConditionalFormatIds.length > 0 ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
       ...(sortedRangeChanges.length > 0 ? { sortedRangeChanges } : {}),
+      ...(sheetNameMismatches.length > 0 ? { sheetNameMismatches } : {}),
     };
   }
 
@@ -195,6 +210,7 @@ export class RichActionEngine {
         createdChartId?: string;
         sortedRangeChanges?: CellChange[];
       }
+    | SheetCreationOutcome
     | void
   > {
     // Last line of defense: never silently overwrite occupied cells.
@@ -260,8 +276,12 @@ export class RichActionEngine {
       case 'AGGREGATE_TABLE':
         await handleAggregateTable(action, ctx);
         return;
+      case 'DATA_VALIDATION':
+        return handleDataValidation(action, ctx);
       case 'DEFINE_NAMED_RANGE':
         return handleDefineNamedRange(action, ctx);
+      case 'HIDE_GRIDLINES':
+        return handleHideGridlines(action, ctx);
       case 'AUTOFIT_COLUMNS':
         return handleAutofitColumns(action, ctx);
       case 'WRITE_TABLE':

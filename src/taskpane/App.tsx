@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationPanel from '@/components/ConversationPanel/ConversationPanel';
 import { CompareResult } from '@/components/SheetCompareView/SheetCompareView';
 import { useConversation, PreviewActionsMeta } from '@/hooks/useConversation';
+import { useCreditBalance } from '@/hooks/useCreditBalance';
 import { ActionEngine } from '@/utils/actionEngine';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
+import type { SheetCreationOutcome } from '@/engine/handlers/sheet.handler';
 import { CellChange } from '@/types/changeSet';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
@@ -11,6 +13,8 @@ import {
   describeOutcome,
   verifyAppliedOutcomeSafe,
 } from '@/services/outcomeVerifier';
+import { buildRepairRequest } from '@/services/repairRequest';
+import { recalculateWorkbookSafe } from '@/services/recalculate';
 import { frontendTelemetry } from '@/services/frontendTelemetry';
 import {
   getContextForSend,
@@ -63,20 +67,19 @@ const App: React.FC = () => {
     async (actions: SheetAction[], explanation: string, meta?: PreviewActionsMeta) => {
       if (!actions.length) return;
 
-      frontendTelemetry.logAcceptClick(actions, {
-        changeSetId: meta?.changeSetId,
-        source: 'applyActionsWithAudit',
-      });
+      frontendTelemetry.logApplyStart(actions, { changeSetId: meta?.changeSetId });
 
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;
       let sortedRangeChanges: CellChange[] | undefined;
+      let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       try {
         if (previewManager.active) {
           const result = await previewManager.accept();
           createdConditionalFormatIds = result?.createdConditionalFormatIds;
           createdChartIds = result?.createdChartIds;
           sortedRangeChanges = result?.sortedRangeChanges;
+          sheetNameMismatches = result?.sheetNameMismatches;
         } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
           // Already applied earlier — do not re-run INSERT_COLUMN / writes.
         } else {
@@ -90,6 +93,7 @@ const App: React.FC = () => {
           createdConditionalFormatIds = result.createdConditionalFormatIds;
           createdChartIds = result.createdChartIds;
           sortedRangeChanges = result.sortedRangeChanges;
+          sheetNameMismatches = result.sheetNameMismatches;
         }
 
         if (meta?.changeSetId) {
@@ -125,8 +129,41 @@ const App: React.FC = () => {
         // Never throws and never blocks: the write already happened, so a
         // read-back problem must not turn a real success into a failure. It
         // reports, and reporting honestly is the entire point (§3.7).
-        const verification = await verifyAppliedOutcomeSafe(meta?.changes ?? []);
+        // TASKS.md #172 — settle the workbook before judging it. A cross-sheet
+        // formula written in the same batch as the sheet it references can hold
+        // a stale result until Excel recalculates, and reporting that as a
+        // failure is worse than not checking at all.
+        await recalculateWorkbookSafe();
+
+        // Structural gap this closes (COMPETITIVE_STUDY_SHORTCUT.md:71, "Main"
+        // -> "Main 2"): the ChangeSet's own cell rows only ever name the sheet
+        // the plan INTENDED, so reading back cells alone cannot detect a
+        // create that landed under a different name. `expectedSheetNames`
+        // checks the sheet set directly; `sheetNameMismatches` is the direct
+        // catch from the handler itself (Part 1) when it fired.
+        const expectedSheetNames = actions
+          .filter((a) => a.type === 'ADD_SHEET' || a.type === 'CREATE_SHEET')
+          .map((a) => String(a.sheetName ?? a.name ?? '').trim())
+          .filter(Boolean);
+        const verification = await verifyAppliedOutcomeSafe(meta?.changes ?? [], {
+          expectedSheetNames,
+        });
+        if (sheetNameMismatches?.length) {
+          for (const mismatch of sheetNameMismatches) {
+            verification.mismatches.push({
+              sheet: mismatch.requestedName,
+              cell: '(sheet)',
+              expected: mismatch.requestedName,
+              actual: mismatch.actualName,
+              isFormulaError: false,
+            });
+          }
+        }
         const outcomeMessage = describeOutcome(verification);
+        // TASKS.md #168 — the same read-back, turned into an actionable fix.
+        // Null whenever no Excel error literal came back, so a clean apply and
+        // an unpredictable-but-harmless value difference both stay silent.
+        const outcomeRepair = buildRepairRequest(verification);
         if (outcomeMessage) {
           console.warn('[Cellix] Post-apply verification found problems:', verification);
           frontendTelemetry.logAction(
@@ -149,7 +186,7 @@ const App: React.FC = () => {
             { changeSetId: meta?.changeSetId, verified: verification.verified },
           );
         }
-        meta?.onOutcomeVerified?.(verification, outcomeMessage);
+        meta?.onOutcomeVerified?.(verification, outcomeMessage, outcomeRepair);
 
         frontendTelemetry.logAcceptSuccess(actions, {
           changeSetId: meta?.changeSetId,
@@ -229,6 +266,9 @@ const App: React.FC = () => {
     }
   }, [workbookKey]);
 
+  const { account: creditAccount, isLowBalance: isLowCreditBalance, applyCreditsEvent } =
+    useCreditBalance();
+
   const {
     sessions,
     activeSessionId,
@@ -250,6 +290,10 @@ const App: React.FC = () => {
     newChat,
     selectSession,
     closeSession,
+    renameSession,
+    deleteSession,
+    deleteHistoryConversation,
+    openConversationFromHistory,
     toggleThinking,
     markAnswerComplete,
   } = useConversation({
@@ -261,6 +305,7 @@ const App: React.FC = () => {
     autoApplyActions: !previewEnabled,
     previewEnabled,
     isChangeSetApplied,
+    onCredits: applyCreditsEvent,
   });
 
   useEffect(() => {
@@ -463,6 +508,10 @@ const App: React.FC = () => {
       onNewChat={newChat}
       onSelectSession={selectSession}
       onCloseSession={closeSession}
+      onRenameSession={renameSession}
+      onDeleteSession={deleteSession}
+      onDeleteHistoryConversation={deleteHistoryConversation}
+      onOpenHistoryConversation={openConversationFromHistory}
       onAcceptActions={handleAcceptActions}
       onAcceptAllActions={handleAcceptAllActions}
       onRejectActions={handleRejectActions}
@@ -478,6 +527,8 @@ const App: React.FC = () => {
       workbookId={workbookId}
       onRestoreCheckpoint={handleRestoreCheckpoint}
       isApplyingActions={isApplying}
+      creditAccount={creditAccount}
+      isLowCreditBalance={isLowCreditBalance}
     />
   );
 };

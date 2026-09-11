@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   describeOutcome,
   isFormulaError,
+  referencedSheetNames,
   valuesAgree,
   verifyAppliedOutcome,
   verifyAppliedOutcomeSafe,
@@ -81,6 +82,17 @@ describe('isFormulaError', () => {
   });
 });
 
+describe('referencedSheetNames', () => {
+  it('finds plain and quoted sheet references, ignoring string literals', () => {
+    expect(referencedSheetNames(`=SUMIF(February!I:I,"Wow!",'Jan 2026'!G:G)+Lists!B3`)).toEqual([
+      'February',
+      'Jan 2026',
+      'Lists',
+    ]);
+    expect(referencedSheetNames('=SUM(B6:B17)')).toEqual([]);
+  });
+});
+
 describe('verifyAppliedOutcome', () => {
   const originalExcel = (globalThis as Record<string, unknown>).Excel;
   afterEach(() => {
@@ -122,19 +134,38 @@ describe('verifyAppliedOutcome', () => {
   });
 
   it('catches a formula that landed as #REF!', async () => {
-    installExcelMock({ Main: { A19: '#REF!' } });
+    installExcelMock({ Main: { A19: '#REF!' }, January: {} });
     const result = await verifyAppliedOutcome([
       change('Main', 'A19', '', '=LET(rows,VSTACK(January!A2:J500),rows)'),
     ]);
 
     expect(result.mismatches).toHaveLength(1);
     expect(result.mismatches[0].isFormulaError).toBe(true);
+    expect(result.mismatches[0].missingReferencedSheets).toBeUndefined();
     expect(describeOutcome(result)).toContain('returned an error');
     expect(describeOutcome(result)).toContain('#REF!');
   });
 
+  // Live 2026-09-10: Main's monthly totals read from February–December, which
+  // were never created. 36 #REF!/#VALUE! cells — and the UI offered to
+  // "repair" formulas that were already correct.
+  it('attributes a #REF! to a referenced sheet that does not exist', async () => {
+    installExcelMock({ Main: { B6: 0, B7: '#REF!', C7: '#VALUE!' }, January: {} });
+    const result = await verifyAppliedOutcome([
+      change('Main', 'B6', '', '=SUM(January!G:G)'),
+      change('Main', 'B7', '', '=SUM(February!G:G)'),
+      change('Main', 'C7', '', '=SUMIF(February!I:I,"Paid!",February!G:G)'),
+    ]);
+
+    expect(result.verified).toBe(1);
+    expect(result.mismatches.map((m) => m.missingReferencedSheets)).toEqual([['February'], ['February']]);
+    const message = describeOutcome(result)!;
+    expect(message).toContain("sheet(s) that don't exist: February");
+    expect(message).not.toContain('returned an error');
+  });
+
   it('catches #NAME? — the pre-365 dynamic-array failure the VSTACK formula risks', async () => {
-    installExcelMock({ Main: { A19: '#NAME?' } });
+    installExcelMock({ Main: { A19: '#NAME?' }, January: {} });
     const result = await verifyAppliedOutcome([
       change('Main', 'A19', '', '=VSTACK(January!A2:J500)'),
     ]);

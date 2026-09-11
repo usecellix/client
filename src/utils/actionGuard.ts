@@ -75,6 +75,7 @@ function isHeaderMutation(action: SheetAction, sheetIsEmpty = false): boolean {
     if (action.row === HEADER_ROW && allowedOnHeader.has(action.type)) return false;
   }
   if (action.type === 'DELETE_ROW') return action.row === HEADER_ROW;
+  if (isConfirmedRangeClear(action)) return false;
   return action.row === HEADER_ROW;
 }
 
@@ -117,10 +118,30 @@ function convertHeaderWritesToAddRow(
   return merged;
 }
 
+/**
+ * A whole-range CLEAR the server already confirmed as deliberate is not an
+ * accidental header clobber.
+ *
+ * Client twin of the server fix in TASKS.md #179, and the consequence here was
+ * worse than a silent drop: the blocked clear left `safe.length === 0`, which
+ * made `useConversation` raise CLARIFY_ROW_PLACEMENT — so plain "clear the
+ * sheet" was answered with "Where should the new row go?", a question about
+ * ADDING a row asked because a request to REMOVE one had been thrown away.
+ *
+ * Lives in one place because `sanitizeActions` ORs `isHeaderMutation` with
+ * `guardCellMutation`: exempting only one of them changes nothing at all.
+ * TASKS.md #205.
+ */
+function isConfirmedRangeClear(action: SheetAction): boolean {
+  const clearRangeTypes = new Set(['CLEAR_CONTENT', 'CLEAR_ALL', 'CLEAR_FORMAT']);
+  return clearRangeTypes.has(action.type) && action.explicitOverwriteConfirmed === true;
+}
+
 function guardCellMutation(action: SheetAction, sheetIsEmpty = false): boolean {
   if (action.type === 'ADD_ROW' || action.type === 'WRITE_TABLE') return false;
   // Cosmetic format on header/body is always allowed (fill, bold, highlight).
   if (HEADER_COSMETIC_TYPES.has(action.type)) return false;
+  if (isConfirmedRangeClear(action)) return false;
   if (action.row === undefined) return false;
   if (sheetIsEmpty && action.row === HEADER_ROW) {
     return !['SET_CELL', 'SET_FORMULA', 'FORMAT_RANGE', 'MERGE_CELLS'].includes(action.type);
@@ -254,13 +275,14 @@ export const CLARIFY_ROW_PLACEMENT = {
 /** True when sanitize blocked value-writes (not cosmetic header fill). Safe to ask row-placement. */
 export function blockedActionsAreDataWrites(blocked: SheetAction[]): boolean {
   if (blocked.length === 0) return false;
+  // Only actions that PLACE content qualify. The card this gates asks "Where
+  // should the new row go?", which is meaningless for a removal — a blocked
+  // CLEAR_*/DELETE_ROW has no new row to position, so it must fall through to
+  // an honest failure message instead. TASKS.md #205.
   return blocked.some(
     (a) =>
       a.type === 'SET_CELL' ||
       a.type === 'SET_FORMULA' ||
-      a.type === 'CLEAR_CELL' ||
-      a.type === 'CLEAR_CONTENT' ||
-      a.type === 'DELETE_ROW' ||
       a.type === 'ADD_ROW' ||
       a.type === 'INSERT_ROW' ||
       a.type === 'WRITE_TABLE' ||

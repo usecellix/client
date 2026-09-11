@@ -5,7 +5,10 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides" 
            xsi:type="TaskPaneApp">
   
-  <Id>12345678-1234-1234-1234-123456789012</Id>
+  <!-- Real GUID, generated 2026-08-29 for go-live. Do not reuse the old sample GUID
+       12345678-1234-1234-1234-123456789012 — that identifies THIS as a fresh add-in
+       to Excel/AppSource, not a version bump of one already installed anywhere. -->
+  <Id>01b90833-7da8-4125-bcd4-9f7e0d9acad8</Id>
   <Version>1.0.1.0</Version>
   <ProviderName>Cellix</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
@@ -13,18 +16,20 @@
   <Description DefaultValue="AI-powered Excel assistant with chat interface"/>
   <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png"/>
   <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-64.png"/>
-  <SupportUrl DefaultValue="https://www.contoso.com/help"/>
-  
+  <!-- TODO before AppSource submission: replace with a real support page.
+       AppSource review checks this resolves and is relevant to the listing. -->
+  <SupportUrl DefaultValue="https://YOUR-SUPPORT-PAGE-URL"/>
+
   <AppDomains>
     <AppDomain>https://localhost:3000</AppDomain>
     <AppDomain>https://accounts.google.com</AppDomain>
     <AppDomain>https://login.microsoftonline.com</AppDomain>
   </AppDomains>
-  
+
   <Hosts>
     <Host Name="Workbook"/>
   </Hosts>
-  
+
   <DefaultSettings>
     <SourceLocation DefaultValue="https://localhost:3000/src/taskpane/taskpane.html"/>
   </DefaultSettings>
@@ -84,6 +89,13 @@
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://go.microsoft.com/fwlink/?LinkId=276812"/>
         <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/src/taskpane/taskpane.html"/>
         <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/src/taskpane/taskpane.html"/>
+        <!-- REQUIRED by AppSource, absent before this change (was a top-level
+             PrivacyPolicyUrl, which is invalid per the schema — the official
+             office-addin-manifest validator rejects it there). Must accurately
+             describe that workbook content is sent to OpenRouter/OpenAI for
+             processing — the data-handling disclosure is the most likely
+             review bounce reason, not a technical gap. -->
+        <bt:Url id="PrivacyPolicy.Url" DefaultValue="https://YOUR-PRIVACY-POLICY-URL"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GetStarted.Title" DefaultValue="Get started with Cellix"/>

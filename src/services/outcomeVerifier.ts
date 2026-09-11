@@ -40,6 +40,34 @@ export interface OutcomeMismatch {
   actual: string;
   /** True when the cell holds an Excel error (#REF!, #NAME?, ...). */
   isFormulaError: boolean;
+  /**
+   * The formula the ChangeSet wrote here, when it wrote one.
+   *
+   * `expected` holds the recorded `after` VALUE, which for a formula cell is
+   * not the formula text — so without this a repair has the symptom and not
+   * the cause. TASKS.md #168.
+   */
+  formula?: string;
+  /**
+   * Sheets the erroring formula references that do not exist in the workbook.
+   * A `#REF!` from `=SUM(February!G:G)` with no February sheet is a missing
+   * sheet, not a formula bug — rewriting the formula cannot fix it.
+   */
+  missingReferencedSheets?: string[];
+}
+
+/** `February!G:G`, `'Jan 2026'!A1` — the sheet names a formula reads from. */
+const FORMULA_SHEET_REF = /(?:'((?:[^']|'')+)'|([A-Za-z_À-￿][\w.À-￿]*))!/g;
+
+export function referencedSheetNames(formula: string): string[] {
+  const names = new Set<string>();
+  // String literals ("Paid!") are not references.
+  const code = formula.replace(/"(?:[^"]|"")*"/g, '""');
+  for (const match of code.matchAll(FORMULA_SHEET_REF)) {
+    const name = (match[1]?.replace(/''/g, "'") ?? match[2] ?? '').trim();
+    if (name) names.add(name);
+  }
+  return [...names];
 }
 
 export interface OutcomeVerification {
@@ -105,6 +133,19 @@ function groupBySheet(changes: CellChange[]): Map<string, CellChange[]> {
   return bySheet;
 }
 
+export interface OutcomeVerificationOptions {
+  /**
+   * Sheet names the plan intended to create, e.g. every ADD_SHEET/CREATE_SHEET
+   * action's requested name. Checked directly against `workbook.worksheets`
+   * independent of `changes`, because the `Main` -> `Main 2` failure mode
+   * (COMPETITIVE_STUDY_SHORTCUT.md:71) means the ChangeSet's own cell rows say
+   * "Main" while the write actually landed on a different, unlisted sheet —
+   * reading back "Main" alone verifies clean even though the plan's sheet was
+   * never created. This is the structural check that closes that gap.
+   */
+  expectedSheetNames?: string[];
+}
+
 /**
  * Read back every cell this ChangeSet claims to have written and compare.
  *
@@ -113,6 +154,7 @@ function groupBySheet(changes: CellChange[]): Map<string, CellChange[]> {
  */
 export async function verifyAppliedOutcome(
   changes: CellChange[],
+  options?: OutcomeVerificationOptions,
 ): Promise<OutcomeVerification> {
   const empty: OutcomeVerification = {
     verified: 0,
@@ -121,20 +163,48 @@ export async function verifyAppliedOutcome(
     skipped: false,
   };
 
-  if (!changes?.length) return empty;
+  const expectedSheetNames = [...new Set(options?.expectedSheetNames ?? [])].filter(Boolean);
+
+  if (!changes?.length && expectedSheetNames.length === 0) return empty;
 
   if (typeof Excel === 'undefined' || typeof Excel.run !== 'function') {
     return { ...empty, skipped: true, skipReason: 'Office.js unavailable' };
   }
 
-  const bySheet = groupBySheet(changes);
-  if (bySheet.size === 0) return empty;
+  const bySheet = groupBySheet(changes ?? []);
+  if (bySheet.size === 0 && expectedSheetNames.length === 0) return empty;
 
   const mismatches: OutcomeMismatch[] = [];
   let verified = 0;
   let unreadable = 0;
 
   await Excel.run(async (ctx) => {
+    // Structural manifest check, ahead of the per-cell loop: does every sheet
+    // the plan meant to create actually exist under that name? A batch that
+    // creates "Main" but lands on "Main 2" has no cell in `changes` addressed
+    // to "Main 2" at all, so the per-cell loop below has nothing to disagree
+    // with — this is the only check that looks at the sheet *set*, not cells.
+    if (expectedSheetNames.length > 0) {
+      const sheets = expectedSheetNames.map((name) => ({
+        name,
+        item: ctx.workbook.worksheets.getItemOrNullObject(name),
+      }));
+      sheets.forEach(({ item }) => item.load('isNullObject'));
+      await ctx.sync();
+
+      for (const { name, item } of sheets) {
+        if (item.isNullObject) {
+          mismatches.push({
+            sheet: name,
+            cell: '(sheet)',
+            expected: name,
+            actual: '(sheet not created)',
+            isFormulaError: false,
+          });
+        }
+      }
+    }
+
     for (const [sheetName, sheetChanges] of bySheet) {
       // Two-phase, always: confirm the sheet exists before chaining a range off
       // it. Doing both in one sync is the exact failure mode that produced
@@ -184,6 +254,7 @@ export async function verifyAppliedOutcome(
             expected: String(change.after ?? ''),
             actual: String(actual),
             isFormulaError: true,
+            ...(change.formula ? { formula: String(change.formula) } : {}),
           });
           continue;
         }
@@ -209,6 +280,29 @@ export async function verifyAppliedOutcome(
         }
       }
     }
+
+    // Attribute formula errors to missing sheets where that is the cause, so
+    // the UI says "February doesn't exist" instead of offering to rewrite a
+    // formula that is already correct.
+    const referenced = new Set(
+      mismatches.filter((m) => m.isFormulaError && m.formula).flatMap((m) => referencedSheetNames(m.formula!)),
+    );
+    if (referenced.size > 0) {
+      const probes = [...referenced].map((name) => ({
+        name,
+        item: ctx.workbook.worksheets.getItemOrNullObject(name),
+      }));
+      probes.forEach(({ item }) => item.load('isNullObject'));
+      await ctx.sync();
+      const absent = new Set(probes.filter((p) => p.item.isNullObject).map((p) => p.name));
+      if (absent.size > 0) {
+        for (const mismatch of mismatches) {
+          if (!mismatch.isFormulaError || !mismatch.formula) continue;
+          const missing = referencedSheetNames(mismatch.formula).filter((name) => absent.has(name));
+          if (missing.length > 0) mismatch.missingReferencedSheets = missing;
+        }
+      }
+    }
   });
 
   return { verified, mismatches, unreadable, skipped: false };
@@ -217,9 +311,10 @@ export async function verifyAppliedOutcome(
 /** Never let a verification failure break an apply that already succeeded. */
 export async function verifyAppliedOutcomeSafe(
   changes: CellChange[],
+  options?: OutcomeVerificationOptions,
 ): Promise<OutcomeVerification> {
   try {
-    return await verifyAppliedOutcome(changes);
+    return await verifyAppliedOutcome(changes, options);
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'read-back failed';
     console.warn('[Cellix] Post-apply verification could not run:', error);
@@ -242,11 +337,38 @@ export function describeOutcome(result: OutcomeVerification): string | null {
   const missingSheets = new Set(
     result.mismatches.filter((m) => m.actual === '(sheet missing)').map((m) => m.sheet),
   );
+  const notCreatedSheets = new Set(
+    result.mismatches.filter((m) => m.actual === '(sheet not created)').map((m) => m.sheet),
+  );
+  const renamedSheets = result.mismatches.filter(
+    (m) => m.cell === '(sheet)' && m.actual !== '(sheet missing)' && m.actual !== '(sheet not created)',
+  );
 
   if (missingSheets.size > 0) {
     const names = [...missingSheets].slice(0, 3).join(', ');
     const more = missingSheets.size > 3 ? ` +${missingSheets.size - 3} more` : '';
     return `Applied, but ${missingSheets.size} sheet(s) could not be found afterwards: ${names}${more}. The workbook may not match what was proposed.`;
+  }
+
+  if (notCreatedSheets.size > 0) {
+    const names = [...notCreatedSheets].slice(0, 3).join(', ');
+    const more = notCreatedSheets.size > 3 ? ` +${notCreatedSheets.size - 3} more` : '';
+    return `Applied, but ${notCreatedSheets.size} sheet(s) the plan meant to create do not exist under that name: ${names}${more}. It may have landed on a differently-named sheet instead.`;
+  }
+
+  if (renamedSheets.length > 0) {
+    const sample = renamedSheets
+      .slice(0, 3)
+      .map((m) => `"${m.expected}" -> "${m.actual}"`)
+      .join(', ');
+    return `Applied, but ${renamedSheets.length} sheet(s) were created under a different name than requested: ${sample}${renamedSheets.length > 3 ? ' …' : ''}.`;
+  }
+
+  const absentSheets = [...new Set(errors.flatMap((m) => m.missingReferencedSheets ?? []))];
+  if (absentSheets.length > 0) {
+    const names = absentSheets.slice(0, 3).join(', ');
+    const more = absentSheets.length > 3 ? ` +${absentSheets.length - 3} more` : '';
+    return `Applied, but ${errors.length} formula cell(s) show errors because they read from sheet(s) that don't exist: ${names}${more}. The formulas will work once those sheets are created.`;
   }
 
   if (errors.length > 0) {
