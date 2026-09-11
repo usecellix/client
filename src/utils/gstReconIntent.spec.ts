@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectGstReconIntent, isGstReconPrompt } from './gstReconIntent';
+import { detectGstReconIntent, isCasualMissedRowsRecon, isGstReconPrompt } from './gstReconIntent';
 
 describe('gstReconIntent', () => {
   it('detects purchase vs GSTR-2B prompts', () => {
@@ -19,5 +19,25 @@ describe('gstReconIntent', () => {
   it('ignores non-GST chat', () => {
     expect(detectGstReconIntent('create a new sheet called Summary')).toBeNull();
     expect(detectGstReconIntent('what is the total in column B?')).toBeNull();
+  });
+
+  it('detects casual purchase and sales register recon', () => {
+    const purchase = detectGstReconIntent('Reconcile purchase register');
+    expect(purchase?.type).toBe('PR_VS_GSTR2B');
+    expect(isCasualMissedRowsRecon('Reconcile purchase register', purchase!)).toBe(true);
+
+    const sales = detectGstReconIntent('Reconcile sales register');
+    expect(sales?.type).toBe('SALES_VS_GSTR1');
+    expect(isCasualMissedRowsRecon('Reconcile sales register', sales!)).toBe(true);
+  });
+
+  it('does not treat GSTIN-gated prompts as casual', () => {
+    const intent = detectGstReconIntent(
+      'Reconcile purchase register for GSTIN 27ABCDE1234F1Z5',
+    );
+    expect(intent).not.toBeNull();
+    expect(isCasualMissedRowsRecon('Reconcile purchase register for GSTIN 27ABCDE1234F1Z5', intent!)).toBe(
+      false,
+    );
   });
 });

@@ -35,8 +35,50 @@ describe('gstSheetDiscovery', () => {
       ],
       'GSTR2B',
     );
-    expect(result.missing).toContain('GSTR2B');
+    expect(result.missing).toEqual(expect.arrayContaining(['GSTR2B', 'GSTR2A']));
     expect(buildMissingSheetMessage(result.missing, 'PR vs 2B')).toMatch(/GSTR-2B/);
+  });
+
+  it('discovers both GSTR-2B and GSTR-2A when present', () => {
+    const result = discoverGstSheets(
+      [
+        {
+          name: 'PR',
+          headers: ['Supplier GSTIN', 'Invoice No', 'Date', 'Taxable Amount', 'CGST', 'SGST'],
+        },
+        {
+          name: 'GSTR2B',
+          headers: ['GSTIN of supplier', 'Invoice number', 'Invoice Date', 'Taxable Value'],
+        },
+        {
+          name: 'GSTR2A',
+          headers: ['GSTIN of supplier', 'Invoice number', 'Invoice Date', 'Taxable Value'],
+        },
+      ],
+      'GSTR2B',
+    );
+    expect(result.gstr2b?.name).toBe('GSTR2B');
+    expect(result.gstr2a?.name).toBe('GSTR2A');
+    expect(result.missing).toEqual([]);
+  });
+
+  it('treats GSTR-2A alone as enough for purchase portal', () => {
+    const result = discoverGstSheets(
+      [
+        {
+          name: 'PR',
+          headers: ['Supplier GSTIN', 'Invoice No', 'Date', 'Taxable Amount', 'CGST'],
+        },
+        {
+          name: 'GSTR2A',
+          headers: ['GSTIN of supplier', 'Invoice number', 'Invoice Date', 'Taxable Value'],
+        },
+      ],
+      'GSTR2B',
+    );
+    expect(result.gstr2a?.name).toBe('GSTR2A');
+    expect(result.portal?.name).toBe('GSTR2A');
+    expect(result.missing).toEqual([]);
   });
 
   it('infers column mapping', () => {

@@ -245,6 +245,7 @@ const App: React.FC = () => {
     acceptActions,
     acceptAllActions,
     rejectActions,
+    resolveGstReconCollisionChoice,
     endConversation,
     newChat,
     selectSession,
@@ -465,6 +466,7 @@ const App: React.FC = () => {
       onAcceptActions={handleAcceptActions}
       onAcceptAllActions={handleAcceptAllActions}
       onRejectActions={handleRejectActions}
+      onResolveGstReconCollision={resolveGstReconCollisionChoice}
       onAnswerQuestion={handleAnswerQuestion}
       onClarificationAnswer={handleClarificationAnswer}
       onClarificationDismiss={dismissClarification}

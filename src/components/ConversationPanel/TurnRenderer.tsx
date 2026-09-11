@@ -20,6 +20,7 @@ import { ResponseFooter } from './ResponseOutput';
 import FollowUpsSection from './FollowUpsSection';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
 import ActionResponseCard from './ActionResponseCard';
+import GstReconCollisionCard from './GstReconCollisionCard';
 
 /**
  * Revert affordance, rendered as one item inside the message's actions menu
@@ -88,6 +89,13 @@ interface TurnRendererProps {
   onRunAsAction: (message: string) => void;
   /** Powers the inline Revert control on this turn's header, when present. */
   onRevertChangeSet?: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
+  /** Overwrite / Create-new button choice on a GST-recon sheet-name collision card. */
+  onResolveGstReconCollision: (
+    turnId: string,
+    blockId: string,
+    collisionId: string,
+    choice: 'overwrite' | 'new',
+  ) => void;
 }
 
 function PlanBlockView({
@@ -160,6 +168,7 @@ function BlockRenderer({
   onAnswerComplete,
   onRunAsAction,
   onAnswerQuestion,
+  onResolveGstReconCollision,
   showActionButtons = true,
 }: {
   block: TurnBlock;
@@ -175,6 +184,12 @@ function BlockRenderer({
   onAnswerComplete: (turnId: string, blockId: string) => void;
   onRunAsAction: (message: string) => void;
   onAnswerQuestion: (answer: string) => void;
+  onResolveGstReconCollision: (
+    turnId: string,
+    blockId: string,
+    collisionId: string,
+    choice: 'overwrite' | 'new',
+  ) => void;
 }) {
   if (block.type === 'thinking' && block.visible === false) return null;
   if (block.type === 'status' && block.visible === false) return null;
@@ -250,6 +265,22 @@ function BlockRenderer({
   if (block.type === 'plan' || block.type === 'plan_only') {
     return (
       <PlanBlockView block={block} onRunAsAction={onRunAsAction} disabled={isWaiting} />
+    );
+  }
+
+  if (block.type === 'gst_recon_collision') {
+    if (!showActionButtons) return null;
+    return (
+      <GstReconCollisionCard
+        block={block}
+        disabled={isWaiting}
+        onOverwrite={() =>
+          onResolveGstReconCollision(turn.id, block.id, block.collisionId, 'overwrite')
+        }
+        onCreateNew={() =>
+          onResolveGstReconCollision(turn.id, block.id, block.collisionId, 'new')
+        }
+      />
     );
   }
 
@@ -504,6 +535,7 @@ function blockPresentationOrder(block: TurnBlock): number {
     case 'plan_only':
       return 4;
     case 'actions':
+    case 'gst_recon_collision':
       return 5;
     default:
       return 6;
@@ -527,6 +559,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onRegenerate,
   onRunAsAction,
   onRevertChangeSet,
+  onResolveGstReconCollision,
 }) => {
   const hideProgress = turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
   const actionDialogueReady = showActionButtons && isTurnPresentationComplete(turn);
@@ -634,6 +667,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     onAnswerComplete={onAnswerComplete}
                     onRunAsAction={onRunAsAction}
                     onAnswerQuestion={onAnswerQuestion}
+                    onResolveGstReconCollision={onResolveGstReconCollision}
                   />
                 </React.Fragment>
               );

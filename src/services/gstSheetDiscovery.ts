@@ -1,6 +1,6 @@
 /**
- * Discover Purchase Register / GSTR sheets in the open workbook by
- * name hints + header signatures (not filename alone).
+ * Discover Purchase Register / Sales Register / GSTR sheets in the open workbook by
+ * name hints + header signatures (aligned with Server sheet-detector HEADER_ALIASES).
  */
 
 export type DiscoveredSheetRole =
@@ -21,11 +21,16 @@ export interface SheetCandidate {
 
 export interface GstSheetDiscoveryResult {
   purchaseRegister: SheetCandidate | null;
+  /** Alias — books-side register (PR or Sales). */
+  booksRegister: SheetCandidate | null;
   portal: SheetCandidate | null;
+  gstr2b: SheetCandidate | null;
+  gstr2a: SheetCandidate | null;
   ims: SheetCandidate | null;
-  /** Ambiguous candidates (same role, multiple sheets) */
   ambiguous: Array<{ role: DiscoveredSheetRole; sheets: string[] }>;
-  missing: Array<'PURCHASE_REGISTER' | 'GSTR2B' | 'GSTR2A' | 'GSTR1' | 'IMS' | 'SALES_REGISTER'>;
+  missing: Array<
+    'PURCHASE_REGISTER' | 'GSTR2B' | 'GSTR2A' | 'GSTR1' | 'IMS' | 'SALES_REGISTER'
+  >;
 }
 
 function norm(h: unknown): string {
@@ -63,22 +68,28 @@ function scoreRole(
     case 'GSTR1': {
       if (name.includes('gstr1') || name.includes('gstr 1') || /\bgstr-?1\b/.test(name))
         score += 5;
-      if (has('receiver') || has('b2b')) score += 2;
+      if (has('receiver', 'recipient gstin', 'gstin of recipient', 'b2b', 'irn')) score += 3;
+      if (has('invoice') && has('taxable')) score += 1;
       break;
     }
     case 'PURCHASE_REGISTER': {
       if (name.includes('purchase') || name.includes(' pr ') || name.startsWith('pr')) score += 4;
-      if (has('supplier gstin', 'party name', 'voucher', 'bill no')) score += 3;
+      if (has('supplier gstin', 'gstin of supplier', 'party name', 'voucher', 'bill no'))
+        score += 3;
       if (has('gstin') && has('invoice') && (has('taxable') || has('cgst') || has('igst')))
         score += 3;
       if (has('narration') || has('ledger')) score += 1;
-      // Prefer not scoring GSTR portal dumps as PR
+      if (has('recipient gstin', 'gstin of recipient') && !has('supplier gstin')) score -= 3;
       if (name.includes('gstr') || name.includes('2b') || name.includes('2a')) score -= 6;
       break;
     }
     case 'SALES_REGISTER': {
       if (name.includes('sales') || name.includes('outward')) score += 4;
-      if (has('receiver gstin', 'party name') && has('invoice')) score += 3;
+      if (has('recipient gstin', 'receiver gstin', 'gstin of recipient', 'customer gstin'))
+        score += 4;
+      if (has('supply type', 'supply category', 'b2b', 'b2c')) score += 2;
+      if (has('invoice') && (has('taxable') || has('cgst'))) score += 2;
+      if (has('supplier gstin') && !has('recipient gstin')) score -= 2;
       if (name.includes('gstr')) score -= 4;
       break;
     }
@@ -118,9 +129,6 @@ function pickBest(
   return { best: scored[0], ties: [] };
 }
 
-/**
- * Infer columns for recon payload from header labels.
- */
 export function inferColumnMapping(headers: string[]): Record<string, number> {
   const norms = headers.map(norm);
   const find = (...aliases: string[]) => {
@@ -132,7 +140,23 @@ export function inferColumnMapping(headers: string[]): Record<string, number> {
   };
 
   const mapping: Record<string, number> = {};
-  const gstin = find('gstin of supplier', 'supplier gstin', 'gstin', 'gst no');
+  const gstin = find(
+    'gstin of supplier',
+    'supplier gstin',
+    'gstin of recipient',
+    'recipient gstin',
+    'receiver gstin',
+    'customer gstin',
+    'gstin/uin of recipient',
+    'gstin',
+    'gst no',
+  );
+  const clientGstin = find(
+    'client gstin',
+    'our gstin',
+    'company gstin',
+    'gstin of registered person',
+  );
   const invoiceNo = find(
     'invoice number',
     'invoice no',
@@ -141,7 +165,7 @@ export function inferColumnMapping(headers: string[]): Record<string, number> {
     'voucher no',
     'document number',
   );
-  const invoiceDate = find('invoice date', 'bill date', 'voucher date', 'date');
+  const invoiceDate = find('invoice date', 'bill date', 'voucher date', 'document date', 'date');
   const taxableAmt = find('taxable value', 'taxable amount', 'taxable amt', 'assessable value');
   const taxAmount = find('tax amount', 'total tax', 'total gst');
   const igst = find('igst');
@@ -150,8 +174,12 @@ export function inferColumnMapping(headers: string[]): Record<string, number> {
   const narration = find('narration', 'description', 'particulars');
   const documentType = find('document type', 'doc type', 'invoice type', 'voucher type');
   const imsAction = find('ims action', 'ims status', 'recipient action', 'action');
+  const irn = find('irn', 'e-invoice irn', 'invoice reference number');
+  const supplyCategory = find('supply category', 'supply type', 'b2b/b2c');
+  const placeOfSupply = find('place of supply', 'pos');
 
   if (gstin !== undefined) mapping.gstin = gstin;
+  if (clientGstin !== undefined) mapping.clientGstin = clientGstin;
   if (invoiceNo !== undefined) mapping.invoiceNo = invoiceNo;
   if (invoiceDate !== undefined) mapping.invoiceDate = invoiceDate;
   if (taxableAmt !== undefined) mapping.taxableAmt = taxableAmt;
@@ -162,6 +190,9 @@ export function inferColumnMapping(headers: string[]): Record<string, number> {
   if (narration !== undefined) mapping.narration = narration;
   if (documentType !== undefined) mapping.documentType = documentType;
   if (imsAction !== undefined) mapping.imsAction = imsAction;
+  if (irn !== undefined) mapping.irn = irn;
+  if (supplyCategory !== undefined) mapping.supplyCategory = supplyCategory;
+  if (placeOfSupply !== undefined) mapping.placeOfSupply = placeOfSupply;
   return mapping;
 }
 
@@ -194,21 +225,57 @@ export function discoverGstSheets(
     ambiguous.push({ role: portalRole, sheets: portalPick.ties });
   }
 
+  const emptyPick: { best: SheetCandidate | null; ties: string[] } = { best: null, ties: [] };
   const imsPick = pickBest(sheets, 'IMS', 4);
+  const gstr2bPick =
+    booksRole === 'PURCHASE_REGISTER' && portalRole !== 'IMS'
+      ? pickBest(sheets, 'GSTR2B')
+      : emptyPick;
+  const gstr2aPick =
+    booksRole === 'PURCHASE_REGISTER' && portalRole !== 'IMS'
+      ? pickBest(sheets, 'GSTR2A')
+      : emptyPick;
+  if (gstr2bPick.ties.length > 1 && portalRole !== 'GSTR2B') {
+    ambiguous.push({ role: 'GSTR2B', sheets: gstr2bPick.ties });
+  }
+  if (gstr2aPick.ties.length > 1 && portalRole !== 'GSTR2A') {
+    ambiguous.push({ role: 'GSTR2A', sheets: gstr2aPick.ties });
+  }
+
+  let gstr2bBest = gstr2bPick.best;
+  let gstr2aBest = gstr2aPick.best;
+  const nameHint = (n: string) => norm(n);
+  if (
+    gstr2bBest &&
+    (nameHint(gstr2bBest.name).includes('2a') || nameHint(gstr2bBest.name).includes('gstr2a')) &&
+    !nameHint(gstr2bBest.name).includes('2b')
+  ) {
+    gstr2bBest = null;
+    if (!gstr2aBest) gstr2aBest = gstr2bPick.best;
+  }
 
   if (!prPick.best && prPick.ties.length === 0) {
     missing.push(booksRole === 'SALES_REGISTER' ? 'SALES_REGISTER' : 'PURCHASE_REGISTER');
   }
-  if (!portalPick.best && portalPick.ties.length === 0) {
-    if (portalRole === 'GSTR2B') missing.push('GSTR2B');
-    else if (portalRole === 'GSTR2A') missing.push('GSTR2A');
-    else if (portalRole === 'GSTR1') missing.push('GSTR1');
-    else missing.push('IMS');
+  if (portalRole === 'IMS') {
+    if (!portalPick.best && portalPick.ties.length === 0) missing.push('IMS');
+  } else if (booksRole === 'PURCHASE_REGISTER') {
+    if (!gstr2bBest && !gstr2aBest) {
+      missing.push('GSTR2B');
+      missing.push('GSTR2A');
+    }
+  } else if (!portalPick.best && portalPick.ties.length === 0) {
+    missing.push('GSTR1');
   }
+
+  const purchasePortal = portalPick.best ?? gstr2bBest ?? gstr2aBest ?? null;
 
   return {
     purchaseRegister: prPick.best,
-    portal: portalPick.best,
+    booksRegister: prPick.best,
+    portal: booksRole === 'PURCHASE_REGISTER' ? purchasePortal : portalPick.best,
+    gstr2b: gstr2bBest,
+    gstr2a: gstr2aBest,
     ims: imsPick.best,
     ambiguous,
     missing,
@@ -220,12 +287,15 @@ export function buildMissingSheetMessage(
   intentLabel: string,
 ): string {
   const parts: string[] = [];
-  if (missing.includes('GSTR2B')) {
+  if (missing.includes('GSTR2B') && missing.includes('GSTR2A')) {
+    parts.push(
+      "I couldn't find a **GSTR-2B** or **GSTR-2A** sheet in this workbook. Download either (or both) from the GST portal, paste them into this file, then ask me again.",
+    );
+  } else if (missing.includes('GSTR2B')) {
     parts.push(
       "I couldn't find a **GSTR-2B** sheet in this workbook. Download GSTR-2B from the GST portal, paste/export it into a sheet in this file (headers should include supplier GSTIN and invoice columns), then ask me again.",
     );
-  }
-  if (missing.includes('GSTR2A')) {
+  } else if (missing.includes('GSTR2A')) {
     parts.push(
       "I couldn't find a **GSTR-2A** sheet. Add your GSTR-2A download as a sheet, then ask again.",
     );

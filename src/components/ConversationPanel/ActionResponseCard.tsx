@@ -112,6 +112,17 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   /** Meta line: the one muted row under the headline (scope + size). */
   const metaParts = [summary.contextLine, summary.supportingDetail].filter(Boolean) as string[];
 
+  const isGstRecon =
+    Boolean(summary.headline?.toLowerCase().includes('gst reconciliation')) ||
+    Boolean(summary.contextLine?.includes('↔')) ||
+    Boolean(
+      summary.bullets?.some(
+        (b) =>
+          /ITC matched|Tax liability matched|Cross-GSTIN/i.test(b) ||
+          /Exact matched:/i.test(b),
+      ),
+    );
+
   /**
    * Position within a staged build. This is the piece TASKS.md #141's version
    * lacked: without it, accepting one card and stopping left a half-built
@@ -137,9 +148,18 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     </div>
   ) : null;
 
+  const gstReconBadge = isGstRecon && !isStaged ? (
+    <div className="cellix-step-badge" data-testid="gst-recon-result-badge">
+      <span className="cellix-step-label">GST Recon Result</span>
+    </div>
+  ) : null;
+
   const summaryBody = (
-    <div data-testid="action-summary-default">
+    <div
+      data-testid={isGstRecon ? 'gst-recon-result-card' : 'action-summary-default'}
+    >
       {stepBadge}
+      {gstReconBadge}
       {!hideDuplicateHeadline && summary.headline && (
         <div className="cellix-changes-summary">{summary.headline}</div>
       )}
