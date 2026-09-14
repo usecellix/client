@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           xsi:type="TaskPaneApp">
+
+  <!-- Production manifest — points at app.usecellix.com instead of localhost:3000.
+       Same <Id> as manifest.xml on purpose: this is the same add-in, a different
+       deployment target, not a new listing. Keep this GUID identical to manifest.xml's
+       forever — changing it registers as a brand-new add-in to Excel/AppSource rather
+       than an update to whatever users already have installed. -->
+  <Id>01b90833-7da8-4125-bcd4-9f7e0d9acad8</Id>
+  <Version>1.0.1.0</Version>
+  <ProviderName>Cellix</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Cellix"/>
+  <Description DefaultValue="AI-powered Excel assistant with chat interface"/>
+  <IconUrl DefaultValue="https://app.usecellix.com/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://app.usecellix.com/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="https://www.usecellix.com/support"/>
+
+  <AppDomains>
+    <AppDomain>https://app.usecellix.com</AppDomain>
+    <AppDomain>https://accounts.google.com</AppDomain>
+    <AppDomain>https://login.microsoftonline.com</AppDomain>
+  </AppDomains>
+
+  <Hosts>
+    <Host Name="Workbook"/>
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://app.usecellix.com/src/taskpane/taskpane.html"/>
+  </DefaultSettings>
+
+  <Permissions>ReadWriteDocument</Permissions>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title"/>
+            <Description resid="GetStarted.Description"/>
+            <LearnMoreUrl resid="GetStarted.LearnMoreUrl"/>
+          </GetStarted>
+          <FunctionFile resid="Commands.Url"/>
+
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="CommandsGroup">
+                <Label resid="CommandsGroup.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16x16"/>
+                  <bt:Image size="32" resid="Icon.32x32"/>
+                  <bt:Image size="80" resid="Icon.80x80"/>
+                </Icon>
+                <Control xsi:type="Button" id="TaskpaneButton">
+                  <Label resid="TaskpaneButton.Label"/>
+                  <Supertip>
+                    <Title resid="TaskpaneButton.Label"/>
+                    <Description resid="TaskpaneButton.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16"/>
+                    <bt:Image size="32" resid="Icon.32x32"/>
+                    <bt:Image size="80" resid="Icon.80x80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>ButtonId1</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16x16" DefaultValue="https://app.usecellix.com/assets/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://app.usecellix.com/assets/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://app.usecellix.com/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://go.microsoft.com/fwlink/?LinkId=276812"/>
+        <bt:Url id="Commands.Url" DefaultValue="https://app.usecellix.com/src/taskpane/taskpane.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://app.usecellix.com/src/taskpane/taskpane.html"/>
+        <!-- REQUIRED by AppSource. Must accurately describe that workbook
+             content is sent to OpenRouter/OpenAI for processing — the
+             data-handling disclosure is the most likely review bounce
+             reason, not a technical gap. See PrivacyPolicyPage.tsx §5. -->
+        <bt:Url id="PrivacyPolicy.Url" DefaultValue="https://www.usecellix.com/privacy"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="GetStarted.Title" DefaultValue="Get started with Cellix"/>
+        <bt:String id="CommandsGroup.Label" DefaultValue="Cellix"/>
+        <bt:String id="TaskpaneButton.Label" DefaultValue="Cellix"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="GetStarted.Description" DefaultValue="Cellix loaded successfully. Go to the HOME tab and click Cellix to open the task pane."/>
+        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open Cellix"/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
