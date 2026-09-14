@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import React from 'react';
 import { GstReconCollisionCard } from '@/components/ConversationPanel/GstReconCollisionCard';
 import { GstReconCollisionBlock } from '@/types/conversationTurn';
 

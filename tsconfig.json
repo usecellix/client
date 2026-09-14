@@ -22,6 +22,13 @@
     }
   },
   "include": ["src"],
+  // actionCatalogParity.spec.ts cross-imports cellix_backend's
+  // action-catalog.ts from a sibling repo (usecellix/Server) that isn't
+  // part of this checkout (usecellix/client) on Vercel or in a fresh clone —
+  // only present on a dev machine with both repos checked out side by side.
+  // Excluded so `tsc && vite build` stays self-contained; run the spec via
+  // `npm run test:parity` from a full monorepo checkout instead.
+  "exclude": ["src/types/actionCatalogParity.spec.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
 
