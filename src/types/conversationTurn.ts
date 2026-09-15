@@ -133,6 +133,20 @@ export interface MatchesBlock {
   matches: MatchResult[];
 }
 
+/**
+ * A completed GST reconciliation whose output sheet name collides with one
+ * already in the workbook — rendered as Overwrite / Create-new buttons
+ * (ActionResponseCard-style) rather than a typed chat question.
+ */
+export interface GstReconCollisionBlock {
+  id: string;
+  type: 'gst_recon_collision';
+  collisionId: string;
+  sheetName: string;
+  /** Set while a button click's resolution is in flight — disables both buttons. */
+  resolving?: boolean;
+}
+
 export type TurnBlock =
   | StepBlock
   | ThinkingBlock
@@ -141,7 +155,8 @@ export type TurnBlock =
   | ActionBlock
   | StatusBlock
   | PlanBlock
-  | MatchesBlock;
+  | MatchesBlock
+  | GstReconCollisionBlock;
 
 export type TurnPhase = 'processing' | 'awaiting_input' | 'complete' | 'error';
 

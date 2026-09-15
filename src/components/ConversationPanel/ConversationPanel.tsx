@@ -145,6 +145,7 @@ const ModeSwitch: React.FC<ModeSwitchProps> = ({ mode, onModeChange, disabled = 
 const SUGGESTIONS = [
   "What's in cell A1?",
   'Calculate the total',
+  'Reconcile my GST purchases with GSTR-2B',
   'Explain this sheet to me',
 ];
 
@@ -777,6 +778,12 @@ interface ConversationPanelProps {
   onAcceptActions: (turnId: string, blockId: string) => void;
   onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
+  onResolveGstReconCollision: (
+    turnId: string,
+    blockId: string,
+    collisionId: string,
+    choice: 'overwrite' | 'new',
+  ) => void;
   onAnswerQuestion: (answer: string) => void;
   onClarificationAnswer: (answer: string) => void;
   onClarificationDismiss: () => void;
@@ -820,6 +827,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onAcceptActions,
   onAcceptAllActions,
   onRejectActions,
+  onResolveGstReconCollision,
   onAnswerQuestion,
   onClarificationAnswer,
   // onClarificationDismiss is supplied by App but no control invokes it yet —
@@ -1056,6 +1064,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               onAcceptActions={onAcceptActions}
               onAcceptAllActions={onAcceptAllActions}
               onRejectActions={onRejectActions}
+              onResolveGstReconCollision={onResolveGstReconCollision}
               onAnswerQuestion={handleQuestionAnswer}
               dockedQuestions
               onToggleThinking={onToggleThinking}

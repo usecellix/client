@@ -88,6 +88,10 @@ export function getCompareEndpoint(): string {
   return `${getApiBaseUrl()}${COMPARE_PATH}`;
 }
 
+export function getGstReconcileEndpoint(): string {
+  return `${getApiBaseUrl()}/gst/reconcile`;
+}
+
 export function getAuditApplyEndpoint(changeSetId: string): string {
   return `${getApiBaseUrl()}/audit/apply/${encodeURIComponent(changeSetId)}`;
 }
