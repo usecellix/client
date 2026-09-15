@@ -219,6 +219,34 @@ describe('localSheetActions', () => {
   // TASKS.md #181 — "clear all the data" / "clear the sheet" means make it a
   // plain workbook, not just wipe cell values and leave a stranded chart
   // floating over the empty grid.
+  // TASKS.md #209 — a scoped clear must not wipe the whole sheet (and its
+  // charts). Only an unqualified "clear the sheet" stays local.
+  describe('scoped clears do not become whole-sheet clears (#209)', () => {
+    it.each([
+      'Clear all data in column C',
+      'Clear all the content in the Narration column',
+      'Clear all cells with errors',
+      'Clear all the data where GSTIN is blank',
+      'Clear the data in rows 5 to 10',
+      'Clear all data in the Summary sheet',
+    ])('sends %j to the backend instead of clearing the sheet', (message) => {
+      expect(tryLocalSheetActions(message, context, 'action')).toBeNull();
+    });
+
+    // "clear the data" / "clear the entire sheet" never matched this lane's
+    // trigger (it needs "all", and only "this entire sheet") — they already
+    // went to the backend before #209 and still do.
+    it.each(['Clear this sheet', 'clear all the data', 'clear all the cells', 'clear this entire sheet'])(
+      'still clears the whole sheet for %j',
+      (message) => {
+        const plan = tryLocalSheetActions(message, context, 'action');
+        expect(plan?.actions).toEqual([
+          { type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents', clearCharts: true },
+        ]);
+      },
+    );
+  });
+
   it('asks to clear charts too on a whole-sheet clear', () => {
     const plan = tryLocalSheetActions('clear all the data', context, 'action');
     expect(plan?.actions).toEqual([

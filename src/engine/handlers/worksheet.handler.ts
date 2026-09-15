@@ -72,11 +72,15 @@ export async function handleWorksheetAction(
       await ctx.sync();
       return true;
     }
+    // rowCount/colCount were ignored, so "set the height of rows 2 to 5" only
+    // ever resized row 2 — the shortcut router has always sent the count.
+    // TASKS.md #216.
     case 'SET_ROW_HEIGHT': {
       const row = Number(record.row);
       const height = Number(record.height);
       if (!Number.isInteger(row) || row < 0 || !Number.isFinite(height)) return true;
-      sheet.getRangeByIndexes(row, 0, 1, 1).format.rowHeight = height;
+      const rowCount = Math.max(1, Number(record.rowCount ?? 1));
+      sheet.getRangeByIndexes(row, 0, rowCount, 1).format.rowHeight = height;
       await ctx.sync();
       return true;
     }
@@ -84,7 +88,8 @@ export async function handleWorksheetAction(
       const col = Number(record.col);
       const width = Number(record.width);
       if (!Number.isInteger(col) || col < 0 || !Number.isFinite(width)) return true;
-      sheet.getRangeByIndexes(0, col, 1, 1).format.columnWidth = width;
+      const colCount = Math.max(1, Number(record.colCount ?? 1));
+      sheet.getRangeByIndexes(0, col, 1, colCount).format.columnWidth = width;
       await ctx.sync();
       return true;
     }

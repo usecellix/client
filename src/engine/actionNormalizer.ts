@@ -215,6 +215,14 @@ export function toRichAction(action: SheetAction): RichAction | null {
         newName: String(r.newName ?? r.newSheetName ?? ''),
         position: r.position as number | undefined,
       } as RichAction;
+    case 'MOVE_SHEET':
+      return {
+        type: 'MOVE_SHEET',
+        sheetName: String(r.sheetName ?? r.sourceName ?? ''),
+        position: r.position as number | undefined,
+        beforeSheet: r.beforeSheet as string | undefined,
+        afterSheet: r.afterSheet as string | undefined,
+      } as RichAction;
     case 'CREATE_TABLE':
       return {
         type: 'CREATE_TABLE',
@@ -500,6 +508,26 @@ export function toRichAction(action: SheetAction): RichAction | null {
             },
       };
     }
+    // No filter is legitimate here and means "rows where every cell is empty",
+    // so unlike SET_MATCHING_ROWS this must not reject a filterless action.
+    // TASKS.md #234.
+    case 'DELETE_MATCHING_ROWS': {
+      const range = String(r.range ?? '').trim();
+      if (!range) return null;
+      const rawFilter =
+        r.filter && typeof r.filter === 'object'
+          ? (r.filter as { column?: string; operator?: string; value?: string | number })
+          : undefined;
+      if (rawFilter && (!rawFilter.column || !rawFilter.operator)) return null;
+      return {
+        type: 'DELETE_MATCHING_ROWS',
+        sheetName: String(r.sheetName ?? ''),
+        range,
+        hasHeaders: r.hasHeaders !== false,
+        ...(rawFilter ? { filter: rawFilter } : {}),
+        ...(r.explicitOverwriteConfirmed === true ? { explicitOverwriteConfirmed: true } : {}),
+      } as RichAction;
+    }
     case 'SET_MATCHING_ROWS': {
       const filter =
         r.filter && typeof r.filter === 'object'
@@ -682,6 +710,14 @@ export function richToLegacyAction(action: SheetAction): SheetAction | SheetActi
         type: 'COPY_SHEET',
         sheetName: rich.sourceName,
         newSheetName: rich.newName,
+      };
+    case 'MOVE_SHEET':
+      return {
+        type: 'MOVE_SHEET',
+        sheetName: rich.sheetName,
+        position: rich.position,
+        beforeSheet: rich.beforeSheet,
+        afterSheet: rich.afterSheet,
       };
     default:
       return null;

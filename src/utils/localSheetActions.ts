@@ -23,7 +23,14 @@ export function detectCreateSheetIntent(message: string): boolean {
 }
 
 export function detectCopySheetIntent(message: string): boolean {
-  return /\b(as\s+a\s+copy|copy\s+of|duplicate|clone)\b/i.test(message);
+  // Mirrors the server's compound-action.util.ts — "Copy the Purchase Register
+  // sheet and name it March Copy" must never look like a blank-sheet create.
+  // TASKS.md #213.
+  return (
+    /\b(as\s+a\s+copy|copy\s+of|duplicate|clone|replicate)\b/i.test(message) ||
+    /\bcopy\s+(?:[A-Za-z0-9_'-]+\s+){0,4}?(?:sheet|tab)\b/i.test(message) ||
+    /\bcopy\s+(?:sheet|tab)\b/i.test(message)
+  );
 }
 
 export function detectSortIntent(message: string): boolean {
@@ -167,6 +174,29 @@ function tryLocalRenameSheetActions(
   };
 }
 
+/**
+ * Words that survive stripping the clear phrase itself and still mean "the
+ * whole active sheet" — anything else left over is a narrower target.
+ */
+const WHOLE_SHEET_CLEAR_FILLER =
+  /^(?:\s|[.,!?]|\b(?:clear|out|this|that|the|entire|whole|complete|completely|all|of|please|now|just|kindly|sheet|tab|worksheet|data|content|contents|cell|cells|value|values|everything|active|current|open)\b)*$/i;
+
+/**
+ * The clear trigger matches "clear all (the) data/content/cells" anywhere in the
+ * message, so scoped clears — "clear all data in column C", "clear all the
+ * content in the Narration column", "clear all cells with errors", "clear the
+ * Summary sheet" — were answered with CLEAR_RANGE A1:XFD1048576 on the ACTIVE
+ * sheet: the entire sheet wiped (plus its charts, #181) for a column-sized
+ * request, or the wrong sheet entirely. A whole-sheet clear is only a
+ * whole-sheet clear when nothing in the message narrows it; everything else
+ * goes to the backend, which can resolve columns, conditions and sheet names.
+ * TASKS.md #209.
+ */
+export function isWholeSheetClear(message: string): boolean {
+  const withoutMentions = stripSheetMentions(message);
+  return WHOLE_SHEET_CLEAR_FILLER.test(withoutMentions.trim());
+}
+
 function tryLocalClearSheetActions(
   message: string,
   mode: AssistantMode,
@@ -180,6 +210,7 @@ function tryLocalClearSheetActions(
     return null;
   }
   if (/[A-Z]+\d+:[A-Z]+\d+/i.test(message)) return null;
+  if (!isWholeSheetClear(message)) return null;
 
   return {
     // Whole-sheet clear means "make it a plain workbook" — cell contents AND

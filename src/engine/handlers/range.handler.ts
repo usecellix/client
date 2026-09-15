@@ -3,6 +3,7 @@ import {
   ConditionalFormatOperator,
   CopyFilteredRangeAction,
   DeleteConditionalFormatAction,
+  DeleteMatchingRowsAction,
   FormatMatchingRowsAction,
   MoveRangeAction,
   SetMatchingRowsAction,
@@ -275,6 +276,52 @@ export async function handleFormatMatchingRows(
   // TASKS.md #93: report coverage, not just success — see handleSetMatchingRows.
   const rowsScanned = Math.max(rows.length - (action.hasHeaders !== false ? 1 : 0), 0);
   return { rowsFormatted: offsets.length, rowsScanned };
+}
+
+/**
+ * Delete every row matching the predicate, resolved against the REAL cells —
+ * the counterpart of handleSetMatchingRows, and the safe answer to "delete
+ * blank rows" / "delete rows where column D is blank". No filter means "every
+ * cell in the row is empty".
+ *
+ * Deleting bottom-up matters: removing row 6 first would shift row 15 up to 14
+ * and the next delete would take the wrong row. Same reason the backend emits
+ * DELETE_ROW actions in descending order. TASKS.md #234.
+ */
+export async function handleDeleteMatchingRows(
+  action: DeleteMatchingRowsAction,
+  ctx: Excel.RequestContext,
+): Promise<{ rowsDeleted: number; rowsScanned: number }> {
+  const sheet = resolveWorksheet(ctx, action.sheetName);
+  const rangeAddress = resolveSourceRangeAddress(action.range);
+  const range = await extendRangeToUsedRows(sheet, rangeAddress, ctx);
+  range.load(['values', 'rowIndex', 'columnIndex', 'columnCount']);
+  await ctx.sync();
+
+  const rows = (range.values ?? []) as unknown[][];
+  if (rows.length === 0) return { rowsDeleted: 0, rowsScanned: 0 };
+
+  const hasHeaders = action.hasHeaders !== false;
+  const firstDataOffset = hasHeaders ? 1 : 0;
+
+  const offsets = action.filter
+    ? findMatchingRowOffsets(rows, hasHeaders, action.filter)
+    : rows.reduce<number[]>((blanks, row, offset) => {
+        if (offset < firstDataOffset) return blanks;
+        const isBlank = row.every((cell) => cell === null || String(cell ?? '').trim() === '');
+        if (isBlank) blanks.push(offset);
+        return blanks;
+      }, []);
+
+  for (const offset of [...offsets].sort((a, b) => b - a)) {
+    sheet.getRangeByIndexes(range.rowIndex + offset, 0, 1, 1).getEntireRow().delete(Excel.DeleteShiftDirection.up);
+  }
+
+  if (offsets.length > 0) {
+    await ctx.sync();
+  }
+
+  return { rowsDeleted: offsets.length, rowsScanned: Math.max(rows.length - firstDataOffset, 0) };
 }
 
 export async function handleSetMatchingRows(

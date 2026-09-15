@@ -17,6 +17,7 @@ import {
   handleDeleteSheet,
   handleRenameSheet,
   handleCopySheet,
+  handleMoveSheet,
   SheetCreationOutcome,
 } from './handlers/sheet.handler';
 import {
@@ -31,6 +32,7 @@ import {
   handleMoveRange,
   handleFormatMatchingRows,
   handleSetMatchingRows,
+  handleDeleteMatchingRows,
   handleConditionalFormat,
   handleDeleteConditionalFormat,
 } from './handlers/range.handler';
@@ -257,6 +259,8 @@ export class RichActionEngine {
         return handleRenameSheet(action, ctx);
       case 'COPY_SHEET':
         return handleCopySheet(action, ctx);
+      case 'MOVE_SHEET':
+        return handleMoveSheet(action, ctx);
       case 'CREATE_TABLE':
         return handleCreateTable(action, ctx);
       case 'DELETE_TABLE':
@@ -305,6 +309,9 @@ export class RichActionEngine {
         return;
       case 'SET_MATCHING_ROWS':
         await handleSetMatchingRows(action, ctx);
+        return;
+      case 'DELETE_MATCHING_ROWS':
+        await handleDeleteMatchingRows(action, ctx);
         return;
       case 'MOVE_RANGE':
         await handleMoveRange(action, ctx);

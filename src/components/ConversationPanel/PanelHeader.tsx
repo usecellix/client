@@ -118,7 +118,41 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const headerRef = useRef<HTMLDivElement>(null);
+  const tabStripRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * History-opened tabs are appended at the end of the strip, so without this
+   * they land flush against the action buttons (or clipped under them). Scroll
+   * the active tab to the middle of the strip instead of using scrollIntoView,
+   * which would also shift the conversation panel.
+   */
+  useEffect(() => {
+    const strip = tabStripRef.current;
+    if (!strip || !activeSessionId) return;
+
+    const frame = requestAnimationFrame(() => {
+      const tab = strip.querySelector<HTMLElement>('.cellix-chat-tab.active');
+      if (!tab) return;
+
+      const maxScroll = strip.scrollWidth - strip.clientWidth;
+      if (maxScroll <= 0) return;
+
+      const stripRect = strip.getBoundingClientRect();
+      const tabRect = tab.getBoundingClientRect();
+      const tabCenter = tabRect.left - stripRect.left + strip.scrollLeft + tabRect.width / 2;
+      const nextLeft = Math.max(0, Math.min(tabCenter - strip.clientWidth / 2, maxScroll));
+      if (Math.abs(strip.scrollLeft - nextLeft) < 2) return;
+
+      if (typeof strip.scrollTo === 'function') {
+        strip.scrollTo({ left: nextLeft, behavior: 'smooth' });
+      } else {
+        strip.scrollLeft = nextLeft;
+      }
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [activeSessionId, sessions.length]);
 
   useEffect(() => {
     if (renaming) {
@@ -309,7 +343,12 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
   return (
     <div className="cellix-topbar" ref={headerRef}>
       <div className="cellix-topbar-row">
-        <div className="cellix-chat-tab-strip" role="tablist" aria-label="Chats">
+        <div
+          ref={tabStripRef}
+          className="cellix-chat-tab-strip"
+          role="tablist"
+          aria-label="Chats"
+        >
           {sessions.length === 0 ? (
             <button
               type="button"
