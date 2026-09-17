@@ -1005,6 +1005,14 @@
   color: var(--cx-brand-600, #4f46e5);
 }
 
+/* TASKS.md #242 — the terminal "no undo exists for this change" state, distinct
+   from -done (succeeded) and from the plain :disabled button (mid-request). */
+.cellix-user-msg-menu-item-disabled {
+  cursor: default;
+  color: var(--cx-gray-400, #9ca3af);
+  opacity: 0.75;
+}
+
 .cellix-user-msg-edit {
   display: flex;
   flex-direction: column;
@@ -1553,8 +1561,8 @@
 /* Footer-only Applied/Rejected row: hug the single line instead of a padded card. */
 .cellix-changes-card.is-compact,
 .cellix-action-card.is-compact {
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 /* Pending gets a single accent edge instead of a badge + label line. */

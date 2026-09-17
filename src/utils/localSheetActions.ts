@@ -154,6 +154,51 @@ export function tryLocalCreateEmptySheetActions(
   };
 }
 
+/**
+ * "Copy the Purchase Register sheet and name it March Copy" — the guide's own
+ * T1.1 phrasing — used to always go through the full Tier 3 planner/executor/
+ * verifier LLM pipeline (5-40s observed live) for what is a fully
+ * deterministic operation: extract the source and destination sheet names,
+ * confirm the source exists, emit ONE ADD_SHEET{copyFrom} action. Conservative
+ * on purpose — only the clear "copy X sheet and name/call it Y" shape matches;
+ * anything else (a filtered/partial copy, an unresolvable source name, no
+ * match at all) falls through to the backend exactly as before.
+ */
+function tryLocalCopySheetActions(
+  message: string,
+  workbookContext: WorkbookContext | undefined,
+  mode: AssistantMode,
+): LocalSheetActionPlan | null {
+  if (mode !== 'action') return null;
+  if (!detectCopySheetIntent(message)) return null;
+
+  const availableSheets = (workbookContext?.sheets ?? [])
+    .map((sheet) => sheet.sheetName)
+    .filter(Boolean);
+  if (availableSheets.length === 0) return null;
+
+  const match = message.match(
+    /\bcopy\s+(?:the\s+)?["']?([^"'\n]+?)["']?\s+(?:sheet|tab)\b[\s\S]{0,20}?\b(?:and\s+)?(?:name|call)\s+it\s+["']?([^"'\n]+?)["']?\s*[.!]?\s*$/i,
+  );
+  if (!match) return null;
+
+  const sourceCandidate = match[1]?.trim();
+  const destCandidate = match[2]?.trim();
+  if (!sourceCandidate || !destCandidate) return null;
+
+  const [sourceName] = resolveSheetNames([sourceCandidate], availableSheets);
+  // Source doesn't resolve to a real sheet — let the backend interpret/clarify
+  // rather than guess and risk copying the wrong sheet.
+  if (!sourceName) return null;
+
+  const newSheetName = sanitizeExcelSheetName(nextUniqueSheetName(destCandidate, availableSheets));
+
+  return {
+    actions: [{ type: 'ADD_SHEET', name: newSheetName, copyFrom: sourceName }],
+    explanation: `Copy sheet "${sourceName}" to "${newSheetName}"`,
+  };
+}
+
 function tryLocalRenameSheetActions(
   message: string,
   mode: AssistantMode,
@@ -229,6 +274,7 @@ export function tryLocalSheetActions(
 ): LocalSheetActionPlan | null {
   return (
     tryLocalDeleteSheetActions(message, workbookContext, mode) ??
+    tryLocalCopySheetActions(message, workbookContext, mode) ??
     tryLocalCreateEmptySheetActions(message, workbookContext, mode) ??
     tryLocalRenameSheetActions(message, mode) ??
     tryLocalClearSheetActions(message, mode) ??

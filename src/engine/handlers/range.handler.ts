@@ -286,7 +286,7 @@ export async function handleFormatMatchingRows(
  *
  * Deleting bottom-up matters: removing row 6 first would shift row 15 up to 14
  * and the next delete would take the wrong row. Same reason the backend emits
- * DELETE_ROW actions in descending order. TASKS.md #234.
+ * DELETE_ROW actions in descending order. TASKS.md #238.
  */
 export async function handleDeleteMatchingRows(
   action: DeleteMatchingRowsAction,

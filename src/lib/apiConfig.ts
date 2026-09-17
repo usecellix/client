@@ -96,6 +96,10 @@ export function getAuditApplyEndpoint(changeSetId: string): string {
   return `${getApiBaseUrl()}/audit/apply/${encodeURIComponent(changeSetId)}`;
 }
 
+export function getAuditPreviewLocalEndpoint(): string {
+  return `${getApiBaseUrl()}/audit/preview-local`;
+}
+
 export function getAuditRevertEndpoint(changeSetId: string): string {
   return `${getApiBaseUrl()}/audit/revert/${encodeURIComponent(changeSetId)}`;
 }

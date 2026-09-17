@@ -510,7 +510,7 @@ export function toRichAction(action: SheetAction): RichAction | null {
     }
     // No filter is legitimate here and means "rows where every cell is empty",
     // so unlike SET_MATCHING_ROWS this must not reject a filterless action.
-    // TASKS.md #234.
+    // TASKS.md #238.
     case 'DELETE_MATCHING_ROWS': {
       const range = String(r.range ?? '').trim();
       if (!range) return null;
@@ -712,10 +712,14 @@ export function richToLegacyAction(action: SheetAction): SheetAction | SheetActi
         newSheetName: rich.newName,
       };
     case 'MOVE_SHEET':
+      // SheetAction.position is the pre-existing string-literal direction
+      // union (INSERT_ROW/COLUMN's 'above'/'below'/…) — MOVE_SHEET's is a
+      // numeric target index, so it is not round-tripped through this legacy
+      // shape, the same way ADD_SHEET's numeric position already isn't above.
+      // beforeSheet/afterSheet (plain strings) carry the intent instead.
       return {
         type: 'MOVE_SHEET',
         sheetName: rich.sheetName,
-        position: rich.position,
         beforeSheet: rich.beforeSheet,
         afterSheet: rich.afterSheet,
       };

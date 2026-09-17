@@ -20,6 +20,57 @@ const context: WorkbookContext = {
   ] as WorkbookContext['sheets'],
 };
 
+/**
+ * TASKS.md #250 — "Copy the X sheet and name it Y" (the guide's own T1.1
+ * phrasing) always paid the full Tier 3 planner/executor/verifier LLM
+ * round-trip (5-40s observed live) for what is a fully deterministic
+ * operation. This local fast-lane resolves it instantly, client-side only.
+ */
+describe('tryLocalCopySheetActions (#250)', () => {
+  it('resolves "Copy the X sheet and name it Y" to a single ADD_SHEET{copyFrom}', () => {
+    const plan = tryLocalSheetActions(
+      'Copy the Invoices sheet and name it March Copy',
+      context,
+      'action',
+    );
+    expect(plan).not.toBeNull();
+    expect(plan?.actions).toEqual([
+      { type: 'ADD_SHEET', name: 'March Copy', copyFrom: 'Invoices' },
+    ]);
+  });
+
+  it('resolves "call it" phrasing too', () => {
+    const plan = tryLocalSheetActions('Copy the Archive tab and call it Archive Backup', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'ADD_SHEET', name: 'Archive Backup', copyFrom: 'Archive' },
+    ]);
+  });
+
+  it('dedupes the destination name against existing sheets', () => {
+    const plan = tryLocalSheetActions('Copy the Invoices sheet and name it Cellix', context, 'action');
+    expect(plan?.actions[0]).toMatchObject({ type: 'ADD_SHEET', copyFrom: 'Invoices' });
+    expect((plan?.actions[0] as { name: string }).name).not.toBe('Cellix');
+  });
+
+  it('falls through to the backend when the source sheet does not resolve to a real sheet', () => {
+    const plan = tryLocalSheetActions(
+      'Copy the Nonexistent sheet and name it Copy 1',
+      context,
+      'action',
+    );
+    expect(plan).toBeNull();
+  });
+
+  it('does not fire for a filtered/partial copy — that still needs backend planning', () => {
+    const plan = tryLocalSheetActions(
+      'Copy rows where Status is Pending from Invoices to a new sheet called Pending',
+      context,
+      'action',
+    );
+    expect(plan).toBeNull();
+  });
+});
+
 describe('localSheetActions', () => {
   it('detects delete sheet intent', () => {
     expect(detectDeleteSheetIntent('delete sheet Cellix')).toBe(true);
