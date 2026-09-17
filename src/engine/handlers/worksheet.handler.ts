@@ -1,5 +1,6 @@
 import { RichAction } from '@/action.types';
 import { resolveWorksheet } from '../sheetResolve';
+import { resolveFilterColumnIndex } from '@/shared/rangeFilter';
 
 /* global Excel */
 
@@ -72,11 +73,15 @@ export async function handleWorksheetAction(
       await ctx.sync();
       return true;
     }
+    // rowCount/colCount were ignored, so "set the height of rows 2 to 5" only
+    // ever resized row 2 — the shortcut router has always sent the count.
+    // TASKS.md #216.
     case 'SET_ROW_HEIGHT': {
       const row = Number(record.row);
       const height = Number(record.height);
       if (!Number.isInteger(row) || row < 0 || !Number.isFinite(height)) return true;
-      sheet.getRangeByIndexes(row, 0, 1, 1).format.rowHeight = height;
+      const rowCount = Math.max(1, Number(record.rowCount ?? 1));
+      sheet.getRangeByIndexes(row, 0, rowCount, 1).format.rowHeight = height;
       await ctx.sync();
       return true;
     }
@@ -84,7 +89,8 @@ export async function handleWorksheetAction(
       const col = Number(record.col);
       const width = Number(record.width);
       if (!Number.isInteger(col) || col < 0 || !Number.isFinite(width)) return true;
-      sheet.getRangeByIndexes(0, col, 1, 1).format.columnWidth = width;
+      const colCount = Math.max(1, Number(record.colCount ?? 1));
+      sheet.getRangeByIndexes(0, col, 1, colCount).format.columnWidth = width;
       await ctx.sync();
       return true;
     }
@@ -100,11 +106,55 @@ export async function handleWorksheetAction(
       sheet.freezePanes.unfreeze();
       await ctx.sync();
       return true;
-    case 'AUTO_FILTER':
+    case 'AUTO_FILTER': {
       if (typeof record.range !== 'string' || !record.range) return true;
-      sheet.autoFilter.apply(record.range);
+      const filter = record.filter as
+        | { column?: string; operator?: string; value?: string | number }
+        | undefined;
+
+      if (!filter?.column || !filter.operator) {
+        // No condition — just the dropdown arrows (guide T2.1 "Add AutoFilter").
+        sheet.autoFilter.apply(record.range);
+        await ctx.sync();
+        return true;
+      }
+
+      // "Show only rows where X" (guide T2.2) needs a real criterion, not only
+      // the arrows — otherwise every row stays visible. TASKS.md #221.
+      const range = sheet.getRange(record.range);
+      range.load('values');
+      await ctx.sync();
+
+      const rows = (range.values ?? []) as unknown[][];
+      const hasHeaders = record.hasHeaders !== false;
+      const headerRow = hasHeaders ? rows[0] : null;
+      if (!headerRow) {
+        sheet.autoFilter.apply(record.range);
+        await ctx.sync();
+        return true;
+      }
+
+      let columnIndex: number;
+      try {
+        columnIndex = resolveFilterColumnIndex(headerRow, filter.column);
+      } catch {
+        sheet.autoFilter.apply(record.range);
+        await ctx.sync();
+        return true;
+      }
+
+      const criteria = buildAutoFilterCriteria(filter.operator, filter.value);
+      if (!criteria) {
+        // Length/regex conditions have no Excel AutoFilter equivalent — dropdowns only.
+        sheet.autoFilter.apply(record.range);
+        await ctx.sync();
+        return true;
+      }
+
+      sheet.autoFilter.apply(record.range, columnIndex, criteria);
       await ctx.sync();
       return true;
+    }
     case 'SET_ZOOM':
       // The Excel JavaScript API exposes no view-zoom control (Worksheet has only
       // namedSheetViews, and pageLayout.zoom applies to printing). This previously
@@ -153,5 +203,39 @@ export async function handleWorksheetAction(
     }
     default:
       return false;
+  }
+}
+
+/**
+ * Translate the shared RangeFilterSpec DSL (already used by
+ * SET_MATCHING_ROWS/DELETE_MATCHING_ROWS/FORMAT_MATCHING_ROWS) into a real
+ * Excel.FilterCriteria — the same condition language the model already knows,
+ * reused instead of inventing a second one for AUTO_FILTER. `equals` uses
+ * FilterOn.values (an exact discrete-value match, what "supplier is ABC
+ * Traders" means); everything else is a custom criterion string, Excel's own
+ * filter syntax. lengthEquals/lengthNotEquals/matchesRegex/notMatchesRegex
+ * have no AutoFilter equivalent and return null so the caller falls back to
+ * plain dropdowns rather than silently applying the wrong condition.
+ * TASKS.md #221.
+ */
+function buildAutoFilterCriteria(
+  operator: string,
+  value: string | number | undefined,
+): Excel.FilterCriteria | null {
+  if (value === undefined) return null;
+
+  switch (operator) {
+    case 'equals':
+      return { filterOn: Excel.FilterOn.values, values: [String(value)] };
+    case 'notEquals':
+      return { filterOn: Excel.FilterOn.custom, criterion1: `<>${value}` };
+    case 'contains':
+      return { filterOn: Excel.FilterOn.custom, criterion1: `*${value}*` };
+    case 'greaterThan':
+      return { filterOn: Excel.FilterOn.custom, criterion1: `>${value}` };
+    case 'lessThan':
+      return { filterOn: Excel.FilterOn.custom, criterion1: `<${value}` };
+    default:
+      return null;
   }
 }

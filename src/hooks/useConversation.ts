@@ -37,6 +37,7 @@ import {
 } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isLikelyChitchat, isSimpleCreateTask } from '@/utils/statusMessage';
 import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
+import { previewLocalChangeSet } from '@/services/auditService';
 import { isGstReconPrompt } from '@/utils/gstReconIntent';
 import {
   finalizeGstReconAudit,
@@ -915,7 +916,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const dispatchLocalSheetActions = useCallback(
-    async (turnId: string, plan: LocalSheetActionPlan, mode: AssistantMode) => {
+    async (
+      turnId: string,
+      plan: LocalSheetActionPlan,
+      mode: AssistantMode,
+      message: string,
+      workbookContext: WorkbookContext | undefined,
+      conversationId: string,
+    ) => {
       const runtime = runtimeRef.current.get(turnId);
       if (!runtime) return;
 
@@ -938,9 +946,38 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         blocks: upsertStatus(turn.blocks, 'Preparing changes for review…', true, true),
       }));
 
-      await delay(250);
+      // Registers an audit trail for this locally-resolved action so Revert
+      // has something to reference — run alongside the existing UI-pacing
+      // delay rather than after it, so this never adds visible latency on
+      // top of what was already there. Never blocks or fails the local
+      // action itself: a registration failure just means no revert this
+      // time, exactly like today's behavior, not a regression.
+      const sheetNames = (workbookContext?.sheets ?? [])
+        .map((sheet) => sheet.sheetName)
+        .filter(Boolean);
+      const [previewResult] = await Promise.all([
+        sheetNames.length > 0
+          ? previewLocalChangeSet(
+              conversationId,
+              message,
+              plan.actions,
+              sheetNames,
+              workbookContext?.activeSheet ?? '',
+            ).catch((err) => {
+              console.warn('[Cellix] Local change-set registration failed — no revert available:', err);
+              return null;
+            })
+          : Promise.resolve(null),
+        delay(250),
+      ]);
 
       if (runtime.aborted) return;
+
+      if (previewResult) {
+        pendingActions.changeSetId = previewResult.changeSetId;
+        pendingActions.irreversibleActionTypes = previewResult.irreversibleActionTypes;
+        pendingActions.changes = previewResult.changes;
+      }
 
       revealFinalResponse(turnId, { type: 'answer', answer: plan.explanation });
 
@@ -2034,7 +2071,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       if (localSheetPlan) {
         try {
-          await dispatchLocalSheetActions(turnId, localSheetPlan, mode);
+          await dispatchLocalSheetActions(
+            turnId,
+            localSheetPlan,
+            mode,
+            trimmed,
+            workbookContext,
+            conversationIdRef.current ?? session.id,
+          );
         } catch (error: unknown) {
           const messageText =
             error instanceof Error ? error.message : 'Failed to prepare sheet deletion';

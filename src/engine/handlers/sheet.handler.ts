@@ -1,4 +1,10 @@
-import { AddSheetAction, DeleteSheetAction, RenameSheetAction, CopySheetAction } from '@/action.types';
+import {
+  AddSheetAction,
+  DeleteSheetAction,
+  RenameSheetAction,
+  CopySheetAction,
+  MoveSheetAction,
+} from '@/action.types';
 import { sanitizeExcelSheetName } from '@/utils/sheetName.util';
 
 /* global Excel */
@@ -71,6 +77,40 @@ export async function handleRenameSheet(
 ): Promise<void> {
   const sheet = ctx.workbook.worksheets.getItem(action.oldName);
   sheet.name = action.newName;
+  await ctx.sync();
+}
+
+/**
+ * Reorder a tab. `position` wins when given; otherwise the sheet lands
+ * immediately before/after the named neighbour — resolved from the live tab
+ * order, because the neighbour's index shifts once the moved sheet is pulled
+ * out of the list ahead of it. TASKS.md #212.
+ */
+export async function handleMoveSheet(
+  action: MoveSheetAction,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  const sheets = ctx.workbook.worksheets;
+  sheets.load('items/name');
+  const target = sheets.getItem(action.sheetName);
+  target.load('position');
+  await ctx.sync();
+
+  const order = sheets.items.map((sheet) => sheet.name);
+  const currentIndex = order.indexOf(action.sheetName);
+
+  let destination = action.position;
+  if (destination === undefined && action.beforeSheet) {
+    const neighbour = order.indexOf(action.beforeSheet);
+    if (neighbour >= 0) destination = neighbour > currentIndex ? neighbour - 1 : neighbour;
+  }
+  if (destination === undefined && action.afterSheet) {
+    const neighbour = order.indexOf(action.afterSheet);
+    if (neighbour >= 0) destination = neighbour > currentIndex ? neighbour : neighbour + 1;
+  }
+  if (destination === undefined) return;
+
+  target.position = Math.max(0, Math.min(destination, order.length - 1));
   await ctx.sync();
 }
 

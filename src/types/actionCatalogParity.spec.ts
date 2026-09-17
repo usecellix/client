@@ -5,7 +5,13 @@ import { ALL_FRONTEND_SHEET_ACTION_TYPES } from './sheetActionCatalog';
 // (Object.keys of its Record<SheetActionType, CatalogEntry>), not a
 // hand-copied list, so it can never itself drift from what the backend
 // actually declares.
-import { ALL_SHEET_ACTION_TYPES } from '../../../cellix_backend/src/excel-ai/types/action-catalog';
+//
+// This path has the same "which folder name is the backend checked out
+// under" fragility as telemetry-category-parity.spec.ts's client path
+// (TASKS.md #166, #176) — verified against this filesystem (git remote
+// usecellix/Server) rather than assumed, as of TASKS.md #221/#227. If this
+// starts failing to resolve, `ls ..` from `client/` before guessing.
+import { ALL_SHEET_ACTION_TYPES } from '../../../Server/src/excel-ai/types/action-catalog';
 
 // Compared as plain strings, not the two packages' distinct SheetActionType
 // literal unions — those two types are legitimately different (frontend's

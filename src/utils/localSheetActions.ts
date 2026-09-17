@@ -23,7 +23,14 @@ export function detectCreateSheetIntent(message: string): boolean {
 }
 
 export function detectCopySheetIntent(message: string): boolean {
-  return /\b(as\s+a\s+copy|copy\s+of|duplicate|clone)\b/i.test(message);
+  // Mirrors the server's compound-action.util.ts — "Copy the Purchase Register
+  // sheet and name it March Copy" must never look like a blank-sheet create.
+  // TASKS.md #213.
+  return (
+    /\b(as\s+a\s+copy|copy\s+of|duplicate|clone|replicate)\b/i.test(message) ||
+    /\bcopy\s+(?:[A-Za-z0-9_'-]+\s+){0,4}?(?:sheet|tab)\b/i.test(message) ||
+    /\bcopy\s+(?:sheet|tab)\b/i.test(message)
+  );
 }
 
 export function detectSortIntent(message: string): boolean {
@@ -147,6 +154,51 @@ export function tryLocalCreateEmptySheetActions(
   };
 }
 
+/**
+ * "Copy the Purchase Register sheet and name it March Copy" — the guide's own
+ * T1.1 phrasing — used to always go through the full Tier 3 planner/executor/
+ * verifier LLM pipeline (5-40s observed live) for what is a fully
+ * deterministic operation: extract the source and destination sheet names,
+ * confirm the source exists, emit ONE ADD_SHEET{copyFrom} action. Conservative
+ * on purpose — only the clear "copy X sheet and name/call it Y" shape matches;
+ * anything else (a filtered/partial copy, an unresolvable source name, no
+ * match at all) falls through to the backend exactly as before.
+ */
+function tryLocalCopySheetActions(
+  message: string,
+  workbookContext: WorkbookContext | undefined,
+  mode: AssistantMode,
+): LocalSheetActionPlan | null {
+  if (mode !== 'action') return null;
+  if (!detectCopySheetIntent(message)) return null;
+
+  const availableSheets = (workbookContext?.sheets ?? [])
+    .map((sheet) => sheet.sheetName)
+    .filter(Boolean);
+  if (availableSheets.length === 0) return null;
+
+  const match = message.match(
+    /\bcopy\s+(?:the\s+)?["']?([^"'\n]+?)["']?\s+(?:sheet|tab)\b[\s\S]{0,20}?\b(?:and\s+)?(?:name|call)\s+it\s+["']?([^"'\n]+?)["']?\s*[.!]?\s*$/i,
+  );
+  if (!match) return null;
+
+  const sourceCandidate = match[1]?.trim();
+  const destCandidate = match[2]?.trim();
+  if (!sourceCandidate || !destCandidate) return null;
+
+  const [sourceName] = resolveSheetNames([sourceCandidate], availableSheets);
+  // Source doesn't resolve to a real sheet — let the backend interpret/clarify
+  // rather than guess and risk copying the wrong sheet.
+  if (!sourceName) return null;
+
+  const newSheetName = sanitizeExcelSheetName(nextUniqueSheetName(destCandidate, availableSheets));
+
+  return {
+    actions: [{ type: 'ADD_SHEET', name: newSheetName, copyFrom: sourceName }],
+    explanation: `Copy sheet "${sourceName}" to "${newSheetName}"`,
+  };
+}
+
 function tryLocalRenameSheetActions(
   message: string,
   mode: AssistantMode,
@@ -167,6 +219,29 @@ function tryLocalRenameSheetActions(
   };
 }
 
+/**
+ * Words that survive stripping the clear phrase itself and still mean "the
+ * whole active sheet" — anything else left over is a narrower target.
+ */
+const WHOLE_SHEET_CLEAR_FILLER =
+  /^(?:\s|[.,!?]|\b(?:clear|out|this|that|the|entire|whole|complete|completely|all|of|please|now|just|kindly|sheet|tab|worksheet|data|content|contents|cell|cells|value|values|everything|active|current|open)\b)*$/i;
+
+/**
+ * The clear trigger matches "clear all (the) data/content/cells" anywhere in the
+ * message, so scoped clears — "clear all data in column C", "clear all the
+ * content in the Narration column", "clear all cells with errors", "clear the
+ * Summary sheet" — were answered with CLEAR_RANGE A1:XFD1048576 on the ACTIVE
+ * sheet: the entire sheet wiped (plus its charts, #181) for a column-sized
+ * request, or the wrong sheet entirely. A whole-sheet clear is only a
+ * whole-sheet clear when nothing in the message narrows it; everything else
+ * goes to the backend, which can resolve columns, conditions and sheet names.
+ * TASKS.md #209.
+ */
+export function isWholeSheetClear(message: string): boolean {
+  const withoutMentions = stripSheetMentions(message);
+  return WHOLE_SHEET_CLEAR_FILLER.test(withoutMentions.trim());
+}
+
 function tryLocalClearSheetActions(
   message: string,
   mode: AssistantMode,
@@ -180,6 +255,7 @@ function tryLocalClearSheetActions(
     return null;
   }
   if (/[A-Z]+\d+:[A-Z]+\d+/i.test(message)) return null;
+  if (!isWholeSheetClear(message)) return null;
 
   return {
     // Whole-sheet clear means "make it a plain workbook" — cell contents AND
@@ -198,6 +274,7 @@ export function tryLocalSheetActions(
 ): LocalSheetActionPlan | null {
   return (
     tryLocalDeleteSheetActions(message, workbookContext, mode) ??
+    tryLocalCopySheetActions(message, workbookContext, mode) ??
     tryLocalCreateEmptySheetActions(message, workbookContext, mode) ??
     tryLocalRenameSheetActions(message, mode) ??
     tryLocalClearSheetActions(message, mode) ??

@@ -28,20 +28,63 @@ import GstReconCollisionCard from './GstReconCollisionCard';
  * of only via the separate Change History panel or the end-of-conversation
  * LastChangeRevert bar.
  */
-function TurnRevertControl({
-  changeSetId,
+/** Exported for direct testing (TASKS.md #242) — otherwise only reachable through the full turn/menu tree. */
+/**
+ * One user prompt ("Copy the Purchase Register sheet and name it March
+ * Copy") can produce several stepwise change sets (create sheet, then write
+ * its content) — each its own `ActionBlock` with its own `changeSetId`. A
+ * live run showed this rendering as two separate "Revert this change" items
+ * in the same menu for what the user experiences as a single action.
+ * `changeSetIds` takes the whole group (oldest-applied first, matching block
+ * order) and reverts them together as one unit: sequentially, in REVERSE
+ * order (undo the last-applied step first, since a later step can depend on
+ * an earlier one — e.g. content depends on the sheet existing). A failure
+ * partway through stops immediately and reports that failure; whichever
+ * later steps already succeeded before it stay reverted (same honest
+ * partial-progress semantics as every other multi-step apply in this app —
+ * there is no atomic multi-changeset revert on the server to fall back on).
+ */
+export function TurnRevertControl({
+  changeSetIds,
   onRevert,
 }: {
-  changeSetId: string;
+  changeSetIds: string[];
   onRevert: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
 }) {
-  const [state, setState] = useState<'idle' | 'reverting' | 'reverted' | 'error'>('idle');
+  const [state, setState] = useState<'idle' | 'reverting' | 'reverted' | 'error' | 'permanentError'>(
+    'idle',
+  );
 
   if (state === 'reverted') {
     return (
       <div className="cellix-user-msg-menu-item cellix-user-msg-menu-item-done" aria-disabled="true">
         <Check size={13} />
         <span>Reverted</span>
+      </div>
+    );
+  }
+
+  // TASKS.md #242 — a 422 here means the server's own fail-closed
+  // self-verification (see change-set.controller.ts's RevertVerificationError
+  // handling) determined there is genuinely no correct inverse for this
+  // change set — e.g. a filter/view-only action the shadow workbook never
+  // captured a "before" state for (AUTO_FILTER, HIDE_ROW, FREEZE_PANES…).
+  // That is never a transient failure: offering "Retry revert" for it invites
+  // a click that is guaranteed to fail again the same way, every time. The
+  // menu item this replaces was reachable in real use — irreversibility is
+  // meant to hide it earlier (TurnRenderer's own `revertibleActionBlocks`
+  // filter), so this is the honest fallback for whatever path let it through
+  // rather than a fix to that filter's own logic, which this change does not
+  // touch.
+  if (state === 'permanentError') {
+    return (
+      <div
+        className="cellix-user-msg-menu-item cellix-user-msg-menu-item-disabled"
+        aria-disabled="true"
+        title="This change has no undo — Excel doesn't record enough to reverse it (e.g. a filter or view change)."
+      >
+        <RotateCcw size={13} />
+        <span>Can't be undone</span>
       </div>
     );
   }
@@ -55,12 +98,15 @@ function TurnRevertControl({
       onClick={async () => {
         setState('reverting');
         try {
-          const result = await revertChangeSet(changeSetId);
-          await onRevert(changeSetId, result.inverseActions);
+          for (const changeSetId of [...changeSetIds].reverse()) {
+            const result = await revertChangeSet(changeSetId);
+            await onRevert(changeSetId, result.inverseActions);
+          }
           setState('reverted');
         } catch (err) {
           console.error('[Cellix] Revert failed:', err);
-          setState('error');
+          const message = err instanceof Error ? err.message : String(err);
+          setState(/^Audit API 422\b/.test(message) ? 'permanentError' : 'error');
         }
       }}
     >
@@ -409,11 +455,11 @@ function UserMessageRow({
     }
   };
 
+  // One control for the whole turn, even when it produced several stepwise
+  // change sets — see TurnRevertControl's own comment for why.
   const revertControls =
     onRevertChangeSet && revertibleChangeSetIds?.length
-      ? revertibleChangeSetIds.map((changeSetId) => (
-          <TurnRevertControl key={changeSetId} changeSetId={changeSetId} onRevert={onRevertChangeSet} />
-        ))
+      ? [<TurnRevertControl key="revert" changeSetIds={revertibleChangeSetIds} onRevert={onRevertChangeSet} />]
       : null;
 
   if (!canResend && !revertControls) {

@@ -226,6 +226,30 @@ describe('ActionResponseCard — irreversibility warning', () => {
   });
 });
 
+describe('ActionResponseCard — compact applied row', () => {
+  it('omits the empty summary wrapper and marks the card compact when the headline already appeared above', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ActionResponseCard, {
+        block: makeBlock({
+          proposalStatus: 'accepted',
+          userFacingSummary: {
+            headline: "I'll clear the data.",
+          },
+        }),
+        previewEnabled: true,
+        onAccept: vi.fn(),
+        onReject: vi.fn(),
+        priorAnswerText: "I'll clear the data.",
+      }),
+    );
+
+    expect(html).toContain('is-compact');
+    expect(html).not.toContain('data-testid="action-summary-default"');
+    expect(html).toContain('Show details');
+    expect(html).toContain('Applied');
+  });
+});
+
 describe('resolveActionBlockCopy', () => {
   it('falls back without leaking tier jargon from legacy explanation', () => {
     const copy = resolveActionBlockCopy({

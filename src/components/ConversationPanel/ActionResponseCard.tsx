@@ -154,7 +154,15 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     </div>
   ) : null;
 
-  const summaryBody = (
+  const hasSummaryContent = Boolean(
+    stepBadge ||
+      gstReconBadge ||
+      (!hideDuplicateHeadline && summary.headline) ||
+      (summary.bullets && summary.bullets.length > 0) ||
+      metaParts.length > 0,
+  );
+
+  const summaryBody = hasSummaryContent ? (
     <div
       data-testid={isGstRecon ? 'gst-recon-result-card' : 'action-summary-default'}
     >
@@ -174,7 +182,9 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
         <div className="cellix-changes-meta">{metaParts.join(' · ')}</div>
       )}
     </div>
-  );
+  ) : null;
+
+  const compactClass = hasSummaryContent ? '' : ' is-compact';
 
   const acceptReject =
     isPending && showActionButtons ? (
@@ -245,7 +255,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   if (isAccepted) {
     return (
-      <div className="cellix-changes-card cellix-block-enter">
+      <div className={`cellix-changes-card cellix-block-enter is-applied${compactClass}`}>
         {summaryBody}
         {footer(<span className="cellix-action-status is-applied">Applied</span>)}
         {detailsBody}
@@ -255,7 +265,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   if (isRejected) {
     return (
-      <div className="cellix-changes-card cellix-block-enter is-rejected">
+      <div className={`cellix-changes-card cellix-block-enter is-rejected${compactClass}`}>
         {summaryBody}
         {footer(<span className="cellix-action-status">Rejected</span>)}
         {detailsBody}
@@ -265,7 +275,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   if (isPending && previewEnabled) {
     return (
-      <div className="cellix-changes-card cellix-block-enter is-pending">
+      <div className={`cellix-changes-card cellix-block-enter is-pending${compactClass}`}>
         {summaryBody}
         {blockedNotice}
         {irreversibleNotice}
@@ -278,7 +288,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   }
 
   return (
-    <div className="cellix-action-card cellix-block-enter">
+    <div className={`cellix-action-card cellix-block-enter${compactClass}`}>
       <div className="cellix-action-card-title">Cellix will make these changes</div>
       {summaryBody}
       {blockedNotice}
