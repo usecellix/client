@@ -179,3 +179,8 @@ export function getPricingPageUrl(): string {
   return `${getMarketingSiteUrl()}/pricing`;
 }
 
+/** Opens the marketing site's signed-in dashboard — the entry point for account/settings. */
+export function getAccountSettingsUrl(): string {
+  return `${getMarketingSiteUrl()}/app`;
+}
+

@@ -32,7 +32,7 @@ import {
   groupConversationsByRecency,
 } from '@/utils/conversationHistoryGrouping';
 import { createTopupSession, CreditAccountSummary, TopupPackId } from '@/services/billingService';
-import { getPricingPageUrl } from '@/lib/apiConfig';
+import { getAccountSettingsUrl, getPricingPageUrl } from '@/lib/apiConfig';
 
 /** Mirrors cellix_backend's TOPUP_PACKS (credit/topup-packs.ts) — display-only, the real price/credit amounts are enforced server-side. */
 const TOPUP_PACK_OPTIONS: Array<{ id: TopupPackId; credits: number; priceLabel: string }> = [
@@ -722,10 +722,12 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
             role="menuitem"
             onClick={() => {
               closeAll();
+              window.open(getAccountSettingsUrl(), '_blank', 'noopener,noreferrer');
             }}
           >
             <Settings size={13} />
             <span>Cellix settings</span>
+            <ExternalLink size={12} className="cellix-settings-menu-trailing" />
           </button>
 
           <div className="cellix-settings-menu-divider" />
