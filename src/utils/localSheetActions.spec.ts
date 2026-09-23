@@ -21,6 +21,39 @@ const context: WorkbookContext = {
 };
 
 /**
+ * TASKS.md #254 — "Rename this sheet to X" (the guide's own T1.1 phrasing,
+ * referring to whatever sheet is currently active) always paid the full
+ * Tier 3 LLM round-trip (~6s observed live) because the existing local
+ * rename lane only recognized a NAMED old sheet ("rename sheet Invoices to
+ * X"), never "this/current/active sheet". Same instant-fast-lane treatment
+ * as #250 gave copy-sheet.
+ */
+describe('tryLocalRenameSheetActions — active-sheet phrasing (#254)', () => {
+  it('resolves "Rename this sheet to X" using the active sheet as the old name', () => {
+    const plan = tryLocalSheetActions('Rename this sheet to Apr 2024 Data', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Apr 2024 Data' },
+    ]);
+  });
+
+  it('also resolves "current tab" and "active sheet" phrasing', () => {
+    expect(
+      tryLocalSheetActions('rename the current tab to Renamed', context, 'action')?.actions,
+    ).toEqual([{ type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Renamed' }]);
+    expect(
+      tryLocalSheetActions('Rename the active sheet to Renamed', context, 'action')?.actions,
+    ).toEqual([{ type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Renamed' }]);
+  });
+
+  it('still resolves the pre-existing named-sheet phrasing unchanged', () => {
+    const plan = tryLocalSheetActions('rename sheet Invoices to Ledger', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Ledger' },
+    ]);
+  });
+});
+
+/**
  * TASKS.md #250 — "Copy the X sheet and name it Y" (the guide's own T1.1
  * phrasing) always paid the full Tier 3 planner/executor/verifier LLM
  * round-trip (5-40s observed live) for what is a fully deterministic

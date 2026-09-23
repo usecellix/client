@@ -74,12 +74,23 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       summary.headline &&
       normalizeCopy(priorAnswerText) === normalizeCopy(summary.headline),
   );
-  const showDetails = block.actions.length > 0;
-  const detailLines = showDetails ? describeSheetActions(block.actions) : [];
-
   const isPending = block.proposalStatus === 'pending';
   const isAccepted = block.proposalStatus === 'accepted';
   const isRejected = block.proposalStatus === 'rejected';
+  const isDecided = isAccepted || isRejected;
+
+  /**
+   * Once a step is decided (applied/rejected), the card should read as a
+   * receipt, not a plan — a 12-sheet build's full intent list has no reason
+   * to stay inline. Fold it into the same "Show details" disclosure the
+   * per-action lines already use, so every decided card lands at the exact
+   * same height (headline + meta + footer) regardless of how much it did.
+   */
+  const allBullets = summary.bullets ?? [];
+  const bulletsInDetails = isDecided && allBullets.length > 0;
+  const actionDetailLines = block.actions.length > 0 ? describeSheetActions(block.actions) : [];
+  const detailLines = bulletsInDetails ? [...allBullets, ...actionDetailLines] : actionDetailLines;
+  const showDetails = detailLines.length > 0;
 
   const detailsToggle = showDetails ? (
     <button
@@ -154,11 +165,16 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     </div>
   ) : null;
 
+  // Bullets fold into the details disclosure once a step is decided (see
+  // bulletsInDetails above) — the inline summary only carries them while
+  // still pending review.
+  const inlineBullets = bulletsInDetails ? [] : allBullets;
+
   const hasSummaryContent = Boolean(
     stepBadge ||
       gstReconBadge ||
       (!hideDuplicateHeadline && summary.headline) ||
-      (summary.bullets && summary.bullets.length > 0) ||
+      inlineBullets.length > 0 ||
       metaParts.length > 0,
   );
 
@@ -171,9 +187,9 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       {!hideDuplicateHeadline && summary.headline && (
         <div className="cellix-changes-summary">{summary.headline}</div>
       )}
-      {summary.bullets && summary.bullets.length > 0 && (
+      {inlineBullets.length > 0 && (
         <ul className="cellix-changes-bullets">
-          {summary.bullets.map((b, i) => (
+          {inlineBullets.map((b, i) => (
             <li key={i}>{b}</li>
           ))}
         </ul>

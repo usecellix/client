@@ -78,7 +78,12 @@ export function messagesToTurns(messages: StoredConversationMessage[]): Conversa
     }
 
     turn.blocks.push({
-      id: `answer_${turn.id}`,
+      // Keyed by the MESSAGE id, not the turn id — TASKS.md #267 made a
+      // stepwise (multi-wave) turn persist one assistant message PER WAVE
+      // plus a closing summary, all landing in this same turn. `answer_${turn.id}`
+      // gave every one of those blocks the identical id, colliding as React
+      // keys in TurnRenderer's `key={block.id}` list and only rendering one.
+      id: `answer_${msg.id}`,
       type: 'answer',
       content: msg.content,
       revealState: 'complete',

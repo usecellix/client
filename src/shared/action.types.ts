@@ -234,6 +234,16 @@ export interface CreateTableAction {
   tableName: string;
   hasHeaders: boolean;
   style?: string;
+  /**
+   * Excel puts a filter/sort dropdown on every header cell of a new Table.
+   * On a data-ENTRY template that reads as clutter — a live user reported the
+   * month sheets as "the dropdown is in the header" when the only real
+   * dropdowns were meant to be the DATA_VALIDATION ones in the data cells.
+   * Pass false to turn the header buttons off and keep the Table itself (and
+   * with it the calculated-column auto-fill that makes typing a new row
+   * compute). Omitted = Excel's default (shown). TASKS.md #268.
+   */
+  showFilterButton?: boolean;
 }
 
 /** Undoes CREATE_TABLE: unwraps the Excel Table object back to a plain range, leaving cell values/formats untouched (TASKS.md #16). */

@@ -318,7 +318,7 @@ describe('useConversation — step-wise run continuation', () => {
     });
   }, 15000);
 
-  it('auto-expands the thought process when a continuation carries a build-completeness warning', async () => {
+  it('keeps the thought process collapsed even when a continuation carries a build-completeness warning', async () => {
     // Live incident (Sept 9, 2026): the Planner truncated (again), and
     // TASKS.md #187's pruning correctly cut 7 of 10 subtasks rather than ship
     // broken formulas — then correctly told the user so via a 'status' event:
@@ -358,8 +358,8 @@ describe('useConversation — step-wise run continuation', () => {
         (b): b is ThinkingBlock => b.type === 'thinking',
       );
       expect(thinking?.content).toMatch(/could not fully plan/i);
-      // The actual assertion: not just present, but OPEN by default.
-      expect(thinking?.expanded).toBe(true);
+      // Present but collapsed — the thought process only opens on user tap.
+      expect(thinking?.expanded).toBe(false);
     });
   }, 15000);
 
@@ -423,6 +423,89 @@ describe('useConversation — step-wise run continuation', () => {
       const acceptedBlock = updated.blocks.find((b): b is ActionBlock => b.type === 'actions');
       expect(acceptedBlock?.proposalStatus).toBe('accepted');
       expect(updated.error).toContain('still applied');
+    });
+  });
+/**
+   * TASKS.md #272 — a stepwise build spends essentially all its time in
+   * /continue, and that fetch carried NO abort signal. Stop therefore could
+   * not reach it, and because the request was never aborted the connection
+   * stayed open, so the server-side cancellation keyed on the socket closing
+   * (#260) could not fire either. Both halves were dead for long builds.
+   */
+  describe('stop + stall handling (TASKS.md #272)', () => {
+    it('passes an abort signal on /continue, so Stop can actually reach the request', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeSseResponse(WAVE_ZERO))
+        .mockResolvedValueOnce(
+          makeSseResponse([
+            sseBlock('conversation_end', { summary: 'All steps applied.' }),
+            sseBlock('wave_ready', { runId: 'run_abc', waveIndex: 1, waveTotal: 3, hasMore: false }),
+          ]),
+        );
+
+      const result = await sendStepwise('stepwise-abort-signal', fetchMock);
+      await waitFor(() => expect(result.current.turns).toHaveLength(1));
+      const turn = result.current.turns[0];
+      const block = turn.blocks.find((b): b is ActionBlock => b.type === 'actions')!;
+
+      await act(async () => {
+        await result.current.acceptActions(turn.id, block.id);
+      });
+
+      const [, init] = fetchMock.mock.calls[1];
+      const signal = (init as RequestInit).signal;
+      expect(signal).toBeDefined();
+      expect(signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('clears the waiting state after a wave, so the spinner cannot outlive the request', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeSseResponse(WAVE_ZERO))
+        .mockResolvedValueOnce(
+          makeSseResponse([
+            sseBlock('wave_ready', { runId: 'run_abc', waveIndex: 1, waveTotal: 3, hasMore: true }),
+          ]),
+        );
+
+      const result = await sendStepwise('stepwise-waiting-cleared', fetchMock);
+      await waitFor(() => expect(result.current.turns).toHaveLength(1));
+      const turn = result.current.turns[0];
+      const block = turn.blocks.find((b): b is ActionBlock => b.type === 'actions')!;
+
+      await act(async () => {
+        await result.current.acceptActions(turn.id, block.id);
+      });
+
+      // A wave ends on wave_ready, which opens no response gate — the state
+      // this asserts is exactly what left a spinning 'Thinking...' next to a
+      // Send arrow, with no Stop button to press.
+      await waitFor(() => expect(result.current.isWaitingForResponse).toBe(false));
+    });
+
+    it('a user Stop is not reported as a build failure', async () => {
+      const abortError = new DOMException('The operation was aborted.', 'AbortError');
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeSseResponse(WAVE_ZERO))
+        .mockRejectedValueOnce(abortError);
+
+      const result = await sendStepwise('stepwise-user-stop', fetchMock);
+      await waitFor(() => expect(result.current.turns).toHaveLength(1));
+      const turn = result.current.turns[0];
+      const block = turn.blocks.find((b): b is ActionBlock => b.type === 'actions')!;
+
+      await act(async () => {
+        await result.current.acceptActions(turn.id, block.id);
+      });
+
+      await waitFor(() => {
+        const updated = result.current.turns[0];
+        // Stopping on purpose must not read as a crash.
+        expect(updated.error).toBeUndefined();
+        expect(result.current.isWaitingForResponse).toBe(false);
+      });
     });
   });
 });

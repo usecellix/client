@@ -32,7 +32,6 @@ import { shouldAcceptIncomingClarification } from '@/utils/clarification.util';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import {
   buildThoughtSummary,
-  isCompletenessWarningThought,
   stillWorkingMessage,
 } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isLikelyChitchat, isSimpleCreateTask } from '@/utils/statusMessage';
@@ -863,7 +862,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         const finalized = finalizeSteps(
           upsertThinking(turn.blocks, preservedThought, {
             loading: false,
-            expanded: isCompletenessWarningThought(preservedThought),
+            expanded: false,
             visible: true,
           }),
           turn.userMessage,
@@ -1436,7 +1435,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const processStream = useCallback(
-    async (response: Response, turnId: string) => {
+    async (response: Response, turnId: string, streamController?: AbortController) => {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('Response body is not readable');
 
@@ -1444,9 +1443,39 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       let buffer = '';
       let streamBuffer = '';
 
+      /**
+       * Stall watchdog — TASKS.md #272.
+       *
+       * The backend streams status/thinking events continuously while it
+       * works, so a long TOTAL runtime is normal but a long SILENCE is not.
+       * There was no bound of any kind here: `runStillWorkingTicker` loops
+       * forever emitting reassurance ("still working…") and never gives up,
+       * so a wedged run showed a spinner indefinitely with nothing to click.
+       *
+       * Deliberately generous and silence-based, not duration-based: a wave
+       * that is genuinely working (12 month sheets in parallel) can take
+       * minutes but keeps emitting. The ceiling sits under the server's own
+       * 480s agentic-loop timeout so a real backend timeout still surfaces as
+       * itself rather than being pre-empted by this.
+       */
+      const STALL_TIMEOUT_MS = 180_000;
+      let lastEventAt = Date.now();
+      let stalled = false;
+      const stallTimer = setInterval(() => {
+        if (Date.now() - lastEventAt < STALL_TIMEOUT_MS) return;
+        stalled = true;
+        clearInterval(stallTimer);
+        // Aborting is what unblocks `reader.read()` below AND closes the
+        // connection, which is what lets the server stop too (#260).
+        streamController?.abort();
+        void reader.cancel().catch(() => undefined);
+      }, 5_000);
+
+      try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        lastEventAt = Date.now();
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split(/\r?\n\r?\n/);
@@ -1557,27 +1586,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // block as `null` whenever `showActionButtons` is false.
             updateTurn(turnId, (turn) => {
               const withoutStatusBlocks = withoutStatus(turn.blocks);
-              // A completeness warning (TASKS.md #171/#187 — "proceeded under
-              // an assumption", "could not fully plan N steps") landed in the
-              // thinking log via `appendThinkingLog` as this wave streamed in,
-              // same as it always does. But `revealFinalResponse` — the ONLY
-              // place that decides whether the thinking block starts expanded
-              // — never runs for a continuation (see this branch's own
-              // comment). Without this, that warning is technically present
-              // but collapsed behind a disclosure nothing ever opens: a live
-              // report where a truncated plan got silently pruned from 10
-              // subtasks to 3, and the user saw two "Applied" cards with zero
-              // indication 70% of the request never got built.
-              const thinking = withoutStatusBlocks.find(
-                (b): b is ThinkingBlock => b.type === 'thinking',
-              );
-              const blocks =
-                thinking && isCompletenessWarningThought(thinking.content)
-                  ? withoutStatusBlocks.map((b) =>
-                      b.id === thinking.id ? { ...b, expanded: true } : b,
-                    )
-                  : withoutStatusBlocks;
-              return { ...turn, phase: 'complete', blocks };
+              return { ...turn, phase: 'complete', blocks: withoutStatusBlocks };
             });
             setIsWaitingForResponse(false);
             continue;
@@ -1949,6 +1958,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       if (streamBuffer && !runtimeRef.current.get(turnId)?.pendingResponse) {
         signalResponse(turnId, { type: 'answer', answer: streamBuffer });
       }
+      } finally {
+        clearInterval(stallTimer);
+      }
+
+      // Reported as a real failure, not a quiet stop: the run is genuinely
+      // wedged, and anything already accepted is still applied. TASKS.md #272.
+      if (stalled) {
+        throw new Error(
+          'The assistant stopped responding for 3 minutes, so this step was cancelled. ' +
+            'Anything you already accepted is still applied — try again to continue the build.',
+        );
+      }
     },
     [
       autoApplyActions,
@@ -2199,7 +2220,12 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           throw new Error(errorMessage);
         }
 
-        await Promise.all([processStream(response, turnId), timelinePromise]);
+        // Same controller the fetch above used, so the stall watchdog inside
+        // processStream can abort this request too. TASKS.md #272.
+        await Promise.all([
+          processStream(response, turnId, abortControllerRef.current ?? undefined),
+          timelinePromise,
+        ]);
       } catch (error: unknown) {
         runtime.aborted = true;
 
@@ -2400,28 +2426,69 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           headers['ngrok-skip-browser-warning'] = 'true';
         }
 
+        // TASKS.md #272 — this fetch had NO signal, so "Stop" could not reach
+        // it. A stepwise build spends essentially ALL of its time here (one
+        // /continue per wave; a live wave ran 484s), which meant Stop never
+        // worked for exactly the long builds people most want to stop. Worse,
+        // because the request was never aborted the connection stayed open,
+        // so the server-side cancellation added in #260 — which keys off
+        // `reply.raw` closing — could never fire either. Both halves were
+        // dead for the whole stepwise path.
+        abortControllerRef.current?.abort();
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         const response = await fetch(endpoint, {
           method: 'POST',
           headers,
           credentials: 'include',
           body: JSON.stringify({ runId, decision, readback }),
+          signal: controller.signal,
         });
 
         if (!response.ok) {
           throw new Error(await getUserFacingErrorMessage(response));
         }
 
-        await processStream(response, turnId);
+        await processStream(response, turnId, controller);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Could not continue this build';
-        console.error('[Cellix] Stepwise continue failed:', message);
-        updateTurn(turnId, (turn) => ({
-          ...turn,
-          error: `${message} — the steps you already accepted are still applied.`,
-          blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
-        }));
+        // A deliberate Stop is not a failure — reporting "Could not continue
+        // this build" for something the user just asked for reads as a crash.
+        // TASKS.md #272.
+        const runtimeNow = runtimeRef.current.get(turnId);
+        const userStopped =
+          runtimeNow?.aborted === true ||
+          (error instanceof DOMException && error.name === 'AbortError') ||
+          (error instanceof Error && error.name === 'AbortError');
+
+        if (userStopped) {
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        } else {
+          const message =
+            error instanceof Error ? error.message : 'Could not continue this build';
+          console.error('[Cellix] Stepwise continue failed:', message);
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            error: `${message} — the steps you already accepted are still applied.`,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        }
       } finally {
+        // Stop this wave's "still working…" ticker. It loops until the
+        // runtime is aborted or the response gate opens — and a stepwise wave
+        // ends with `wave_ready`, which opens NEITHER. So the ticker kept
+        // appending "still working" thinking blocks forever after the request
+        // had already finished: a spinning "Thinking… Step 9" next to a Send
+        // arrow, with no Stop button to press because `isWaitingForResponse`
+        // was already false. That is the exact state the user could not
+        // escape. The next wave resets this flag on entry. TASKS.md #272.
+        runtime.aborted = true;
+        // Always clears the spinner and restores the Stop→Send affordance,
+        // including on the abort path — a stuck "Thinking…" with no control
+        // is the state this whole fix exists to remove.
         setIsWaitingForResponse(false);
       }
     },

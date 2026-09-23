@@ -231,6 +231,11 @@ export function toRichAction(action: SheetAction): RichAction | null {
         tableName: String(r.tableName ?? r.name ?? '').trim(),
         hasHeaders: r.hasHeaders === undefined ? true : Boolean(r.hasHeaders),
         style: r.style as string | undefined,
+        // Only carried through when actually present — see the field's
+        // docblock: an absent value must stay absent, not become `true`.
+        ...(r.showFilterButton === undefined
+          ? {}
+          : { showFilterButton: Boolean(r.showFilterButton) }),
       } as RichAction;
     case 'CREATE_CHART':
       return {

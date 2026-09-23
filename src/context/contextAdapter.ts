@@ -98,6 +98,7 @@ function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
     columnMeta,
     structure: sheet.structure,
     formulaSummary: sheet.formulaSummary,
+    isHidden: sheet.isHidden,
     ...(truncated
       ? {
           compressionMeta: {

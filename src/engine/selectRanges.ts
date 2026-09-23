@@ -69,8 +69,7 @@ export function resolveActionSelectBounds(
     }
     case 'FORMAT_RANGE':
     case 'CLEAR_RANGE':
-    case 'MERGE_CELLS':
-    case 'CONDITIONAL_FORMAT': {
+    case 'MERGE_CELLS': {
       if (typeof rich.range === 'string') {
         const parsed = parseRangeAddress(rich.range);
         if (parsed) return { sheetName, ...parsed };
@@ -86,6 +85,14 @@ export function resolveActionSelectBounds(
       }
       return null;
     }
+    // Deliberately NOT selected after apply, unlike the sibling cases above:
+    // `range` here is the rule's whole CANDIDATE area, not the set of cells
+    // that actually changed — a "highlight rows below 1 lakh" rule over
+    // A2:J61 only visually affects the matching rows, but selecting the
+    // full range looked (live-tested) exactly like the entire workbook had
+    // been mouse-selected by accident, not like a change had been made.
+    case 'CONDITIONAL_FORMAT':
+      return null;
     case 'INSERT_COLUMN': {
       if (typeof rich.beforeColumn === 'string') {
         return {
@@ -153,14 +160,12 @@ export function resolveActionSelectBounds(
       if (!start) return null;
       return { sheetName: destSheet, row: start.row, col: start.col, rowCount: 1, colCount: 1 };
     }
+    // Same reasoning as CONDITIONAL_FORMAT just above: `range` is the whole
+    // scan area a filter is checked against, not the (usually much smaller)
+    // set of rows that actually matched and changed.
     case 'FORMAT_MATCHING_ROWS':
-    case 'SET_MATCHING_ROWS': {
-      if (typeof rich.range === 'string') {
-        const parsed = parseRangeAddress(rich.range);
-        if (parsed) return { sheetName, ...parsed };
-      }
+    case 'SET_MATCHING_ROWS':
       return null;
-    }
     case 'BATCH_SET': {
       const ops = (rich as { operations?: { address: string }[] }).operations ?? [];
       const cells = ops

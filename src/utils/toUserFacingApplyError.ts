@@ -21,6 +21,28 @@ export function toUserFacingApplyError(message: string): string {
     return "I couldn't apply those changes. Please try again.";
   }
 
+  // A missing sheet means two different things depending on when it is hit,
+  // and the action-type prefix is what tells them apart — TASKS.md #263.
+  //
+  // The engine throws `${action.type}: ${message}` at APPLY time, so an
+  // ItemNotFound carrying a prefix means a sheet this change set was supposed
+  // to create does not exist — telling the user to click Accept is useless,
+  // they just did. Without a prefix it is the PREVIEW path, where the sheet
+  // legitimately does not exist yet and Accept is exactly the right advice
+  // (handled further down, unchanged).
+  //
+  // Before this, the prefixed case fell into ACTION_TYPE_PREFIX_RE below and
+  // reported a formatting problem — live, a BATCH_SET onto a Main sheet no
+  // step had created told the user to re-describe a range that was never the
+  // issue.
+  const isItemNotFound = /requested resource doesn'?t exist|itemnotfound/i.test(raw);
+  if (isItemNotFound && ACTION_TYPE_PREFIX_RE.test(raw)) {
+    return (
+      "Excel couldn't find a sheet one of those steps needed — it was never created. " +
+      'Re-run the request so the missing sheet gets created first.'
+    );
+  }
+
   if (INTERNAL_APPLY_ERROR_RE.test(raw) || ACTION_TYPE_PREFIX_RE.test(raw)) {
     return APPLY_ERROR_FALLBACK;
   }

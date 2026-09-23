@@ -27,4 +27,21 @@ describe('toUserFacingApplyError (Spec 24)', () => {
     expect(clean.toLowerCase()).toContain('accept');
     expect(clean).not.toBe("The requested resource doesn't exist.");
   });
+
+  /**
+   * TASKS.md #263 — the engine throws `${action.type}: ${message}` at APPLY
+   * time, so a prefixed ItemNotFound means a sheet this change set was meant
+   * to create is missing. "Click Accept" is useless there (they just did), and
+   * the old ordering reported it as a formatting problem instead.
+   */
+  it('distinguishes an apply-time missing sheet from the preview-time case', () => {
+    const applyTime = toUserFacingApplyError("BATCH_SET: The requested resource doesn't exist.");
+    expect(applyTime).toMatch(/never created/i);
+    expect(applyTime).not.toMatch(/formatting/i);
+
+    // Unprefixed is the preview path — Accept really is the right advice.
+    const previewTime = toUserFacingApplyError("The requested resource doesn't exist.");
+    expect(previewTime.toLowerCase()).toContain('accept');
+    expect(previewTime).not.toMatch(/never created/i);
+  });
 });

@@ -201,10 +201,30 @@ function tryLocalCopySheetActions(
 
 function tryLocalRenameSheetActions(
   message: string,
+  workbookContext: WorkbookContext | undefined,
   mode: AssistantMode,
 ): LocalSheetActionPlan | null {
   if (mode !== 'action') return null;
-  if (!/rename\s+(?:the\s+)?(?:sheet|tab)/i.test(message)) return null;
+  if (!/rename\s+(?:the\s+)?(?:sheet|tab|this|current|active)/i.test(message)) return null;
+
+  // "Rename this sheet to X" / "rename the current tab to X" / "rename the
+  // active sheet to X" — the guide's own canonical T1.1 phrasing, referring
+  // to whatever sheet is currently active rather than naming one. Missing
+  // this sent every such request through the full LLM pipeline (5-6s
+  // observed live) instead of the same instant local lane a named rename
+  // already gets. TASKS.md #254.
+  const activeSheetMatch = message.match(
+    /rename\s+(?:the\s+)?(?:this|current|active)\s+(?:sheet|tab)\s+to\s+["']?([^"']+?)["']?\s*[.!]?\s*$/i,
+  );
+  if (activeSheetMatch) {
+    const oldName = workbookContext?.activeSheet;
+    const newName = activeSheetMatch[1]?.trim();
+    if (!oldName || !newName) return null;
+    return {
+      actions: [{ type: 'RENAME_SHEET', oldName, newName }],
+      explanation: `Rename sheet "${oldName}" to "${newName}"`,
+    };
+  }
 
   const match = message.match(
     /rename\s+(?:the\s+)?(?:sheet|tab)\s+["']?([^"']+?)["']?\s+to\s+["']?([^"']+?)["']?\s*$/i,
@@ -276,7 +296,7 @@ export function tryLocalSheetActions(
     tryLocalDeleteSheetActions(message, workbookContext, mode) ??
     tryLocalCopySheetActions(message, workbookContext, mode) ??
     tryLocalCreateEmptySheetActions(message, workbookContext, mode) ??
-    tryLocalRenameSheetActions(message, mode) ??
+    tryLocalRenameSheetActions(message, workbookContext, mode) ??
     tryLocalClearSheetActions(message, mode) ??
     null
   );
