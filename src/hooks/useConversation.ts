@@ -1950,11 +1950,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // generic apply-error mapping below.
             const isInsufficientCredit = event.data.code === 'INSUFFICIENT_CREDIT';
             const message = isInsufficientCredit
-              ? `You're out of credits for this action${
-                  typeof event.data.requiredCredits === 'number'
-                    ? ` (needs ${event.data.requiredCredits}, have ${event.data.availableBalance ?? 0})`
-                    : ''
-                }. Add credits or upgrade your plan to continue.`
+              ? "You're out of credits. Add credits or upgrade your plan to continue."
               : toUserFacingApplyError(event.data.message);
             updateTurn(turnId, (turn) => ({
               ...turn,
