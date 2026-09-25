@@ -296,6 +296,9 @@ const App: React.FC = () => {
     openConversationFromHistory,
     toggleThinking,
     markAnswerComplete,
+    resumableRun,
+    resumeRun,
+    dismissResumableRun,
   } = useConversation({
     workbookKey,
     workbookId,
@@ -540,6 +543,9 @@ const App: React.FC = () => {
       isApplyingActions={isApplying}
       creditAccount={creditAccount}
       isLowCreditBalance={isLowCreditBalance}
+      resumableRun={resumableRun}
+      onResumeRun={resumeRun}
+      onDismissResumableRun={dismissResumableRun}
     />
   );
 };

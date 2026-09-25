@@ -114,6 +114,9 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
       closeTurn: vi.fn(),
       toggleThinking: vi.fn(),
       markAnswerComplete: vi.fn(),
+      resumableRun: null,
+      resumeRun: vi.fn(),
+      dismissResumableRun: vi.fn(),
     };
   });
 

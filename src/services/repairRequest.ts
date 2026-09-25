@@ -73,7 +73,13 @@ export function buildRepairRequest(result: OutcomeVerification): RepairRequest |
   if (!result || result.skipped) return null;
 
   const failures = (result.mismatches ?? []).filter(
-    (mismatch) => mismatch.isFormulaError && mismatch.actual !== '(sheet missing)',
+    (mismatch) =>
+      mismatch.isFormulaError &&
+      mismatch.actual !== '(sheet missing)' &&
+      // A blocked spill has a correct formula; clearing the cells in its way
+      // is the fix (`buildSpillBlockages`), and asking the model to rewrite
+      // it would break a working formula. TASKS.md #321.
+      !mismatch.spillBlockers?.length,
   );
   if (failures.length === 0) return null;
   // A formula reading from a sheet that doesn't exist is the same structural

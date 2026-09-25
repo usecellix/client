@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, CheckCircle2, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
+import { TurnErrorCard } from './TurnErrorCard';
 import {
   ActionBlock,
   AnswerBlock,
@@ -815,7 +816,15 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
         </>
       )}
 
-      {turn.error && <div className="cellix-error cellix-block-enter">{turn.error}</div>}
+      {turn.error && (
+        <TurnErrorCard
+          message={turn.error}
+          spillBlockages={turn.spillBlockages}
+          repairSuggestion={turn.repairSuggestion}
+          onRepair={onFollowUp}
+          disabled={isWaiting && isActive}
+        />
+      )}
     </div>
   );
 };

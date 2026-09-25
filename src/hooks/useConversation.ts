@@ -23,6 +23,7 @@ import {
 import { probeSheetGuardStatesSafe, sheetsCreatedInBatch } from '@/engine/sheetGuardState';
 import type { OutcomeVerification } from '@/services/outcomeVerifier';
 import type { RepairRequest } from '@/services/repairRequest';
+import { buildSpillBlockages, type SpillBlockage } from '@/services/spillBlockers';
 import type { SheetGuardStates } from '@/engine/sheetGuardState';
 import { probeExcelCapabilities } from '@/services/capabilityProbe';
 import { parseSseEventBlock, SseCreditsData } from '@/utils/sseParser';
@@ -160,6 +161,16 @@ interface UseConversationReturn {
   closeTurn: (turnId: string) => void;
   toggleThinking: (turnId: string, blockId: string) => void;
   markAnswerComplete: (turnId: string, blockId: string) => void;
+  /**
+   * An unfinished build this conversation can be carried on from, or null.
+   * LONG_PROMPT_RELIABILITY_PLAN.md Phase 8 — `waveIndex` is 1-based for
+   * display and names the wave the user would continue FROM.
+   */
+  resumableRun: { runId: string; waveIndex: number; waveTotal: number } | null;
+  /** Continue that build where it stopped. Never throws. */
+  resumeRun: () => Promise<void>;
+  /** Decline the offer; the run itself is left untouched. */
+  dismissResumableRun: () => void;
 }
 
 export interface UseConversationOptions {
@@ -618,6 +629,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isLoadingHistoryConversation, setIsLoadingHistoryConversation] = useState(false);
+  /**
+   * An unfinished build this conversation can be carried on from — Phase 8 of
+   * LONG_PROMPT_RELIABILITY_PLAN.md. The server side shipped in TASKS.md #293
+   * and nothing consumed it, so the phase was "done" while the user still had
+   * no way back to a build their task pane had dropped. Long builds are hit
+   * hardest for the obvious reason that they are long.
+   */
+  const [resumableRun, setResumableRun] = useState<{
+    runId: string;
+    waveIndex: number;
+    waveTotal: number;
+  } | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
   const [activeClarification, setActiveClarification] = useState<ClarificationPayload | null>(null);
@@ -2524,7 +2547,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       // A holder rather than a bare `let`: the assignment happens inside the
       // onOutcomeVerified callback, which TypeScript's control-flow analysis
       // cannot see, so a plain `let` narrows to `never` at the read below.
-      const outcome: { repair: RepairRequest | null } = { repair: null };
+      const outcome: { repair: RepairRequest | null; spills: SpillBlockage[] } = {
+        repair: null,
+        spills: [],
+      };
       try {
         if (onActions) {
           await onActions(block.actions, block.explanation, {
@@ -2532,8 +2558,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             changes: block.changes,
             // TASKS.md #150: the read-back's verdict comes back here so the UI
             // can say so. A clean verification passes `null` and stays silent.
-            onOutcomeVerified: (_verification, message, repair) => {
+            onOutcomeVerified: (verification, message, repair) => {
               outcomeWarning = message;
+              // A blocked spill is fixed by clearing what is in the way, not
+              // by rewriting the formula. TASKS.md #321.
+              outcome.spills = buildSpillBlockages(verification?.mismatches);
               // #150 could only report. The read-back now also carries a
               // concrete next step, so a run that wrote a broken formula
               // offers the fix instead of leaving it in the workbook.
@@ -2546,6 +2575,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         updateTurn(turnId, (t) => ({
           ...t,
           error: undefined,
+          // An earlier step's offers describe an earlier state of the workbook.
+          repairSuggestion: undefined,
+          spillBlockages: undefined,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'accepted' }
@@ -2577,6 +2609,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             `[Cellix] ${repair.cellCount} cell(s) returned ${repair.errors.join('/')} — repair available`,
           );
           updateTurn(turnId, (t) => ({ ...t, repairSuggestion: repair }));
+        }
+        if (outcome.spills.length > 0) {
+          const spills = outcome.spills;
+          updateTurn(turnId, (t) => ({ ...t, spillBlockages: spills }));
         }
 
         setActiveClarification(null);
@@ -3118,6 +3154,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         if (response.ok) {
           const json = (await response.json()) as StoredConversation & { data?: StoredConversation };
           const stored = json.data ?? json;
+          // Phase 8 — offer to carry on rather than making the user rebuild.
+          setResumableRun(stored.resumableRun ?? null);
           const merged = mergeSessionFromStored(active.turns, active.history, stored);
           const conversationId = stored.conversationId ?? active.conversationId;
           updateSession(active.id, (session) => ({
@@ -3142,6 +3180,37 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   useEffect(() => {
     void hydrateFromStorage();
   }, [hydrateFromStorage]);
+
+  /**
+   * Carry on a build the task pane lost its connection to — Phase 8.
+   *
+   * Continues the EXISTING run rather than starting a new one: the waves that
+   * already applied stay applied, and the server picks up at the next
+   * undecided wave. It reuses the conversation's own last turn so the
+   * continuation renders where the build was, instead of appearing as an
+   * unexplained new turn.
+   *
+   * The offer is cleared before continuing, so a slow resume cannot be
+   * double-clicked into two continuations of the same run. If the resume
+   * itself fails, `continueStepwiseRun` reports that in the turn — which is
+   * where the user is already looking.
+   */
+  const resumeRun = useCallback(async (): Promise<void> => {
+    const pending = resumableRun;
+    if (!pending) return;
+
+    const session =
+      sessionsRef.current.find((entry) => entry.id === activeSessionIdRef.current) ??
+      sessionsRef.current[sessionsRef.current.length - 1];
+    const turnId = session?.turns[session.turns.length - 1]?.id ?? activeTurnId;
+    if (!turnId) return;
+
+    setResumableRun(null);
+    await continueStepwiseRun(turnId, pending.runId, 'accepted');
+  }, [resumableRun, activeTurnId, continueStepwiseRun]);
+
+  /** Decline the offer without continuing — the run is simply left alone. */
+  const dismissResumableRun = useCallback(() => setResumableRun(null), []);
 
   return {
     sessions,
@@ -3174,5 +3243,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     closeTurn,
     toggleThinking,
     markAnswerComplete,
+    resumableRun,
+    resumeRun,
+    dismissResumableRun,
   };
 };

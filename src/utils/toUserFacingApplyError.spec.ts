@@ -22,6 +22,21 @@ describe('toUserFacingApplyError (Spec 24)', () => {
     expect(toUserFacingApplyError(msg)).toBe(msg);
   });
 
+  // TASKS.md #313 — the live message a stuck user saw, verbatim.
+  it('rewrites the target-range guard message for the user, dropping model-facing instructions', () => {
+    const live =
+      'Write blocked: target range A19 already contains data. This action would overwrite existing values. ' +
+      'Existing values include: #SPILL!. If you meant to add a new column, use INSERT_COLUMN with position ' +
+      '"afterLastColumn" instead of writing into an occupied column. To replace existing content on purpose, ' +
+      'the request must explicitly confirm overwrite.';
+    const clean = toUserFacingApplyError(live);
+    expect(clean).toContain('A19');
+    expect(clean).toContain('#SPILL!');
+    expect(clean).toMatch(/nothing was changed/i);
+    expect(clean).toMatch(/reject/i);
+    expect(clean).not.toMatch(/INSERT_COLUMN|afterLastColumn|confirm overwrite/);
+  });
+
   it('maps Excel ItemNotFound-style errors to Accept guidance', () => {
     const clean = toUserFacingApplyError("The requested resource doesn't exist.");
     expect(clean.toLowerCase()).toContain('accept');

@@ -167,9 +167,19 @@ export function resolveActionSelectBounds(
     case 'SET_MATCHING_ROWS':
       return null;
     case 'BATCH_SET': {
-      const ops = (rich as { operations?: { address: string }[] }).operations ?? [];
+      // An operation may carry `row`/`col` instead of `address` — TASKS.md #316:
+      // passing that undefined address on crashed selection with
+      // "Cannot read properties of undefined (reading 'trim')".
+      const ops =
+        (rich as { operations?: { address?: unknown; row?: unknown; col?: unknown }[] }).operations ?? [];
       const cells = ops
-        .map((op) => parseCellAddress(op.address))
+        .map((op) =>
+          typeof op.address === 'string'
+            ? parseCellAddress(op.address)
+            : typeof op.row === 'number' && typeof op.col === 'number'
+              ? { row: op.row, col: op.col }
+              : null,
+        )
         .filter((c): c is { row: number; col: number } => Boolean(c));
       if (!cells.length) return null;
       const minR = Math.min(...cells.map((c) => c.row));

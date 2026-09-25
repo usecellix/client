@@ -1,4 +1,5 @@
 import type { RepairRequest } from '@/services/repairRequest';
+import type { SpillBlockage } from '@/services/spillBlockers';
 import { SheetAction } from '@/hooks/useSseStream';
 import { CellChange } from '@/types/changeSet';
 import type {
@@ -176,6 +177,11 @@ export interface ConversationTurn {
    * TASKS.md #168.
    */
   repairSuggestion?: RepairRequest;
+  /**
+   * Spilling formulas the read-back found blocked by content in their spill
+   * area. Offered as a one-click clear that names the cells — TASKS.md #321.
+   */
+  spillBlockages?: SpillBlockage[];
 }
 
 export function truncateTabLabel(text: string, max = 18): string {

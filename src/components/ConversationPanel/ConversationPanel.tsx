@@ -27,6 +27,7 @@ import PanelHeader from './PanelHeader';
 import TurnRenderer from './TurnRenderer';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
 import CreditUpgradeCard from './CreditUpgradeCard';
+import ResumeRunCard from './ResumeRunCard';
 
 /* global Excel */
 
@@ -798,6 +799,13 @@ interface ConversationPanelProps {
   isApplyingActions?: boolean;
   creditAccount?: import('@/services/billingService').CreditAccountSummary | null;
   isLowCreditBalance?: boolean;
+  /**
+   * An unfinished build this conversation can carry on from, or null.
+   * LONG_PROMPT_RELIABILITY_PLAN.md Phase 8.
+   */
+  resumableRun?: { runId: string; waveIndex: number; waveTotal: number } | null;
+  onResumeRun?: () => void;
+  onDismissResumableRun?: () => void;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -843,6 +851,9 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   isApplyingActions = false,
   creditAccount = null,
   isLowCreditBalance = false,
+  resumableRun = null,
+  onResumeRun,
+  onDismissResumableRun,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const showStartScreen = turns.length === 0;
@@ -990,9 +1001,18 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const composerDock = (
     <div
       className={`cellix-composer-dock${
-        pendingQuestion || showCreditNotice ? ' has-question' : ''
+        pendingQuestion || showCreditNotice || resumableRun ? ' has-question' : ''
       }`}
     >
+      {resumableRun && onResumeRun && onDismissResumableRun && (
+        <ResumeRunCard
+          waveIndex={resumableRun.waveIndex}
+          waveTotal={resumableRun.waveTotal}
+          onResume={onResumeRun}
+          onDismiss={onDismissResumableRun}
+          disabled={isWaitingForResponse}
+        />
+      )}
       {showCreditNotice && creditAccount && (
         <CreditUpgradeCard
           balance={creditAccount.availableBalance}

@@ -47,7 +47,22 @@ export function toUserFacingApplyError(message: string): string {
     return APPLY_ERROR_FALLBACK;
   }
 
-  // Overwrite guard messages are intentionally user-facing.
+  // The guard's full text ends in instructions written for the model ("use
+  // INSERT_COLUMN with position afterLastColumn…"). A live user stuck on a
+  // blocked build step read exactly that, had no idea what to do, and clicked
+  // Accept four more times. Say what was blocked, that nothing changed, and
+  // the way forward. TASKS.md #313.
+  const blocked = /^Write blocked: target range (\S+) already contains data\./i.exec(raw);
+  if (blocked) {
+    const existing = /Existing values include: (.+?)\.(?:\s|$)/i.exec(raw)?.[1];
+    return (
+      `Nothing was changed — this step would overwrite ${blocked[1]}, which already has content` +
+      (existing ? ` (${existing.length > 60 ? `${existing.slice(0, 57)}…` : existing})` : '') +
+      '. Click Reject to skip this step; the rest of the build will continue.'
+    );
+  }
+
+  // Other overwrite guard messages are user-facing as written.
   if (/write blocked|overwrite|occupied/i.test(raw)) {
     return raw.length > 280 ? `${raw.slice(0, 277)}…` : raw;
   }

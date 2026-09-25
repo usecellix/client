@@ -87,4 +87,24 @@ describe('selectRanges', () => {
       ),
     ).toBeNull();
   });
+
+  // TASKS.md #316 — an operation given as row/col (no address) crashed
+  // selection with "Cannot read properties of undefined (reading 'trim')".
+  it('resolves BATCH_SET bounds when operations carry row/col instead of address', () => {
+    const action = {
+      type: 'BATCH_SET',
+      sheetName: 'Main',
+      operations: [
+        { row: 3, col: 0, value: 'Month' },
+        { address: 'D5', value: 'x' },
+      ],
+    };
+    expect(resolveActionSelectBounds(action as never, 'Main')).toEqual({
+      sheetName: 'Main',
+      row: 3,
+      col: 0,
+      rowCount: 2,
+      colCount: 4,
+    });
+  });
 });

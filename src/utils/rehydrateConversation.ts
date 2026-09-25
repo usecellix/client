@@ -23,6 +23,20 @@ export interface StoredConversation {
   /** Server-derived label from the first user message (TASKS.md #171). */
   title?: string;
   workbookId?: string;
+  /**
+   * An unfinished stepwise run this conversation can carry on from
+   * (LONG_PROMPT_RELIABILITY_PLAN.md Phase 8, TASKS.md #293).
+   *
+   * A stepwise build spans several HTTP requests and each one ends by handing
+   * control back here, so losing the task pane between waves strands the run
+   * with its finished waves applied and no route back. `waveIndex` is the wave
+   * the user would be continuing FROM, already 1-based for display.
+   */
+  resumableRun?: {
+    runId: string;
+    waveIndex: number;
+    waveTotal: number;
+  };
 }
 
 export function messagesToHistory(messages: StoredConversationMessage[]): ConversationHistoryMessage[] {

@@ -1,4 +1,5 @@
 import { CellChange } from '@/types/changeSet';
+import { describeCells, findSpillBlockers } from './spillBlockers';
 
 /* global Excel */
 
@@ -54,6 +55,11 @@ export interface OutcomeMismatch {
    * sheet, not a formula bug — rewriting the formula cannot fix it.
    */
   missingReferencedSheets?: string[];
+  /**
+   * For a #SPILL! cell: the cells in the way of its spill area. The formula is
+   * fine — clearing these is the fix, not rewriting it. TASKS.md #321.
+   */
+  spillBlockers?: string[];
 }
 
 /** `February!G:G`, `'Jan 2026'!A1` — the sheet names a formula reads from. */
@@ -281,6 +287,24 @@ export async function verifyAppliedOutcome(
       }
     }
 
+    // A #SPILL! means content is in the way, not that the formula is wrong —
+    // find what, so the user can clear it instead of being told to rewrite a
+    // correct formula. Best-effort: if the area can't be inferred, the plain
+    // error report stands. TASKS.md #321.
+    for (const mismatch of mismatches) {
+      if (!mismatch.isFormulaError || !/^#SPILL!?$/i.test(mismatch.actual.trim())) continue;
+      try {
+        const blockers = await findSpillBlockers(
+          ctx,
+          ctx.workbook.worksheets.getItem(mismatch.sheet),
+          mismatch.cell,
+        );
+        if (blockers.length > 0) mismatch.spillBlockers = blockers;
+      } catch (error) {
+        console.warn('[Cellix] Could not work out what blocks a #SPILL! cell:', error);
+      }
+    }
+
     // Attribute formula errors to missing sheets where that is the cause, so
     // the UI says "February doesn't exist" instead of offering to rewrite a
     // formula that is already correct.
@@ -369,6 +393,20 @@ export function describeOutcome(result: OutcomeVerification): string | null {
     const names = absentSheets.slice(0, 3).join(', ');
     const more = absentSheets.length > 3 ? ` +${absentSheets.length - 3} more` : '';
     return `Applied, but ${errors.length} formula cell(s) show errors because they read from sheet(s) that don't exist: ${names}${more}. The formulas will work once those sheets are created.`;
+  }
+
+  // Every error is a blocked spill with known blockers: say what is in the way.
+  // The formula is correct, so "returned an error" would send the user (and
+  // the repair prompt) after the wrong thing. TASKS.md #321.
+  const spills = errors.filter((m) => m.spillBlockers?.length);
+  if (spills.length > 0 && spills.length === errors.length) {
+    const first = spills[0];
+    const blockers = first.spillBlockers ?? [];
+    const others = spills.length > 1 ? ` (and ${spills.length - 1} other list(s))` : '';
+    return (
+      `Applied, but the list at ${first.sheet}!${first.cell}${others} can't fill in: ` +
+      `${describeCells(blockers)} already ${blockers.length === 1 ? 'has' : 'have'} content in the space it needs.`
+    );
   }
 
   if (errors.length > 0) {
