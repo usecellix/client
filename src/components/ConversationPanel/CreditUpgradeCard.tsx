@@ -1,8 +1,7 @@
 import React from 'react';
 import { Coins, X } from 'lucide-react';
 import { getUpgradeUrl } from '@/lib/apiConfig';
-
-/* global Office */
+import { openExternalUrl } from '@/utils/openExternalUrl';
 
 interface CreditUpgradeCardProps {
   /** Credits left across all buckets. */
@@ -16,27 +15,6 @@ interface CreditUpgradeCardProps {
   onDismiss: () => void;
 }
 
-/**
- * Opens the pricing page in the user's real browser.
- *
- * A task pane is an embedded webview: `window.open` there can silently do
- * nothing, or worse navigate the pane itself and take the add-in down with it.
- * `Office.context.ui.openBrowserWindow` is the supported way to hand a URL to
- * the system browser, with `window.open` kept only as a fallback for when the
- * Office host predates it. TASKS.md #201.
- */
-function openUpgradePage(url: string): void {
-  try {
-    const officeUi = (globalThis as { Office?: typeof Office }).Office?.context?.ui;
-    if (officeUi?.openBrowserWindow) {
-      officeUi.openBrowserWindow(url);
-      return;
-    }
-  } catch (error) {
-    console.warn('[Cellix] openBrowserWindow failed, falling back to window.open:', error);
-  }
-  window.open(url, '_blank', 'noopener,noreferrer');
-}
 
 /**
  * Credit balance, seated on the composer exactly like the docked question card
@@ -66,7 +44,7 @@ const CreditUpgradeCard: React.FC<CreditUpgradeCardProps> = ({
       <button
         type="button"
         className="cellix-credit-card-upgrade"
-        onClick={() => openUpgradePage(getUpgradeUrl())}
+        onClick={() => openExternalUrl(getUpgradeUrl())}
       >
         Upgrade
       </button>
