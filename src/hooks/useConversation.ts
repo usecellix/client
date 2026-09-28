@@ -23,6 +23,7 @@ import {
 import { probeSheetGuardStatesSafe, sheetsCreatedInBatch } from '@/engine/sheetGuardState';
 import type { OutcomeVerification } from '@/services/outcomeVerifier';
 import type { RepairRequest } from '@/services/repairRequest';
+import { buildSpillBlockages, type SpillBlockage } from '@/services/spillBlockers';
 import type { SheetGuardStates } from '@/engine/sheetGuardState';
 import { probeExcelCapabilities } from '@/services/capabilityProbe';
 import { parseSseEventBlock, SseCreditsData } from '@/utils/sseParser';
@@ -32,11 +33,11 @@ import { shouldAcceptIncomingClarification } from '@/utils/clarification.util';
 import { TIMING, createGate, delay, waitWithMin } from '@/utils/revealQueue';
 import {
   buildThoughtSummary,
-  isCompletenessWarningThought,
   stillWorkingMessage,
 } from '@/utils/thoughtSummary';
 import { buildClientStatusMessage, isLikelyChitchat, isSimpleCreateTask } from '@/utils/statusMessage';
 import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
+import { previewLocalChangeSet } from '@/services/auditService';
 import { isGstReconPrompt } from '@/utils/gstReconIntent';
 import {
   finalizeGstReconAudit,
@@ -165,6 +166,16 @@ interface UseConversationReturn {
   closeTurn: (turnId: string) => void;
   toggleThinking: (turnId: string, blockId: string) => void;
   markAnswerComplete: (turnId: string, blockId: string) => void;
+  /**
+   * An unfinished build this conversation can be carried on from, or null.
+   * LONG_PROMPT_RELIABILITY_PLAN.md Phase 8 — `waveIndex` is 1-based for
+   * display and names the wave the user would continue FROM.
+   */
+  resumableRun: { runId: string; waveIndex: number; waveTotal: number } | null;
+  /** Continue that build where it stopped. Never throws. */
+  resumeRun: () => Promise<void>;
+  /** Decline the offer; the run itself is left untouched. */
+  dismissResumableRun: () => void;
 }
 
 export interface UseConversationOptions {
@@ -626,6 +637,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isLoadingHistoryConversation, setIsLoadingHistoryConversation] = useState(false);
+  /**
+   * An unfinished build this conversation can be carried on from — Phase 8 of
+   * LONG_PROMPT_RELIABILITY_PLAN.md. The server side shipped in TASKS.md #293
+   * and nothing consumed it, so the phase was "done" while the user still had
+   * no way back to a build their task pane had dropped. Long builds are hit
+   * hardest for the obvious reason that they are long.
+   */
+  const [resumableRun, setResumableRun] = useState<{
+    runId: string;
+    waveIndex: number;
+    waveTotal: number;
+  } | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
   const [activeClarification, setActiveClarification] = useState<ClarificationPayload | null>(null);
@@ -870,7 +893,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         const finalized = finalizeSteps(
           upsertThinking(turn.blocks, preservedThought, {
             loading: false,
-            expanded: isCompletenessWarningThought(preservedThought),
+            expanded: false,
             visible: true,
           }),
           turn.userMessage,
@@ -933,7 +956,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const dispatchLocalSheetActions = useCallback(
-    async (turnId: string, plan: LocalSheetActionPlan, mode: AssistantMode) => {
+    async (
+      turnId: string,
+      plan: LocalSheetActionPlan,
+      mode: AssistantMode,
+      message: string,
+      workbookContext: WorkbookContext | undefined,
+      conversationId: string,
+    ) => {
       const runtime = runtimeRef.current.get(turnId);
       if (!runtime) return;
 
@@ -956,9 +986,38 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         blocks: upsertStatus(turn.blocks, 'Preparing changes for review…', true, true),
       }));
 
-      await delay(250);
+      // Registers an audit trail for this locally-resolved action so Revert
+      // has something to reference — run alongside the existing UI-pacing
+      // delay rather than after it, so this never adds visible latency on
+      // top of what was already there. Never blocks or fails the local
+      // action itself: a registration failure just means no revert this
+      // time, exactly like today's behavior, not a regression.
+      const sheetNames = (workbookContext?.sheets ?? [])
+        .map((sheet) => sheet.sheetName)
+        .filter(Boolean);
+      const [previewResult] = await Promise.all([
+        sheetNames.length > 0
+          ? previewLocalChangeSet(
+              conversationId,
+              message,
+              plan.actions,
+              sheetNames,
+              workbookContext?.activeSheet ?? '',
+            ).catch((err) => {
+              console.warn('[Cellix] Local change-set registration failed — no revert available:', err);
+              return null;
+            })
+          : Promise.resolve(null),
+        delay(250),
+      ]);
 
       if (runtime.aborted) return;
+
+      if (previewResult) {
+        pendingActions.changeSetId = previewResult.changeSetId;
+        pendingActions.irreversibleActionTypes = previewResult.irreversibleActionTypes;
+        pendingActions.changes = previewResult.changes;
+      }
 
       revealFinalResponse(turnId, { type: 'answer', answer: plan.explanation });
 
@@ -1474,7 +1533,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const processStream = useCallback(
-    async (response: Response, turnId: string) => {
+    async (response: Response, turnId: string, streamController?: AbortController) => {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('Response body is not readable');
 
@@ -1482,9 +1541,39 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       let buffer = '';
       let streamBuffer = '';
 
+      /**
+       * Stall watchdog — TASKS.md #272.
+       *
+       * The backend streams status/thinking events continuously while it
+       * works, so a long TOTAL runtime is normal but a long SILENCE is not.
+       * There was no bound of any kind here: `runStillWorkingTicker` loops
+       * forever emitting reassurance ("still working…") and never gives up,
+       * so a wedged run showed a spinner indefinitely with nothing to click.
+       *
+       * Deliberately generous and silence-based, not duration-based: a wave
+       * that is genuinely working (12 month sheets in parallel) can take
+       * minutes but keeps emitting. The ceiling sits under the server's own
+       * 480s agentic-loop timeout so a real backend timeout still surfaces as
+       * itself rather than being pre-empted by this.
+       */
+      const STALL_TIMEOUT_MS = 180_000;
+      let lastEventAt = Date.now();
+      let stalled = false;
+      const stallTimer = setInterval(() => {
+        if (Date.now() - lastEventAt < STALL_TIMEOUT_MS) return;
+        stalled = true;
+        clearInterval(stallTimer);
+        // Aborting is what unblocks `reader.read()` below AND closes the
+        // connection, which is what lets the server stop too (#260).
+        streamController?.abort();
+        void reader.cancel().catch(() => undefined);
+      }, 5_000);
+
+      try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        lastEventAt = Date.now();
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split(/\r?\n\r?\n/);
@@ -1595,27 +1684,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // block as `null` whenever `showActionButtons` is false.
             updateTurn(turnId, (turn) => {
               const withoutStatusBlocks = withoutStatus(turn.blocks);
-              // A completeness warning (TASKS.md #171/#187 — "proceeded under
-              // an assumption", "could not fully plan N steps") landed in the
-              // thinking log via `appendThinkingLog` as this wave streamed in,
-              // same as it always does. But `revealFinalResponse` — the ONLY
-              // place that decides whether the thinking block starts expanded
-              // — never runs for a continuation (see this branch's own
-              // comment). Without this, that warning is technically present
-              // but collapsed behind a disclosure nothing ever opens: a live
-              // report where a truncated plan got silently pruned from 10
-              // subtasks to 3, and the user saw two "Applied" cards with zero
-              // indication 70% of the request never got built.
-              const thinking = withoutStatusBlocks.find(
-                (b): b is ThinkingBlock => b.type === 'thinking',
-              );
-              const blocks =
-                thinking && isCompletenessWarningThought(thinking.content)
-                  ? withoutStatusBlocks.map((b) =>
-                      b.id === thinking.id ? { ...b, expanded: true } : b,
-                    )
-                  : withoutStatusBlocks;
-              return { ...turn, phase: 'complete', blocks };
+              return { ...turn, phase: 'complete', blocks: withoutStatusBlocks };
             });
             setIsWaitingForResponse(false);
             continue;
@@ -1956,11 +2025,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // generic apply-error mapping below.
             const isInsufficientCredit = event.data.code === 'INSUFFICIENT_CREDIT';
             const message = isInsufficientCredit
-              ? `You're out of credits for this action${
-                  typeof event.data.requiredCredits === 'number'
-                    ? ` (needs ${event.data.requiredCredits}, have ${event.data.availableBalance ?? 0})`
-                    : ''
-                }. Add credits or upgrade your plan to continue.`
+              ? "You're out of credits. Add credits or upgrade your plan to continue."
               : toUserFacingApplyError(event.data.message);
             updateTurn(turnId, (turn) => ({
               ...turn,
@@ -1986,6 +2051,18 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       if (streamBuffer && !runtimeRef.current.get(turnId)?.pendingResponse) {
         signalResponse(turnId, { type: 'answer', answer: streamBuffer });
+      }
+      } finally {
+        clearInterval(stallTimer);
+      }
+
+      // Reported as a real failure, not a quiet stop: the run is genuinely
+      // wedged, and anything already accepted is still applied. TASKS.md #272.
+      if (stalled) {
+        throw new Error(
+          'The assistant stopped responding for 3 minutes, so this step was cancelled. ' +
+            'Anything you already accepted is still applied — try again to continue the build.',
+        );
       }
     },
     [
@@ -2109,7 +2186,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       if (localSheetPlan) {
         try {
-          await dispatchLocalSheetActions(turnId, localSheetPlan, mode);
+          await dispatchLocalSheetActions(
+            turnId,
+            localSheetPlan,
+            mode,
+            trimmed,
+            workbookContext,
+            conversationIdRef.current ?? session.id,
+          );
         } catch (error: unknown) {
           const messageText =
             error instanceof Error ? error.message : 'Failed to prepare sheet deletion';
@@ -2230,7 +2314,12 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           throw new Error(errorMessage);
         }
 
-        await Promise.all([processStream(response, turnId), timelinePromise]);
+        // Same controller the fetch above used, so the stall watchdog inside
+        // processStream can abort this request too. TASKS.md #272.
+        await Promise.all([
+          processStream(response, turnId, abortControllerRef.current ?? undefined),
+          timelinePromise,
+        ]);
       } catch (error: unknown) {
         runtime.aborted = true;
 
@@ -2431,28 +2520,69 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           headers['ngrok-skip-browser-warning'] = 'true';
         }
 
+        // TASKS.md #272 — this fetch had NO signal, so "Stop" could not reach
+        // it. A stepwise build spends essentially ALL of its time here (one
+        // /continue per wave; a live wave ran 484s), which meant Stop never
+        // worked for exactly the long builds people most want to stop. Worse,
+        // because the request was never aborted the connection stayed open,
+        // so the server-side cancellation added in #260 — which keys off
+        // `reply.raw` closing — could never fire either. Both halves were
+        // dead for the whole stepwise path.
+        abortControllerRef.current?.abort();
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         const response = await fetch(endpoint, {
           method: 'POST',
           headers,
           credentials: 'include',
           body: JSON.stringify({ runId, decision, readback }),
+          signal: controller.signal,
         });
 
         if (!response.ok) {
           throw new Error(await getUserFacingErrorMessage(response));
         }
 
-        await processStream(response, turnId);
+        await processStream(response, turnId, controller);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Could not continue this build';
-        console.error('[Cellix] Stepwise continue failed:', message);
-        updateTurn(turnId, (turn) => ({
-          ...turn,
-          error: `${message} — the steps you already accepted are still applied.`,
-          blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
-        }));
+        // A deliberate Stop is not a failure — reporting "Could not continue
+        // this build" for something the user just asked for reads as a crash.
+        // TASKS.md #272.
+        const runtimeNow = runtimeRef.current.get(turnId);
+        const userStopped =
+          runtimeNow?.aborted === true ||
+          (error instanceof DOMException && error.name === 'AbortError') ||
+          (error instanceof Error && error.name === 'AbortError');
+
+        if (userStopped) {
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        } else {
+          const message =
+            error instanceof Error ? error.message : 'Could not continue this build';
+          console.error('[Cellix] Stepwise continue failed:', message);
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            error: `${message} — the steps you already accepted are still applied.`,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        }
       } finally {
+        // Stop this wave's "still working…" ticker. It loops until the
+        // runtime is aborted or the response gate opens — and a stepwise wave
+        // ends with `wave_ready`, which opens NEITHER. So the ticker kept
+        // appending "still working" thinking blocks forever after the request
+        // had already finished: a spinning "Thinking… Step 9" next to a Send
+        // arrow, with no Stop button to press because `isWaitingForResponse`
+        // was already false. That is the exact state the user could not
+        // escape. The next wave resets this flag on entry. TASKS.md #272.
+        runtime.aborted = true;
+        // Always clears the spinner and restores the Stop→Send affordance,
+        // including on the abort path — a stuck "Thinking…" with no control
+        // is the state this whole fix exists to remove.
         setIsWaitingForResponse(false);
       }
     },
@@ -2528,7 +2658,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       // A holder rather than a bare `let`: the assignment happens inside the
       // onOutcomeVerified callback, which TypeScript's control-flow analysis
       // cannot see, so a plain `let` narrows to `never` at the read below.
-      const outcome: { repair: RepairRequest | null } = { repair: null };
+      const outcome: { repair: RepairRequest | null; spills: SpillBlockage[] } = {
+        repair: null,
+        spills: [],
+      };
       try {
         if (onActions) {
           await onActions(block.actions, block.explanation, {
@@ -2536,8 +2669,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             changes: block.changes,
             // TASKS.md #150: the read-back's verdict comes back here so the UI
             // can say so. A clean verification passes `null` and stays silent.
-            onOutcomeVerified: (_verification, message, repair) => {
+            onOutcomeVerified: (verification, message, repair) => {
               outcomeWarning = message;
+              // A blocked spill is fixed by clearing what is in the way, not
+              // by rewriting the formula. TASKS.md #321.
+              outcome.spills = buildSpillBlockages(verification?.mismatches);
               // #150 could only report. The read-back now also carries a
               // concrete next step, so a run that wrote a broken formula
               // offers the fix instead of leaving it in the workbook.
@@ -2550,6 +2686,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         updateTurn(turnId, (t) => ({
           ...t,
           error: undefined,
+          // An earlier step's offers describe an earlier state of the workbook.
+          repairSuggestion: undefined,
+          spillBlockages: undefined,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'accepted' }
@@ -2581,6 +2720,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             `[Cellix] ${repair.cellCount} cell(s) returned ${repair.errors.join('/')} — repair available`,
           );
           updateTurn(turnId, (t) => ({ ...t, repairSuggestion: repair }));
+        }
+        if (outcome.spills.length > 0) {
+          const spills = outcome.spills;
+          updateTurn(turnId, (t) => ({ ...t, spillBlockages: spills }));
         }
 
         setActiveClarification(null);
@@ -3122,6 +3265,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         if (response.ok) {
           const json = (await response.json()) as StoredConversation & { data?: StoredConversation };
           const stored = json.data ?? json;
+          // Phase 8 — offer to carry on rather than making the user rebuild.
+          setResumableRun(stored.resumableRun ?? null);
           const merged = mergeSessionFromStored(active.turns, active.history, stored);
           const conversationId = stored.conversationId ?? active.conversationId;
           updateSession(active.id, (session) => ({
@@ -3146,6 +3291,37 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   useEffect(() => {
     void hydrateFromStorage();
   }, [hydrateFromStorage]);
+
+  /**
+   * Carry on a build the task pane lost its connection to — Phase 8.
+   *
+   * Continues the EXISTING run rather than starting a new one: the waves that
+   * already applied stay applied, and the server picks up at the next
+   * undecided wave. It reuses the conversation's own last turn so the
+   * continuation renders where the build was, instead of appearing as an
+   * unexplained new turn.
+   *
+   * The offer is cleared before continuing, so a slow resume cannot be
+   * double-clicked into two continuations of the same run. If the resume
+   * itself fails, `continueStepwiseRun` reports that in the turn — which is
+   * where the user is already looking.
+   */
+  const resumeRun = useCallback(async (): Promise<void> => {
+    const pending = resumableRun;
+    if (!pending) return;
+
+    const session =
+      sessionsRef.current.find((entry) => entry.id === activeSessionIdRef.current) ??
+      sessionsRef.current[sessionsRef.current.length - 1];
+    const turnId = session?.turns[session.turns.length - 1]?.id ?? activeTurnId;
+    if (!turnId) return;
+
+    setResumableRun(null);
+    await continueStepwiseRun(turnId, pending.runId, 'accepted');
+  }, [resumableRun, activeTurnId, continueStepwiseRun]);
+
+  /** Decline the offer without continuing — the run is simply left alone. */
+  const dismissResumableRun = useCallback(() => setResumableRun(null), []);
 
   return {
     sessions,
@@ -3178,5 +3354,8 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     closeTurn,
     toggleThinking,
     markAnswerComplete,
+    resumableRun,
+    resumeRun,
+    dismissResumableRun,
   };
 };

@@ -193,18 +193,71 @@ function buildOverwriteMessage(
   );
 }
 
+/** What a single-cell write intends the cell to hold. */
+export interface ExpectedCellContent {
+  formula?: string;
+  value?: unknown;
+}
+
+function normalizeFormula(formula: string): string {
+  return formula.replace(/\s+/g, '').toUpperCase();
+}
+
+/**
+ * A cell that already holds exactly what this write would put there is not an
+ * overwrite — rewriting it changes nothing. TASKS.md #319: a step blocked
+ * partway (its earlier writes already landed) was then refused on every retry
+ * by its OWN earlier writes ("A1 already contains data: Payments Dashboard").
+ *
+ * Compared against `formulas`, not `values`: a formula returning "" reads as
+ * empty in `values`, and a formula's value says nothing about whether it is the
+ * same formula.
+ */
+export function cellAlreadyHolds(
+  current: { value: unknown; formula: unknown },
+  expected: ExpectedCellContent,
+): boolean {
+  const currentFormula = typeof current.formula === 'string' ? current.formula : '';
+  if (typeof expected.formula === 'string' && expected.formula.trim()) {
+    return (
+      currentFormula.startsWith('=') &&
+      normalizeFormula(currentFormula) === normalizeFormula(expected.formula)
+    );
+  }
+  if (expected.value === undefined || expected.value === null) return false;
+  if (currentFormula.startsWith('=')) return false;
+  return String(current.value).trim() === String(expected.value).trim();
+}
+
 async function assertRangeEmpty(
   sheet: Excel.Worksheet,
   address: string,
   getRange: (sheet: Excel.Worksheet) => Excel.Range,
   ctx: Excel.RequestContext,
   actionType?: RichAction['type'],
+  expected?: ExpectedCellContent,
 ): Promise<void> {
   const range = getRange(sheet);
-  range.load('values');
+  range.load(expected ? ['values', 'formulas'] : 'values');
   await ctx.sync();
   const values = (range.values ?? []) as unknown[][];
-  if (!rangeHasExistingData(values)) return;
+  if (!rangeHasExistingData(values)) {
+    // A formula returning "" reads as empty in `values` but is still content.
+    if (!expected) return;
+    const formula = (range.formulas as unknown[][] | undefined)?.[0]?.[0];
+    if (!(typeof formula === 'string' && formula.startsWith('='))) return;
+    if (cellAlreadyHolds({ value: values[0]?.[0], formula }, expected)) return;
+  } else if (
+    expected &&
+    values.length === 1 &&
+    values[0]?.length === 1 &&
+    cellAlreadyHolds(
+      { value: values[0][0], formula: (range.formulas as unknown[][] | undefined)?.[0]?.[0] },
+      expected,
+    )
+  ) {
+    return;
+  }
 
   throw new OverwriteGuardError({
     message: buildOverwriteMessage(address, values.slice(0, 3), actionType),
@@ -239,6 +292,8 @@ export async function guardAgainstOverwrite(
         op.address,
         (s) => s.getRange(op.address),
         ctx,
+        undefined,
+        { formula: op.formula, value: op.value },
       );
     }
     return;
@@ -384,8 +439,109 @@ export async function guardAgainstOverwrite(
   const target = resolveWriteTarget(action);
   if (!target) return;
 
+  const expected: ExpectedCellContent | undefined =
+    action.type === 'SET_FORMULA'
+      ? { formula: action.formula }
+      : action.type === 'SET_CELL'
+        ? { value: action.value }
+        : undefined;
   const sheet = resolveWorksheet(ctx, target.sheetName);
-  await assertRangeEmpty(sheet, target.address, target.getRange, ctx, action.type);
+  await assertRangeEmpty(sheet, target.address, target.getRange, ctx, action.type, expected);
+}
+
+/**
+ * Action types that neither move nor remove existing cell content, so a later
+ * write in the same card still targets the cells the workbook holds NOW. The
+ * pre-flight stops at the first action NOT in this list: after an insert,
+ * delete, clear, sort or move, a later write may legitimately target cells that
+ * action emptied, and judging it against today's workbook would wrongly block a
+ * valid card.
+ */
+const PREFLIGHT_SAFE_TYPES = new Set<string>([
+  'ADD_SHEET',
+  'SET_CELL',
+  'SET_FORMULA',
+  'BATCH_SET',
+  'SET_RANGE_VALUES',
+  'WRITE_TABLE',
+  'FILL_DOWN',
+  'AUTO_FILL',
+  'APPEND_ROW',
+  'FORMAT_RANGE',
+  'CONDITIONAL_FORMAT',
+  'DATA_VALIDATION',
+  'SET_COLUMN_WIDTH',
+  'SET_ROW_HEIGHT',
+  'AUTOFIT_COLUMNS',
+  'HIDE_GRIDLINES',
+  'FREEZE_PANES',
+  'SET_SHEET_COLOR',
+  'SET_ZOOM',
+  'HIGHLIGHT_CELL',
+  'CREATE_CHART',
+  'CREATE_TABLE',
+  'DEFINE_NAMED_RANGE',
+  'ADD_COMMENT',
+]);
+
+/** The sheet a guarded action's occupancy check reads. */
+function guardedSheetOf(action: RichAction): string | undefined {
+  const record = action as unknown as { destSheet?: unknown; sheetName?: unknown };
+  const name =
+    action.type === 'COPY_FILTERED_RANGE' ||
+    action.type === 'MOVE_RANGE' ||
+    action.type === 'AGGREGATE_TABLE'
+      ? record.destSheet
+      : record.sheetName;
+  return typeof name === 'string' && name.trim() ? name : undefined;
+}
+
+/**
+ * Run the overwrite guard over a whole card BEFORE anything is written —
+ * TASKS.md #319.
+ *
+ * The per-action guard runs inside the write loop, and its own `ctx.sync()`
+ * commits every write queued before it. So a block at action 6 left actions 1–5
+ * applied, the card still pending, and every retry refused by those earlier
+ * writes. A live step 6 was blocked at A19 after its title, KPIs and chart had
+ * landed, then blocked at A1 on each retry.
+ *
+ * Checking first means a block leaves the workbook untouched. Only
+ * `OverwriteGuardError` propagates. Any other failure here (a sheet that
+ * resolves oddly, a host quirk) is left for the write loop, which reports it
+ * exactly as before.
+ */
+export async function preflightOverwriteGuard(
+  actions: RichAction[],
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  const createdHere = new Set<string>();
+
+  for (const action of actions) {
+    if (!PREFLIGHT_SAFE_TYPES.has(action.type)) return;
+
+    if (action.type === 'ADD_SHEET') {
+      const record = action as unknown as { name?: unknown; sheetName?: unknown };
+      const name = String(record.name ?? record.sheetName ?? '').trim().toLowerCase();
+      if (name) createdHere.add(name);
+      continue;
+    }
+
+    if (!isOverwriteGuardedAction(action) || hasExplicitOverwriteConfirmed(action)) continue;
+
+    const sheetName = guardedSheetOf(action);
+    if (!sheetName || createdHere.has(sheetName.toLowerCase())) continue;
+
+    try {
+      const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+      sheet.load('isNullObject');
+      await ctx.sync();
+      if (sheet.isNullObject) continue;
+      await guardAgainstOverwrite(action, ctx);
+    } catch (error) {
+      if (isOverwriteGuardError(error)) throw error;
+    }
+  }
 }
 
 /**

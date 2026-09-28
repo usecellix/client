@@ -26,6 +26,9 @@ export async function handleCreateTable(
   const table = sheet.tables.add(action.range, action.hasHeaders);
   table.name = tableName;
   if (action.style) table.style = action.style;
+  // TASKS.md #268 — only when explicitly set, so an omitted field keeps
+  // Excel's own default rather than silently restyling every other table.
+  if (action.showFilterButton === false) table.showFilterButton = false;
   await ctx.sync();
 }
 

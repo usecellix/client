@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { useConversation } from '@/hooks/useConversation';
 import type { WorkbookContext } from '@/types/cellix.types';
 import type { AssistantMode } from '@/types/mode';
+import * as auditService from '@/services/auditService';
 
 /**
  * Interactive test infrastructure for `useConversation` — TASKS.md #63.
@@ -176,6 +177,58 @@ describe('useConversation — SSE-driven state transitions', () => {
         (b) => b.type === 'actions' && b.proposalStatus === 'pending',
       );
       expect(pendingActionBlock).toBeDefined();
+    },
+    10000,
+  );
+
+  it(
+    'local copy-sheet fast lane (#250 follow-up): resolves entirely client-side (no backend call) and still gets a revert-able changeSetId',
+    async () => {
+      const fetchMock = vi.fn().mockRejectedValue(
+        new Error('Should not hit the network — this prompt must resolve via the local fast lane'),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const previewSpy = vi.spyOn(auditService, 'previewLocalChangeSet').mockResolvedValue({
+        changeSetId: 'cs_local_copy_1',
+        irreversibleActionTypes: [],
+        changes: [],
+      });
+
+      const copySheetWorkbookContext = {
+        activeSheet: 'Purchase Register',
+        sheets: [{ sheetName: 'Purchase Register' }, { sheetName: 'GSTR-2A' }],
+      } as unknown as WorkbookContext;
+
+      const { result } = renderHook(() => useConversation({ workbookKey: 'local-copy-sheet-test' }));
+
+      await act(async () => {
+        await result.current.sendMessage(
+          'Copy the Purchase Register sheet and name it March Copy',
+          [],
+          copySheetWorkbookContext,
+          'Purchase Register has data.',
+          { mode: 'action' },
+        );
+      });
+
+      await waitFor(() => expect(result.current.turns).toHaveLength(1));
+      const turn = result.current.turns[0];
+
+      // The whole point of the fast lane: no /excel-ai/conversation network call.
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      expect(previewSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        'Copy the Purchase Register sheet and name it March Copy',
+        [{ type: 'ADD_SHEET', name: 'March Copy', copyFrom: 'Purchase Register' }],
+        ['Purchase Register', 'GSTR-2A'],
+        'Purchase Register',
+      );
+
+      const actionBlock = turn.blocks.find((b) => b.type === 'actions');
+      expect(actionBlock).toBeDefined();
+      expect((actionBlock as { changeSetId?: string }).changeSetId).toBe('cs_local_copy_1');
     },
     10000,
   );

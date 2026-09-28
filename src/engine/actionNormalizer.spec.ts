@@ -349,4 +349,30 @@ describe('actionNormalizer', () => {
       { type: 'DELETE_CONDITIONAL_FORMAT', sheetName: 'Purchase Register', ruleId: 'cf-real-1' },
     ]);
   });
+
+  /**
+   * TASKS.md #268 — a live user read Excel's per-header filter dropdowns on a
+   * data-entry table as stray "dropdowns in the header". `false` must survive
+   * normalization to reach the handler; an ABSENT value must stay absent so
+   * Excel keeps its own default rather than being silently restyled.
+   */
+  describe('CREATE_TABLE showFilterButton (TASKS.md #268)', () => {
+    const base = {
+      type: 'CREATE_TABLE',
+      sheetName: 'January',
+      range: 'A1:J2',
+      tableName: 'tblJanuary',
+      hasHeaders: true,
+    } as SheetAction;
+
+    it('carries showFilterButton: false through to the rich action', () => {
+      const { rich } = partitionActions([{ ...base, showFilterButton: false } as SheetAction]);
+      expect(rich[0]).toMatchObject({ type: 'CREATE_TABLE', showFilterButton: false });
+    });
+
+    it('leaves the key absent when it was not specified', () => {
+      const { rich } = partitionActions([base]);
+      expect(rich[0]).not.toHaveProperty('showFilterButton');
+    });
+  });
 });

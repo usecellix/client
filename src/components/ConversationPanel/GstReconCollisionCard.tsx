@@ -34,7 +34,7 @@ export const GstReconCollisionCard: React.FC<GstReconCollisionCardProps> = ({
         <button
           type="button"
           className="cellix-btn-accept"
-          onClick={onOverwrite}
+          onClick={() => onOverwrite()}
           disabled={disabled || isResolving}
           data-testid="gst-recon-collision-overwrite"
         >

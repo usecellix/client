@@ -54,6 +54,8 @@ export type SheetActionType =
   | 'DELETE_SHEET'
   | 'RENAME_SHEET'
   | 'COPY_SHEET'
+  | 'MOVE_SHEET'
+  | 'DELETE_MATCHING_ROWS'
   | 'HIDE_SHEET'
   | 'SHOW_SHEET'
   | 'SET_SHEET_COLOR'
@@ -194,6 +196,9 @@ export interface SheetAction {
   endCol?: number;
   sheetName?: string;
   newSheetName?: string;
+  /** MOVE_SHEET — 0-based target position, or a named neighbour. TASKS.md #212. */
+  beforeSheet?: string;
+  afterSheet?: string;
   relativeTo?: string;
   comment?: string;
   headers?: string[];

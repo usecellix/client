@@ -1,11 +1,13 @@
-// Re-exports the canonical action-type definitions from the repo-root
-// `shared/` package. Do not fork a local copy here — see ARCHITECTURE.md AD-7.
-// This path has been broken twice: once to `../../Root/shared/action.types`
-// (a leftover from when this repo was nested inside a `Root/` directory —
-// TASKS.md #175), and reintroduced a second time by a later upstream merge
-// with a comment asserting the opposite of the real layout. `Root/` does not
-// exist; the package lives at the repo root as `shared/`, i.e. `../../shared`
-// from `frontend/src/`. `tsc --noEmit` catches this immediately; vitest does
-// not, since it runs without type-checking — that gap is exactly why this
-// broke silently both times. TASKS.md #166, #175.
-export * from '../../shared/action.types';
+// Re-exports the canonical action-type definitions from the local vendored
+// `shared/` copy (`frontend/src/shared/action.types.ts`), matching the
+// aggregateTable.ts / rangeFilter.ts pattern in the same directory.
+//
+// This previously re-exported from the repo-root `../../shared/action.types`,
+// which only resolves when this package is checked out as a subfolder of the
+// monorepo (`usecellix/Root`). This package (`frontend/`) actually ships as
+// its own separate repo (`usecellix/client`), which Vercel builds in
+// isolation — `../../shared` has never existed in that repo's history, so
+// the build failed there even though it always worked locally. Keep this
+// vendored copy in sync with `shared/action.types.ts` by hand when either
+// changes.
+export * from './shared/action.types';

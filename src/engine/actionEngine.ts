@@ -17,6 +17,7 @@ import {
   handleDeleteSheet,
   handleRenameSheet,
   handleCopySheet,
+  handleMoveSheet,
   SheetCreationOutcome,
 } from './handlers/sheet.handler';
 import {
@@ -31,6 +32,7 @@ import {
   handleMoveRange,
   handleFormatMatchingRows,
   handleSetMatchingRows,
+  handleDeleteMatchingRows,
   handleConditionalFormat,
   handleDeleteConditionalFormat,
 } from './handlers/range.handler';
@@ -52,6 +54,7 @@ import {
   guardAgainstOverwrite,
   isOverwriteGuardError,
   OverwriteGuardError,
+  preflightOverwriteGuard,
   pruneSpuriousAddSheets,
 } from './overwriteGuard';
 import { selectActionRanges } from './selectRanges';
@@ -87,6 +90,19 @@ export interface CreatedChartId {
   chartId: string;
 }
 
+/** Pause before retrying an action on a just-created sheet — TASKS.md #326. */
+const NEW_SHEET_RETRY_DELAY_MS = 250;
+
+/** Office.js ItemNotFound, by code or by its host message. */
+function isItemNotFound(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return (
+    code === 'ItemNotFound' ||
+    (typeof message === 'string' && /requested resource doesn'?t exist|itemnotfound/i.test(message))
+  );
+}
+
 export class RichActionEngine {
   async applyActions(actions: RichAction[]): Promise<{
     applied: number;
@@ -113,9 +129,21 @@ export class RichActionEngine {
 
     try {
       await Excel.run(async (ctx) => {
+        await preflightOverwriteGuard(prepared, ctx);
+
+        /** Sheets this card has created so far, lower-cased. TASKS.md #326. */
+        const createdSheets = new Set<string>();
+
         for (const action of prepared) {
           try {
-            const result = await this.dispatch(action, ctx);
+            const result = await this.dispatchTolerantOfNewSheet(action, ctx, createdSheets);
+            if (
+              result &&
+              'actualName' in result &&
+              (action.type === 'ADD_SHEET' || action.type === 'COPY_SHEET')
+            ) {
+              createdSheets.add(String(result.actualName).toLowerCase());
+            }
             if (
               result &&
               'createdConditionalFormatId' in result &&
@@ -201,6 +229,36 @@ export class RichActionEngine {
     };
   }
 
+  /**
+   * Dispatch, retrying ONCE when an action on a sheet this same card just
+   * created fails with ItemNotFound — TASKS.md #326.
+   *
+   * Live: ADD_SHEET Main (position 0), then SET_CELL Main!A1 — the write's
+   * guard read of Main threw "The requested resource doesn't exist", while the
+   * FORMAT_RANGE on Main right after it succeeded. The sheet existed; Excel had
+   * not finished settling the create/move when it was first queried, and the
+   * dashboard lost its title. A sheet this card created cannot legitimately be
+   * missing, so a short pause and one retry is safe; any other ItemNotFound is
+   * a real failure and is reported as before.
+   */
+  private async dispatchTolerantOfNewSheet(
+    action: RichAction,
+    ctx: Excel.RequestContext,
+    createdSheets: Set<string>,
+  ): ReturnType<RichActionEngine['dispatch']> {
+    try {
+      return await this.dispatch(action, ctx);
+    } catch (error) {
+      const sheet = String((action as { sheetName?: string }).sheetName ?? '').toLowerCase();
+      if (!sheet || !createdSheets.has(sheet) || !isItemNotFound(error)) throw error;
+      console.warn(
+        `[Cellix] ${action.type} on just-created sheet "${sheet}" hit ItemNotFound — retrying once.`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, NEW_SHEET_RETRY_DELAY_MS));
+      return this.dispatch(action, ctx);
+    }
+  }
+
   private async dispatch(
     action: RichAction,
     ctx: Excel.RequestContext,
@@ -257,6 +315,8 @@ export class RichActionEngine {
         return handleRenameSheet(action, ctx);
       case 'COPY_SHEET':
         return handleCopySheet(action, ctx);
+      case 'MOVE_SHEET':
+        return handleMoveSheet(action, ctx);
       case 'CREATE_TABLE':
         return handleCreateTable(action, ctx);
       case 'DELETE_TABLE':
@@ -305,6 +365,9 @@ export class RichActionEngine {
         return;
       case 'SET_MATCHING_ROWS':
         await handleSetMatchingRows(action, ctx);
+        return;
+      case 'DELETE_MATCHING_ROWS':
+        await handleDeleteMatchingRows(action, ctx);
         return;
       case 'MOVE_RANGE':
         await handleMoveRange(action, ctx);

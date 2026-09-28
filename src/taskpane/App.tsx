@@ -301,6 +301,9 @@ const App: React.FC = () => {
     openConversationFromHistory,
     toggleThinking,
     markAnswerComplete,
+    resumableRun,
+    resumeRun,
+    dismissResumableRun,
   } = useConversation({
     workbookKey,
     workbookId,
@@ -332,6 +335,13 @@ const App: React.FC = () => {
           });
         }
         await acceptActions(turnId, blockId);
+      } catch (error) {
+        // `acceptActions` rethrows so Accept All's sequential gate can stop on
+        // a failure, but it has ALREADY written the user-facing message onto
+        // the turn. Letting it escape here only produced an
+        // `unhandledrejection` per click — one per retry in the live logs.
+        // TASKS.md #263.
+        console.debug('[Cellix] Accept failed (already surfaced on the turn):', error);
       } finally {
         applyInProgressRef.current = false;
         setIsApplying(false);
@@ -361,6 +371,10 @@ const App: React.FC = () => {
           });
         }
         await acceptAllActions(turnId, fromBlockId);
+      } catch (error) {
+        // Same as single Accept — the message is already on the turn; only the
+        // unhandled rejection is new. TASKS.md #263.
+        console.debug('[Cellix] Accept All failed (already surfaced on the turn):', error);
       } finally {
         applyInProgressRef.current = false;
         setIsApplying(false);
@@ -549,6 +563,9 @@ const App: React.FC = () => {
       isApplyingActions={isApplying}
       creditAccount={creditAccount}
       isLowCreditBalance={isLowCreditBalance}
+      resumableRun={resumableRun}
+      onResumeRun={resumeRun}
+      onDismissResumableRun={dismissResumableRun}
     />
   );
 };

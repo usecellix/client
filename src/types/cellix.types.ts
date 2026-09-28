@@ -51,6 +51,15 @@ export interface SheetSnapshot {
   structure?: SheetStructure;
   formulaSummary?: string;
   compressionMeta?: SheetCompressionMeta;
+  /**
+   * Read from Office.js's real `worksheet.visibility` (DeepWorkbookContext's
+   * own SheetContext already carries this — TASKS.md #257 found it was being
+   * read correctly but silently dropped on the way into this lighter-weight
+   * shape, so "how many sheets" could list a hidden sheet's name with no way
+   * to say it was hidden). Optional so older cached/minimal contexts that
+   * never populated it are "unknown", not "definitely visible".
+   */
+  isHidden?: boolean;
 }
 
 export interface NamedRangeInfo {

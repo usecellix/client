@@ -84,4 +84,41 @@ describe('RichActionEngine.applyActions — createdChartIds (TASKS.md #15)', () 
     const result = await engine.applyActions(actions);
     expect(result.createdChartIds).toBeUndefined();
   });
+
+  // TASKS.md #319 — a retried card that already landed its chart must not add
+  // a second one.
+  it('reuses an existing chart with the same title on the target sheet instead of adding another', async () => {
+    const { add } = stubExcel();
+    const existing = { name: 'Chart_existing', title: { text: 'Monthly Totals' } };
+    // Give the target sheet's chart collection a loadable item list.
+    const engine = new RichActionEngine();
+    const run = (globalThis as unknown as { Excel: { run: ReturnType<typeof vi.fn> } }).Excel.run;
+    const original = run.getMockImplementation()!;
+    run.mockImplementation(async (fn: (ctx: unknown) => Promise<void>) =>
+      original(async (ctx: unknown) => {
+        const sheets = (ctx as { workbook: { worksheets: { getItem: (n: string) => { charts: Record<string, unknown> } } } })
+          .workbook.worksheets;
+        const charts = sheets.getItem('Dashboard').charts;
+        charts.load = vi.fn();
+        charts.items = [existing];
+        await fn(ctx);
+      }),
+    );
+
+    const result = await engine.applyActions([
+      {
+        type: 'CREATE_CHART',
+        sheetName: 'Dashboard',
+        sourceSheetName: 'Sheet1',
+        sourceRange: 'A4:D16',
+        chartType: 'column',
+        title: 'Monthly Totals',
+      } as RichAction,
+    ]);
+
+    expect(add).not.toHaveBeenCalled();
+    expect(result.createdChartIds).toEqual([
+      { sheetName: 'Dashboard', sourceRange: 'A4:D16', chartId: 'Chart_existing' },
+    ]);
+  });
 });

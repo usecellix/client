@@ -57,6 +57,51 @@ export function resolveChartType(value: string): Excel.ChartType {
   return match?.[1] ?? Excel.ChartType.columnClustered;
 }
 
+/**
+ * True when a first column is a label column: every filled cell below its
+ * header is non-numeric text.
+ */
+export function isLabelColumn(columnValues: unknown[][]): boolean {
+  const body = columnValues.slice(1).map((row) => row[0]).filter((v) => v !== '' && v != null);
+  return body.length > 0 && body.every((v) => typeof v === 'string' && Number.isNaN(Number(v)));
+}
+
+/**
+ * Excel guesses whether a source's first column is the category axis. With a
+ * filled header cell above it, it can guess wrong: a live dashboard charted
+ * "Month" as a SERIES (legend: Month, Total, Paid, Pending) over an axis of
+ * 1…12 instead of January…December. TASKS.md #327. When the first column is
+ * labels and Excel made a series of it, delete that series and use the column
+ * as the category names. A correct guess is left alone; a host without the
+ * API keeps Excel's chart unchanged.
+ */
+async function useTextFirstColumnAsCategories(
+  chart: Excel.Chart,
+  dataRange: Excel.Range,
+  ctx: Excel.RequestContext,
+): Promise<void> {
+  try {
+    const firstColumn = dataRange.getColumn(0);
+    firstColumn.load('values');
+    chart.series.load('items/name');
+    await ctx.sync();
+
+    const values = (firstColumn.values as unknown[][]) ?? [];
+    if (!isLabelColumn(values)) return;
+    const header = String(values[0]?.[0] ?? '').trim();
+    const misread = chart.series.items.find((series) => series.name?.trim() === header && header !== '');
+    if (!misread) return;
+
+    misread.delete();
+    chart.axes.categoryAxis.setCategoryNames(
+      firstColumn.getOffsetRange(1, 0).getResizedRange(-1, 0),
+    );
+    await ctx.sync();
+  } catch (error) {
+    console.warn('[Cellix] Could not correct chart categories; keeping Excel\'s layout:', error);
+  }
+}
+
 export async function handleCreateChart(
   action: CreateChartAction,
   ctx: Excel.RequestContext,
@@ -86,6 +131,20 @@ export async function handleCreateChart(
   }
 
   const targetSheet = ctx.workbook.worksheets.getItem(action.sheetName);
+
+  // A retried card must not stack a second copy of the chart it already made —
+  // TASKS.md #319: a step that landed its chart and was then blocked later on
+  // would add another chart on every retry. Same sheet + same title is the same
+  // chart. An untitled chart has no identity to match on, so it is always created.
+  const title = action.title?.trim();
+  if (title) {
+    const existing = targetSheet.charts;
+    existing.load('items/name,items/title/text');
+    await ctx.sync();
+    const same = existing.items.find((item) => item.title?.text?.trim() === title);
+    if (same) return { chartId: same.name };
+  }
+
   const sourceSheet = ctx.workbook.worksheets.getItem(action.sourceSheetName);
   const dataRange = sourceSheet.getRange(stripSheetPrefix(action.sourceRange));
 
@@ -99,6 +158,8 @@ export async function handleCreateChart(
     chart.title.text = action.title.trim();
     chart.title.visible = true;
   }
+
+  await useTextFirstColumnAsCategories(chart, dataRange, ctx);
 
   const start = action.startCell ?? action.destCell ?? 'A1';
   const end = action.endCell ?? 'H16';

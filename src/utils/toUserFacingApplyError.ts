@@ -21,11 +21,48 @@ export function toUserFacingApplyError(message: string): string {
     return "I couldn't apply those changes. Please try again.";
   }
 
+  // A missing sheet means two different things depending on when it is hit,
+  // and the action-type prefix is what tells them apart — TASKS.md #263.
+  //
+  // The engine throws `${action.type}: ${message}` at APPLY time, so an
+  // ItemNotFound carrying a prefix means a sheet this change set was supposed
+  // to create does not exist — telling the user to click Accept is useless,
+  // they just did. Without a prefix it is the PREVIEW path, where the sheet
+  // legitimately does not exist yet and Accept is exactly the right advice
+  // (handled further down, unchanged).
+  //
+  // Before this, the prefixed case fell into ACTION_TYPE_PREFIX_RE below and
+  // reported a formatting problem — live, a BATCH_SET onto a Main sheet no
+  // step had created told the user to re-describe a range that was never the
+  // issue.
+  const isItemNotFound = /requested resource doesn'?t exist|itemnotfound/i.test(raw);
+  if (isItemNotFound && ACTION_TYPE_PREFIX_RE.test(raw)) {
+    return (
+      "Excel couldn't find a sheet one of those steps needed — it was never created. " +
+      'Re-run the request so the missing sheet gets created first.'
+    );
+  }
+
   if (INTERNAL_APPLY_ERROR_RE.test(raw) || ACTION_TYPE_PREFIX_RE.test(raw)) {
     return APPLY_ERROR_FALLBACK;
   }
 
-  // Overwrite guard messages are intentionally user-facing.
+  // The guard's full text ends in instructions written for the model ("use
+  // INSERT_COLUMN with position afterLastColumn…"). A live user stuck on a
+  // blocked build step read exactly that, had no idea what to do, and clicked
+  // Accept four more times. Say what was blocked, that nothing changed, and
+  // the way forward. TASKS.md #313.
+  const blocked = /^Write blocked: target range (\S+) already contains data\./i.exec(raw);
+  if (blocked) {
+    const existing = /Existing values include: (.+?)\.(?:\s|$)/i.exec(raw)?.[1];
+    return (
+      `Nothing was changed — this step would overwrite ${blocked[1]}, which already has content` +
+      (existing ? ` (${existing.length > 60 ? `${existing.slice(0, 57)}…` : existing})` : '') +
+      '. Click Reject to skip this step; the rest of the build will continue.'
+    );
+  }
+
+  // Other overwrite guard messages are user-facing as written.
   if (/write blocked|overwrite|occupied/i.test(raw)) {
     return raw.length > 280 ? `${raw.slice(0, 277)}…` : raw;
   }

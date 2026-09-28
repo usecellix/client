@@ -1,4 +1,4 @@
-import { CellValue, RichAction } from '@/action.types';
+import { CellValue, RangeFilterSpec, RichAction } from '@/action.types';
 import { SheetAction } from '@/types/sheet-actions';
 import { columnIndexToLetter } from './addressUtils';
 
@@ -265,7 +265,16 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
 
     case 'AUTO_FILTER':
       if (typeof action.range !== 'string' || !action.range) return null;
-      return { type: 'AUTO_FILTER', sheetName, range: action.range } as unknown as RichAction;
+      return {
+        type: 'AUTO_FILTER',
+        sheetName,
+        range: action.range,
+        // Was dropped here even when the backend sent it, so "show only rows
+        // where X" always came through as bare dropdown arrows with every row
+        // still visible. TASKS.md #221.
+        filter: (action as { filter?: RangeFilterSpec }).filter,
+        hasHeaders: (action as { hasHeaders?: boolean }).hasHeaders,
+      } as unknown as RichAction;
 
     case 'SET_ZOOM':
       if (typeof action.zoomPercent !== 'number') return null;

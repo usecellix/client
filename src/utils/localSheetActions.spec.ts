@@ -20,6 +20,90 @@ const context: WorkbookContext = {
   ] as WorkbookContext['sheets'],
 };
 
+/**
+ * TASKS.md #254 — "Rename this sheet to X" (the guide's own T1.1 phrasing,
+ * referring to whatever sheet is currently active) always paid the full
+ * Tier 3 LLM round-trip (~6s observed live) because the existing local
+ * rename lane only recognized a NAMED old sheet ("rename sheet Invoices to
+ * X"), never "this/current/active sheet". Same instant-fast-lane treatment
+ * as #250 gave copy-sheet.
+ */
+describe('tryLocalRenameSheetActions — active-sheet phrasing (#254)', () => {
+  it('resolves "Rename this sheet to X" using the active sheet as the old name', () => {
+    const plan = tryLocalSheetActions('Rename this sheet to Apr 2024 Data', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Apr 2024 Data' },
+    ]);
+  });
+
+  it('also resolves "current tab" and "active sheet" phrasing', () => {
+    expect(
+      tryLocalSheetActions('rename the current tab to Renamed', context, 'action')?.actions,
+    ).toEqual([{ type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Renamed' }]);
+    expect(
+      tryLocalSheetActions('Rename the active sheet to Renamed', context, 'action')?.actions,
+    ).toEqual([{ type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Renamed' }]);
+  });
+
+  it('still resolves the pre-existing named-sheet phrasing unchanged', () => {
+    const plan = tryLocalSheetActions('rename sheet Invoices to Ledger', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'RENAME_SHEET', oldName: 'Invoices', newName: 'Ledger' },
+    ]);
+  });
+});
+
+/**
+ * TASKS.md #250 — "Copy the X sheet and name it Y" (the guide's own T1.1
+ * phrasing) always paid the full Tier 3 planner/executor/verifier LLM
+ * round-trip (5-40s observed live) for what is a fully deterministic
+ * operation. This local fast-lane resolves it instantly, client-side only.
+ */
+describe('tryLocalCopySheetActions (#250)', () => {
+  it('resolves "Copy the X sheet and name it Y" to a single ADD_SHEET{copyFrom}', () => {
+    const plan = tryLocalSheetActions(
+      'Copy the Invoices sheet and name it March Copy',
+      context,
+      'action',
+    );
+    expect(plan).not.toBeNull();
+    expect(plan?.actions).toEqual([
+      { type: 'ADD_SHEET', name: 'March Copy', copyFrom: 'Invoices' },
+    ]);
+  });
+
+  it('resolves "call it" phrasing too', () => {
+    const plan = tryLocalSheetActions('Copy the Archive tab and call it Archive Backup', context, 'action');
+    expect(plan?.actions).toEqual([
+      { type: 'ADD_SHEET', name: 'Archive Backup', copyFrom: 'Archive' },
+    ]);
+  });
+
+  it('dedupes the destination name against existing sheets', () => {
+    const plan = tryLocalSheetActions('Copy the Invoices sheet and name it Cellix', context, 'action');
+    expect(plan?.actions[0]).toMatchObject({ type: 'ADD_SHEET', copyFrom: 'Invoices' });
+    expect((plan?.actions[0] as { name: string }).name).not.toBe('Cellix');
+  });
+
+  it('falls through to the backend when the source sheet does not resolve to a real sheet', () => {
+    const plan = tryLocalSheetActions(
+      'Copy the Nonexistent sheet and name it Copy 1',
+      context,
+      'action',
+    );
+    expect(plan).toBeNull();
+  });
+
+  it('does not fire for a filtered/partial copy — that still needs backend planning', () => {
+    const plan = tryLocalSheetActions(
+      'Copy rows where Status is Pending from Invoices to a new sheet called Pending',
+      context,
+      'action',
+    );
+    expect(plan).toBeNull();
+  });
+});
+
 describe('localSheetActions', () => {
   it('detects delete sheet intent', () => {
     expect(detectDeleteSheetIntent('delete sheet Cellix')).toBe(true);
@@ -219,6 +303,34 @@ describe('localSheetActions', () => {
   // TASKS.md #181 — "clear all the data" / "clear the sheet" means make it a
   // plain workbook, not just wipe cell values and leave a stranded chart
   // floating over the empty grid.
+  // TASKS.md #209 — a scoped clear must not wipe the whole sheet (and its
+  // charts). Only an unqualified "clear the sheet" stays local.
+  describe('scoped clears do not become whole-sheet clears (#209)', () => {
+    it.each([
+      'Clear all data in column C',
+      'Clear all the content in the Narration column',
+      'Clear all cells with errors',
+      'Clear all the data where GSTIN is blank',
+      'Clear the data in rows 5 to 10',
+      'Clear all data in the Summary sheet',
+    ])('sends %j to the backend instead of clearing the sheet', (message) => {
+      expect(tryLocalSheetActions(message, context, 'action')).toBeNull();
+    });
+
+    // "clear the data" / "clear the entire sheet" never matched this lane's
+    // trigger (it needs "all", and only "this entire sheet") — they already
+    // went to the backend before #209 and still do.
+    it.each(['Clear this sheet', 'clear all the data', 'clear all the cells', 'clear this entire sheet'])(
+      'still clears the whole sheet for %j',
+      (message) => {
+        const plan = tryLocalSheetActions(message, context, 'action');
+        expect(plan?.actions).toEqual([
+          { type: 'CLEAR_RANGE', range: 'A1:XFD1048576', mode: 'contents', clearCharts: true },
+        ]);
+      },
+    );
+  });
+
   it('asks to clear charts too on a whole-sheet clear', () => {
     const plan = tryLocalSheetActions('clear all the data', context, 'action');
     expect(plan?.actions).toEqual([

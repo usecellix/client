@@ -74,12 +74,23 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       summary.headline &&
       normalizeCopy(priorAnswerText) === normalizeCopy(summary.headline),
   );
-  const showDetails = block.actions.length > 0;
-  const detailLines = showDetails ? describeSheetActions(block.actions) : [];
-
   const isPending = block.proposalStatus === 'pending';
   const isAccepted = block.proposalStatus === 'accepted';
   const isRejected = block.proposalStatus === 'rejected';
+  const isDecided = isAccepted || isRejected;
+
+  /**
+   * Once a step is decided (applied/rejected), the card should read as a
+   * receipt, not a plan — a 12-sheet build's full intent list has no reason
+   * to stay inline. Fold it into the same "Show details" disclosure the
+   * per-action lines already use, so every decided card lands at the exact
+   * same height (headline + meta + footer) regardless of how much it did.
+   */
+  const allBullets = summary.bullets ?? [];
+  const bulletsInDetails = isDecided && allBullets.length > 0;
+  const actionDetailLines = block.actions.length > 0 ? describeSheetActions(block.actions) : [];
+  const detailLines = bulletsInDetails ? [...allBullets, ...actionDetailLines] : actionDetailLines;
+  const showDetails = detailLines.length > 0;
 
   const detailsToggle = showDetails ? (
     <button
@@ -154,7 +165,20 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     </div>
   ) : null;
 
-  const summaryBody = (
+  // Bullets fold into the details disclosure once a step is decided (see
+  // bulletsInDetails above) — the inline summary only carries them while
+  // still pending review.
+  const inlineBullets = bulletsInDetails ? [] : allBullets;
+
+  const hasSummaryContent = Boolean(
+    stepBadge ||
+      gstReconBadge ||
+      (!hideDuplicateHeadline && summary.headline) ||
+      inlineBullets.length > 0 ||
+      metaParts.length > 0,
+  );
+
+  const summaryBody = hasSummaryContent ? (
     <div
       data-testid={isGstRecon ? 'gst-recon-result-card' : 'action-summary-default'}
     >
@@ -163,9 +187,9 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
       {!hideDuplicateHeadline && summary.headline && (
         <div className="cellix-changes-summary">{summary.headline}</div>
       )}
-      {summary.bullets && summary.bullets.length > 0 && (
+      {inlineBullets.length > 0 && (
         <ul className="cellix-changes-bullets">
-          {summary.bullets.map((b, i) => (
+          {inlineBullets.map((b, i) => (
             <li key={i}>{b}</li>
           ))}
         </ul>
@@ -174,7 +198,9 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
         <div className="cellix-changes-meta">{metaParts.join(' · ')}</div>
       )}
     </div>
-  );
+  ) : null;
+
+  const compactClass = hasSummaryContent ? '' : ' is-compact';
 
   const acceptReject =
     isPending && showActionButtons ? (
@@ -245,7 +271,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   if (isAccepted) {
     return (
-      <div className="cellix-changes-card cellix-block-enter">
+      <div className={`cellix-changes-card cellix-block-enter is-applied${compactClass}`}>
         {summaryBody}
         {footer(<span className="cellix-action-status is-applied">Applied</span>)}
         {detailsBody}
@@ -255,7 +281,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   if (isRejected) {
     return (
-      <div className="cellix-changes-card cellix-block-enter is-rejected">
+      <div className={`cellix-changes-card cellix-block-enter is-rejected${compactClass}`}>
         {summaryBody}
         {footer(<span className="cellix-action-status">Rejected</span>)}
         {detailsBody}
@@ -265,7 +291,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   if (isPending && previewEnabled) {
     return (
-      <div className="cellix-changes-card cellix-block-enter is-pending">
+      <div className={`cellix-changes-card cellix-block-enter is-pending${compactClass}`}>
         {summaryBody}
         {blockedNotice}
         {irreversibleNotice}
@@ -278,7 +304,7 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
   }
 
   return (
-    <div className="cellix-action-card cellix-block-enter">
+    <div className={`cellix-action-card cellix-block-enter${compactClass}`}>
       <div className="cellix-action-card-title">Cellix will make these changes</div>
       {summaryBody}
       {blockedNotice}
