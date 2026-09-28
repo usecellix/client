@@ -86,6 +86,15 @@ export interface ActionBlock {
    * Accept, not only discovered later when a revert fails.
    */
   irreversibleActionTypes?: string[];
+  /**
+   * Set only for a GST-recon "missed rows" batch — the sheet name its
+   * CREATE_SHEET/WRITE_TABLE actions target. Lets Accept do one last, fresh
+   * existence check for that specific name immediately before applying (the
+   * name was free when this card was built, but the workbook could have
+   * changed since) and, if it now exists, redirect to the Overwrite/Create-new
+   * collision card instead of writing over it silently.
+   */
+  gstReconOutputSheetName?: string;
 }
 
 export interface StatusBlock {
@@ -147,6 +156,29 @@ export interface GstReconCollisionBlock {
   resolving?: boolean;
 }
 
+/** One books row that didn't cleanly match the portal — enough to identify and jump to it. */
+export interface GstReconMissedRow {
+  vendorName: string;
+  gstin: string;
+  reason: string;
+  explanation: string;
+  /** The books sheet's real name and Excel row number — always the CA's own register, never the GST portal sheet. */
+  sheetName: string | null;
+  row: number | null;
+}
+
+/**
+ * The full list of books rows that didn't match the portal, shown alongside the
+ * Accept/Reject action card so each one can be clicked to jump straight to that exact
+ * cell in Purchase Register/Sales Register — never the GST portal sheet, since this
+ * reconciliation is one-directional (books rows are what the CA owns and needs to verify).
+ */
+export interface GstReconMissedRowsBlock {
+  id: string;
+  type: 'gst_recon_missed_rows';
+  rows: GstReconMissedRow[];
+}
+
 export type TurnBlock =
   | StepBlock
   | ThinkingBlock
@@ -156,7 +188,8 @@ export type TurnBlock =
   | StatusBlock
   | PlanBlock
   | MatchesBlock
-  | GstReconCollisionBlock;
+  | GstReconCollisionBlock
+  | GstReconMissedRowsBlock;
 
 export type TurnPhase = 'processing' | 'awaiting_input' | 'complete' | 'error';
 

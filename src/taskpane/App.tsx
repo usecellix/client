@@ -7,6 +7,7 @@ import { ActionEngine } from '@/utils/actionEngine';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
 import type { SheetCreationOutcome } from '@/engine/handlers/sheet.handler';
 import { CellChange } from '@/types/changeSet';
+import { jumpToWorkbookSource } from '@/utils/jumpToWorkbookSource';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
 import {
@@ -87,7 +88,11 @@ const App: React.FC = () => {
           // throw) errors, matching applyActions' own throw condition below —
           // TASKS.md #40/#15 need the created-id lists from this path too.
           const result = await ActionEngine.applyActionsWithReport(actions);
-          if (result.errors.length > 0 && result.applied === 0) {
+          // Any error is a reportable failure — not just a total wipeout. A batch
+          // where 9 actions succeeded and the 10th (e.g. ADD_SHEET) threw must
+          // never look like "Applied": the chat would say success while the
+          // workbook is left half-written, and the user has no reason to check.
+          if (result.errors.length > 0) {
             throw new Error(result.errors.join('; '));
           }
           createdConditionalFormatIds = result.createdConditionalFormatIds;
@@ -377,6 +382,20 @@ const App: React.FC = () => {
     [rejectActions, turns],
   );
 
+  const handleJumpToGstReconRow = useCallback(async (sheetName: string, row: number) => {
+    try {
+      await jumpToWorkbookSource({
+        documentType: 'workbook',
+        documentId: sheetName,
+        rowOrLine: `${sheetName}!A${row}`,
+      });
+    } catch (err) {
+      // The sheet/row may have been renamed, deleted, or moved since the reconciliation
+      // ran — non-fatal, just leave the selection wherever it already was.
+      console.error('[Cellix] Could not jump to GST recon row:', err);
+    }
+  }, []);
+
   const readWorkbookData = useCallback(async () => {
     setIsReadingWorkbook(true);
     try {
@@ -516,6 +535,7 @@ const App: React.FC = () => {
       onAcceptAllActions={handleAcceptAllActions}
       onRejectActions={handleRejectActions}
       onResolveGstReconCollision={resolveGstReconCollisionChoice}
+      onJumpToGstReconRow={handleJumpToGstReconRow}
       onAnswerQuestion={handleAnswerQuestion}
       onClarificationAnswer={handleClarificationAnswer}
       onClarificationDismiss={dismissClarification}

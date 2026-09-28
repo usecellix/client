@@ -58,11 +58,29 @@ export async function handleAddSheet(
     }
   }
 
+  // Everything from here on is cosmetic follow-up (activation, reading back the
+  // live name for the return value) — the sheet itself was already queued for
+  // creation above. Office.js's single batched sync() can genuinely create the
+  // sheet and still reject the call over an unrelated hiccup in one of these
+  // trailing ops; treating that rejection as "ADD_SHEET failed" would tell the
+  // user their write didn't land when it did (the exact false-positive "I
+  // couldn't apply that formatting" report with a fully-written, styled sheet
+  // underneath it). Verify reality with a fresh, separate check before
+  // deciding this genuinely failed.
   created.activate();
   created.load('name');
-  await ctx.sync();
-
-  return { requestedName: action.name, actualName: created.name, reusedExisting: false };
+  try {
+    await ctx.sync();
+    return { requestedName: action.name, actualName: created.name, reusedExisting: false };
+  } catch (err) {
+    const verify = sheets.getItemOrNullObject(name);
+    verify.load(['isNullObject', 'name']);
+    await ctx.sync();
+    if (!verify.isNullObject) {
+      return { requestedName: action.name, actualName: verify.name, reusedExisting: false };
+    }
+    throw err;
+  }
 }
 
 export async function handleRenameSheet(

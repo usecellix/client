@@ -41,9 +41,12 @@ import { isGstReconPrompt } from '@/utils/gstReconIntent';
 import {
   finalizeGstReconAudit,
   getGstReconPendingContext,
+  GstReconChatOutcome,
+  registerGstReconWriteFailureCollision,
   resolveGstReconSheetCollision,
   tryHandleGstReconChat,
 } from '@/services/gstReconChat';
+import { sheetExists } from '@/services/gstSheetReader';
 import { shouldPreviewActions } from '@/utils/previewPolicy';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { CellChange } from '@/types/changeSet';
@@ -53,8 +56,10 @@ import {
   AnswerBlock,
   ConversationTurn,
   GstReconCollisionBlock,
+  GstReconMissedRowsBlock,
   MatchResult,
   PlanBlock,
+  QuestionBlock,
   StepPhase,
   ThinkingBlock,
   TurnBlock,
@@ -237,6 +242,8 @@ interface PendingActions {
   /** Step-wise run this wave belongs to — TASKS.md #153. */
   runId?: string;
   stepwise?: boolean;
+  /** GST-recon "missed rows" batches only — see ActionBlock.gstReconOutputSheetName. */
+  gstReconOutputSheetName?: string;
 }
 
 export interface PreviewActionsMeta {
@@ -459,6 +466,7 @@ function createActionBlock(
     stepLabel: pending.stepLabel,
     runId: pending.runId,
     stepwise: pending.stepwise,
+    gstReconOutputSheetName: pending.gstReconOutputSheetName,
   };
 }
 
@@ -868,7 +876,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           turn.userMessage,
         );
         const actionBlocks = finalized.filter((b): b is ActionBlock => b.type === 'actions');
-        const withoutActions: TurnBlock[] = finalized.filter((b) => b.type !== 'actions');
+        // A turn can be revealed to more than once (e.g. a GST-recon question reveal
+        // followed later by the final result reveal, both against the SAME turnId once
+        // the question is answered) — drop any earlier "answer" block sharing this
+        // reveal's deterministic id before appending a fresh one, or React ends up with
+        // two blocks under the identical key `answer_<turnId>` (duplicate-key warning,
+        // and the stale first answer lingering visually behind the new one).
+        const withoutActions: TurnBlock[] = finalized.filter(
+          (b) =>
+            b.type !== 'actions' &&
+            !(response.type === 'answer' && b.type === 'answer' && b.id === answerBlockId(turnId)),
+        );
         const nextActionBlocks =
           pendingActions && !actionBlocks.some((b) => b.id === pendingActions.id)
             ? [...actionBlocks, createActionBlock(pendingActions, isChangeSetApplied)]
@@ -1018,57 +1036,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   /**
-   * Chat-native GST recon: discover sheets → match on server → answer + Accept/Reject card.
-   * Does not use the LLM conversation path.
+   * Applies a `GstReconChatOutcome` to a turn — shared by the initial chat-triggered
+   * dispatch and the collision button resolver, which each get a fresh outcome back from
+   * `tryHandleGstReconChat`/`resolveGstReconSheetCollision` and need the exact same
+   * message_only/sheet_collision/question/recon_ready handling rather than a duplicated
+   * copy that could drift out of sync.
    */
-  const dispatchGstReconChat = useCallback(
-    async (turnId: string, message: string) => {
-      const runtime = runtimeRef.current.get(turnId);
-      if (!runtime) return;
-
-      updateTurn(turnId, (turn) => ({
-        ...turn,
-        blocks: upsertStatus(
-          turn.blocks,
-          'Looking for Purchase Register and GSTR sheets…',
-          true,
-          true,
-        ),
-      }));
-
-      await delay(150);
-      if (runtime.aborted) return;
-
-      updateTurn(turnId, (turn) => ({
-        ...turn,
-        blocks: upsertStatus(turn.blocks, 'Matching invoices…', true, true),
-      }));
-
-      const outcome = await tryHandleGstReconChat(message, {
-        conversationId: conversationIdRef.current,
-      });
-
-      if (!outcome) {
-        // Should not happen if caller pre-checked intent
-        updateTurn(turnId, (turn) => ({
-          ...turn,
-          phase: 'complete',
-          blocks: finalizeSteps(
-            [
-              ...withoutStatus(turn.blocks),
-              {
-                id: answerBlockId(turnId),
-                type: 'answer',
-                content: 'I could not start GST reconciliation for that request.',
-                revealState: 'typing',
-              } satisfies AnswerBlock,
-            ],
-            turn.userMessage,
-          ),
-        }));
-        return;
-      }
-
+  const applyGstReconOutcome = useCallback(
+    async (turnId: string, runtime: TurnRuntime, outcome: GstReconChatOutcome) => {
       if (runtime.aborted) return;
 
       if (outcome.kind === 'message_only') {
@@ -1110,6 +1085,36 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         return;
       }
 
+      if (outcome.kind === 'question') {
+        // Docks via the SAME `QuestionChoicesPanel` every other mid-conversation
+        // clarification in this app uses (ConversationPanel's `pendingQuestion`, driven
+        // purely by `turn.phase === 'awaiting_input'` + an unanswered `question` block) —
+        // no bespoke card/wiring needed. Answering it re-enters chat as a normal message
+        // via `answerQuestion`, which `tryHandleGstReconChat` recognizes and resolves.
+        pushHistory({
+          role: 'assistant',
+          content: outcome.answer,
+          timestamp: new Date().toISOString(),
+          type: 'answer',
+        });
+        revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer });
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          phase: 'awaiting_input',
+          blocks: [
+            ...turn.blocks,
+            {
+              id: `question_${turnId}_${turn.blocks.length}`,
+              type: 'question',
+              question: outcome.question,
+              options: outcome.options,
+              revealState: 'visible',
+            } satisfies QuestionBlock,
+          ],
+        }));
+        return;
+      }
+
       const pendingActions: PendingActions = {
         id: `actions_gst_${Date.now()}`,
         actions: outcome.actions,
@@ -1119,6 +1124,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           processingLabel: 'GST reconciliation (deterministic match)',
           rawActionSummary: `${outcome.actions.length} Excel actions (CREATE_SHEET + WRITE_TABLE)`,
         },
+        gstReconOutputSheetName: outcome.sheetName,
       };
       runtime.pendingActions = pendingActions;
 
@@ -1137,14 +1143,25 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       updateTurn(turnId, (turn) => {
         const withoutOldPending = turn.blocks.filter(
-          (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
+          (b) =>
+            !(b.type === 'actions' && b.proposalStatus === 'pending') &&
+            b.type !== 'gst_recon_missed_rows',
         );
+        const missedRowsBlock: GstReconMissedRowsBlock | null =
+          outcome.missedRows && outcome.missedRows.length
+            ? {
+                id: `gst_recon_missed_rows_${turnId}`,
+                type: 'gst_recon_missed_rows',
+                rows: outcome.missedRows,
+              }
+            : null;
         return {
           ...turn,
           phase: 'complete',
           blocks: [
             ...withoutOldPending,
             createActionBlock(pendingActions, isChangeSetApplied),
+            ...(missedRowsBlock ? [missedRowsBlock] : []),
           ],
         };
       });
@@ -1157,6 +1174,64 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       revealFinalResponse,
       updateTurn,
     ],
+  );
+
+  /**
+   * Chat-native GST recon: discover sheets → match on server → answer + Accept/Reject card.
+   * Does not use the LLM conversation path.
+   */
+  const dispatchGstReconChat = useCallback(
+    async (turnId: string, message: string) => {
+      const runtime = runtimeRef.current.get(turnId);
+      if (!runtime) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(
+          turn.blocks,
+          'Looking for Purchase Register and GSTR sheets…',
+          true,
+          true,
+        ),
+      }));
+
+      await delay(150);
+      if (runtime.aborted) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Matching invoices…', true, true),
+      }));
+
+      const outcome = await tryHandleGstReconChat(message, {
+        conversationId: conversationIdRef.current,
+        workbookKey,
+      });
+
+      if (!outcome) {
+        // Should not happen if caller pre-checked intent
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          phase: 'complete',
+          blocks: finalizeSteps(
+            [
+              ...withoutStatus(turn.blocks),
+              {
+                id: answerBlockId(turnId),
+                type: 'answer',
+                content: 'I could not start GST reconciliation for that request.',
+                revealState: 'typing',
+              } satisfies AnswerBlock,
+            ],
+            turn.userMessage,
+          ),
+        }));
+        return;
+      }
+
+      await applyGstReconOutcome(turnId, runtime, outcome);
+    },
+    [applyGstReconOutcome, updateTurn, workbookKey],
   );
 
   const runVisualTimeline = useCallback(
@@ -2408,6 +2483,46 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
 
       applyingActionsRef.current = true;
+
+      // GST-recon "missed rows" batches only: the target sheet name was free when
+      // this card was built, but the workbook may have changed since (e.g. a
+      // stale/partial context read at build time, or another run finishing in the
+      // meantime) — one last, fresh, direct check right before writing, so a
+      // collision is never silently written over. Proactive rather than reacting
+      // to whatever error ADD_SHEET/WRITE_TABLE happens to throw: deterministic,
+      // and avoids depending on any particular error shape from the Excel API.
+      if (block.gstReconOutputSheetName) {
+        try {
+          const collided = await sheetExists(block.gstReconOutputSheetName);
+          if (collided) {
+            const { collisionId, sheetName } = registerGstReconWriteFailureCollision(
+              block.actions,
+              block.gstReconOutputSheetName,
+            );
+            updateTurn(turnId, (t) => ({
+              ...t,
+              phase: 'awaiting_input',
+              blocks: t.blocks.map((b) =>
+                b.id === blockId && b.type === 'actions'
+                  ? ({
+                      id: `gst_recon_collision_${collisionId}`,
+                      type: 'gst_recon_collision',
+                      collisionId,
+                      sheetName,
+                    } satisfies GstReconCollisionBlock)
+                  : b,
+              ),
+            }));
+            applyingActionsRef.current = false;
+            return false;
+          }
+        } catch (checkError) {
+          // A failed pre-check must never block a write that might otherwise
+          // succeed — fall through to the normal apply path, which still guards
+          // correctly (OverwriteGuard, header guard) if something really is wrong.
+          console.warn('[Cellix] GST recon pre-Accept collision check failed:', checkError);
+        }
+      }
 
       let outcomeWarning: string | null = null;
       // A holder rather than a bare `let`: the assignment happens inside the

@@ -157,7 +157,10 @@ export function getBillingTopupEndpoint(): string {
   return `${getApiBaseUrl()}/billing/checkout/topup`;
 }
 
-const DEFAULT_MARKETING_SITE_URL = 'http://localhost:5173';
+// Office's displayDialogAsync refuses non-HTTPS dialog URLs, so this must be
+// HTTPS even in dev — Landing-page/vite.config.ts serves HTTPS locally using
+// the same office-addin-dev-certs cert this add-in's own dev server uses.
+const DEFAULT_MARKETING_SITE_URL = 'https://localhost:5173';
 
 /**
  * The marketing site (CELLIX-landing-page) — where the task pane's
@@ -177,5 +180,40 @@ export function getMarketingSiteUrl(): string {
 /** Opens the marketing site's pricing page — the entry point for upgrading/changing plans. */
 export function getPricingPageUrl(): string {
   return `${getMarketingSiteUrl()}/pricing`;
+}
+
+/**
+ * Marketing site's email/password login page, opened in the system's default
+ * browser for manual (non-Google/Microsoft) sign-in — see
+ * client/src/auth/useAuth.ts openEmailLoginPage. `from=excel` tells the page
+ * to show a "go back to Excel" message instead of redirecting to /app on
+ * success; `token` is a random id the page reports back to the Server on
+ * success (POST /excel-login/complete), which pushes the result to the
+ * Excel add-in's matching SSE connection (GET /excel-login/wait) — see
+ * AuthGate.tsx.
+ */
+export function getEmailLoginUrl(loginToken: string): string {
+  return `${getMarketingSiteUrl()}/login?from=excel&token=${encodeURIComponent(loginToken)}`;
+}
+
+/**
+ * SSE endpoint the task pane waits on for the paired browser-tab login to
+ * complete. Deliberately under /excel-login, not /auth — client/vite.config.ts's
+ * dev proxy treats /api/auth/* as a single kept-prefix rule pointed at Better
+ * Auth's own /api/auth/* mount, so a Nest route at /auth/* would collide
+ * with it through the proxy. /excel-login/* instead goes through the
+ * general /api/* rule (prefix stripped), landing on the Nest route directly.
+ */
+export function getExcelLoginWaitUrl(loginToken: string): string {
+  return `${getApiBaseUrl()}/excel-login/wait?token=${encodeURIComponent(loginToken)}`;
+}
+
+/**
+ * After SSE login-complete, the task pane redeems the pairing token for a
+ * Better Auth session cookie in the Office WebView jar (which never received
+ * the Landing-tab Set-Cookie).
+ */
+export function getExcelLoginClaimUrl(): string {
+  return `${getApiBaseUrl()}/excel-login/claim`;
 }
 

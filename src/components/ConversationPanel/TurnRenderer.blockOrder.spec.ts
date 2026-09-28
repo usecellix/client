@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { orderBlocksForDisplay } from './TurnRenderer';
 import {
   ActionBlock,
+  GstReconMissedRowsBlock,
   QuestionBlock,
   StatusBlock,
   ThinkingBlock,
@@ -49,6 +50,10 @@ function question(id: string, answeredWith?: string): QuestionBlock {
     options: ['After the last row'],
     ...(answeredWith ? { answeredWith } : {}),
   };
+}
+
+function missedRows(id: string): GstReconMissedRowsBlock {
+  return { id, type: 'gst_recon_missed_rows', rows: [] };
 }
 
 describe('orderBlocksForDisplay', () => {
@@ -132,5 +137,44 @@ describe('orderBlocksForDisplay', () => {
     const ordered = orderBlocksForDisplay(blocks);
 
     expect(ordered.map((b) => b.id)).toEqual(['s1', 'q1']);
+  });
+
+  // Response actions (Accept/Reject) always read as the last thing in a turn — the GST
+  // recon missed-rows pill list is reference material for the CA to consult before
+  // deciding, so it must render just above the actions card, even though both are
+  // appended to `turn.blocks` with the actions card pushed first (useConversation.ts's
+  // applyGstReconOutcome builds the actions block, then the missed-rows block).
+  it('renders the GST-recon missed-rows list ABOVE the actions card, even though the actions block was appended first', () => {
+    const blocks: TurnBlock[] = [
+      actionCard('a1', 1),
+      missedRows('m1'),
+    ];
+
+    const ordered = orderBlocksForDisplay(blocks);
+
+    expect(ordered.map((b) => b.id)).toEqual(['m1', 'a1']);
+  });
+
+  // Real report: after answering the "GSTR-2B or GSTR-2A?" question, the recon result's
+  // "Compared 22 rows in Purchase Reg against GSTR-2B." answer text rendered AFTER the
+  // missed-rows pill list instead of before it. Root cause: the answered-question anchor
+  // made this `answer` block count as "progress continuing after an anchor" (TASKS.md
+  // #195's fix), which bumped it to the SAME tier as the actions card — one tier BELOW
+  // the missed-rows list's own tier — even though no `actions` block existed yet at the
+  // point this `answer` block arrived. The fix distinguishes: a continuation is only
+  // bumped to the actions tier when a REAL actions block already precedes it; here the
+  // only earlier anchor is the answered question, so it must land just before the
+  // missed-rows/actions tier instead, not tied with or after it.
+  it('keeps the recon-result answer text ABOVE the missed-rows list and the actions card, when the only earlier anchor is an answered question (not yet an actions block)', () => {
+    const blocks: TurnBlock[] = [
+      question('q1', 'GSTR-2B only'),
+      { id: 'ans1', type: 'answer', content: 'Compared 22 rows in Purchase Reg against GSTR-2B.', revealState: 'complete' },
+      actionCard('a1', 1),
+      missedRows('m1'),
+    ];
+
+    const ordered = orderBlocksForDisplay(blocks);
+
+    expect(ordered.map((b) => b.id)).toEqual(['q1', 'ans1', 'm1', 'a1']);
   });
 });

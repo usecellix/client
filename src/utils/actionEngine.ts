@@ -52,7 +52,9 @@ export class ActionEngine {
 
   static async applyActions(actions: SheetAction[]): Promise<void> {
     const result = await this.applyActionsWithReport(actions);
-    if (result.errors.length > 0 && result.applied === 0) {
+    // Any error is a reportable failure, not just a total wipeout (see
+    // applyActionsWithAudit in App.tsx for the same fix, and why).
+    if (result.errors.length > 0) {
       throw new Error(result.errors.join('; '));
     }
   }

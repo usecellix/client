@@ -4,6 +4,7 @@
 
 import { getApiBaseUrl } from '@/lib/apiConfig';
 import { SheetAction } from '@/types/sheet-actions';
+import { GstReconLayout } from '@/utils/gstReconIntent';
 import { UserFacingSummary } from '@/utils/userFacingResponse';
 
 export function getGstReconcileEndpoint(): string {
@@ -54,8 +55,8 @@ export interface GstReconcileRequest {
   conversation_id?: string;
   output_sheet_name?: string;
   missed_books_only?: boolean;
-  /** Output layout for the missed_books_only sheet — see GstReconLayout. Ignored otherwise. */
-  layout?: 'categorized' | 'books_flat' | 'portal_flat';
+  /** Output layout for the missed_books_only sheet. Ignored otherwise. */
+  layout?: GstReconLayout;
   /** Inclusive date range (yyyy-mm-dd) extracted from the prompt — filters books/portal rows before matching. */
   period_start?: string;
   period_end?: string;
@@ -96,6 +97,8 @@ export interface GstReconSummary {
   mismatch_genuinely_missing?: number;
   /** Same vendor (PAN), same invoice, booked under a different GSTIN registration on each side — its own bucket. */
   gstin_mismatch_count?: number;
+  /** Portal or books invoice flagged as an amendment — needs CA verification against the original, never folded into credit_notes. */
+  amended_count?: number;
 }
 
 export interface GstReconcileResponse {
@@ -111,6 +114,12 @@ export interface GstReconcileResponse {
     gstin?: string | null;
     itc_amount?: number;
     difference?: string | null;
+    vendor_name?: string | null;
+    mismatch_reason?: string | null;
+    explanation?: string | null;
+    /** The books row's actual sheet name and Excel row number, when this row has a books-side counterpart. */
+    books_sheet_name?: string | null;
+    books_row?: number | null;
   }>;
   actions: SheetAction[];
   confidence: number;
@@ -139,6 +148,7 @@ export function buildGstReconUserFacingSummary(
   result: GstReconcileResponse,
   prName: string,
   portalName: string,
+  layout: GstReconLayout = 'categorized',
 ): UserFacingSummary {
   const s = result.summary;
   const isSales = result.reconciliation_type === 'SALES_VS_GSTR1';
@@ -147,8 +157,38 @@ export function buildGstReconUserFacingSummary(
   const periodSuffix = result.period_applied ? ` (${result.period_applied.label})` : '';
   const missed = s.pr_only;
   const gstinMismatchCount = s.gstin_mismatch_count ?? 0;
-  const hasIssues = missed > 0 || gstinMismatchCount > 0;
+  const rcmCount = s.rcm_flagged ?? 0;
+  const amendedCount = s.amended_count ?? 0;
   const totalNotMatched = missed + gstinMismatchCount;
+  const portalOnlyCount = s.portal_only ?? 0;
+  // portal_flat's whole sheet IS the portal-only rows — a books-side-only count would
+  // wrongly say "no missed rows" when portal-only rows are exactly what exist.
+  const hasIssues =
+    layout === 'portal_flat'
+      ? portalOnlyCount > 0
+      : missed > 0 || gstinMismatchCount > 0 || rcmCount > 0 || amendedCount > 0;
+
+  if (result.missed_books_only && layout !== 'categorized') {
+    const direction =
+      layout === 'books_flat'
+        ? { count: totalNotMatched, from: 'your books', missingFrom: portalLabel }
+        : { count: portalOnlyCount, from: portalLabel, missingFrom: 'your books' };
+    return {
+      contextLine: `${prName} ↔ ${portalLabel}${periodSuffix}`,
+      headline: hasIssues
+        ? 'Create a sheet with these rows?'
+        : `No rows found in ${direction.from} that are missing from ${direction.missingFrom}.`,
+      bullets: hasIssues
+        ? [
+            `${direction.count} row${direction.count === 1 ? '' : 's'} exist in ${direction.from} but not in ${direction.missingFrom}`,
+            `Accept to create sheet "${result.output_sheet_name}"`,
+          ]
+        : [`Checked ${s.total_pr_rows} books rows against ${s.total_portal_rows} portal rows`],
+      supportingDetail: hasIssues
+        ? `Nothing is written until you Accept. Reject discards this sheet.`
+        : `No sheet will be created.`,
+    };
+  }
 
   if (result.missed_books_only) {
     const matchedExact = s.matched_exact ?? s.exact_matched;
@@ -194,6 +234,12 @@ export function buildGstReconUserFacingSummary(
                   `Possible GSTIN mismatch, same vendor under a different registration: ${gstinMismatchCount}`,
                 ]
               : []),
+            ...(rcmCount > 0
+              ? [`Possible RCM (reverse charge), needs CA review: ${rcmCount}`]
+              : []),
+            ...(amendedCount > 0
+              ? [`Amended invoices, verify against original: ${amendedCount}`]
+              : []),
             `Accept to create sheet "${result.output_sheet_name}" with the full breakdown`,
           ]
         : [
@@ -235,6 +281,7 @@ export function buildGstReconAnswerText(
   result: GstReconcileResponse,
   prName: string,
   portalName: string,
+  layout: GstReconLayout = 'categorized',
 ): string {
   const s = result.summary;
   const isSales = result.reconciliation_type === 'SALES_VS_GSTR1';
@@ -243,13 +290,38 @@ export function buildGstReconAnswerText(
   const periodNote = result.period_applied ? ` for **${result.period_applied.label}**` : '';
   const missed = s.pr_only;
   const gstinMismatchCount = s.gstin_mismatch_count ?? 0;
-  const hasIssues = missed > 0 || gstinMismatchCount > 0;
+  const rcmCount = s.rcm_flagged ?? 0;
+  const amendedCount = s.amended_count ?? 0;
   const totalNotMatched = missed + gstinMismatchCount;
-  const missedSample = result.rows
-    .filter((r) => r.status === 'PR_ONLY')
-    .slice(0, 8)
-    .map((r) => `• ${r.invoice_number ?? '?'} (${r.gstin ?? 'no GSTIN'})`)
-    .join('\n');
+  const portalOnlyCount = s.portal_only ?? 0;
+  const hasIssues =
+    layout === 'portal_flat'
+      ? portalOnlyCount > 0
+      : missed > 0 || gstinMismatchCount > 0 || rcmCount > 0 || amendedCount > 0;
+  if (result.missed_books_only && layout !== 'categorized') {
+    const count = layout === 'books_flat' ? totalNotMatched : portalOnlyCount;
+    const fromLabel = layout === 'books_flat' ? 'your books' : portalLabel;
+    const missingFromLabel = layout === 'books_flat' ? portalLabel : 'your books';
+
+    if (!hasIssues) {
+      return [
+        `I compared **${prName}** with **${portalLabel}**${periodNote}.`,
+        '',
+        `No rows found in ${fromLabel} that are missing from ${missingFromLabel}.`,
+        '',
+        `No sheet will be created.`,
+      ].join('\n');
+    }
+
+    return [
+      `Compared **${s.total_pr_rows}** rows in **${prName}** against ${portalLabel}${periodNote}.`,
+      '',
+      `**${count}** row${count === 1 ? '' : 's'} exist in ${fromLabel} but not in ${missingFromLabel}.`,
+      '',
+      `**Create a sheet with these rows?**`,
+      `Accept to create **${result.output_sheet_name}**, or Reject to discard.`,
+    ].join('\n');
+  }
 
   if (result.missed_books_only) {
     const matchedExact = s.matched_exact ?? s.exact_matched;
@@ -302,7 +374,12 @@ export function buildGstReconAnswerText(
       gstinMismatchCount > 0
         ? `\n**Possible GSTIN mismatch** — ${gstinMismatchCount} invoice${gstinMismatchCount === 1 ? '' : 's'} where the same vendor (same PAN) appears to be booked under a different GSTIN registration on each side.`
         : '',
-      missedSample ? `\n**Sample missed invoices**\n${missedSample}` : '',
+      rcmCount > 0
+        ? `\n**Possible RCM (reverse charge)** — ${rcmCount} row${rcmCount === 1 ? '' : 's'} needing CA review.`
+        : '',
+      amendedCount > 0
+        ? `\n**Amended invoices** — ${amendedCount} row${amendedCount === 1 ? '' : 's'} to verify against the original.`
+        : '',
       '',
       `**Create a sheet with full details, grouped by reason?**`,
       `Accept to create **${result.output_sheet_name}**, or Reject to discard.`,
@@ -324,7 +401,7 @@ export function buildGstReconAnswerText(
         r.status === 'GSTIN_MISMATCH',
     )
     .slice(0, 8)
-    .map((r) => `• ${r.status}: ${r.invoice_number ?? '?'} (${r.gstin ?? 'no GSTIN'})`)
+    .map((r) => `• ${r.status}: ${r.invoice_number || '?'} (${r.gstin || 'no GSTIN'})`)
     .join('\n');
 
   const fullMatchedFallback = s.matched_fallback ?? 0;

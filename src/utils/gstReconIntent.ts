@@ -3,6 +3,9 @@
  * Supports Purchase vs GSTR-2B/2A and Sales vs GSTR-1, plus context extraction.
  */
 
+import { GstPurchasePortalPreference } from '@/types/chatSession';
+export type { GstPurchasePortalPreference };
+
 export type GstReconIntentType =
   | 'PR_VS_GSTR2B'
   | 'PR_VS_GSTR2A'
@@ -201,4 +204,35 @@ export function detectGstReconLayout(message: string): GstReconLayout {
   if (BOOKS_THEN_PORTAL_MISSING.test(text)) return 'books_flat';
 
   return 'categorized';
+}
+
+/**
+ * Which GST portal source(s) a casual Purchase Register reconciliation should use, when
+ * the workbook has both a GSTR-2B and a GSTR-2A sheet. 2B and 2A carry different legal
+ * meaning (2B is the return-period ITC-eligibility source; 2A is everything a supplier
+ * has ever filed, including invoices not yet reflected in 2B) — silently merging them
+ * can hide a genuine ITC-timing gap, so this is never guessed from ambient GST wording;
+ * it only resolves from an unambiguous, explicit statement. Returns null (never a
+ * default) when unstated — the caller asks instead of assuming.
+ */
+const MENTIONS_2B = /\b(2b|gstr[-\s]?2b)\b/i;
+const MENTIONS_2A = /\b(2a|gstr[-\s]?2a)\b/i;
+const COMBINED_PORTAL_PHRASE = /\b(combined|both|together)\b/i;
+
+export function detectPurchasePortalSourcePreference(
+  message: string,
+): GstPurchasePortalPreference | null {
+  const text = message.trim();
+  if (!text) return null;
+
+  if (COMBINED_PORTAL_PHRASE.test(text)) return 'combined';
+
+  const mentions2b = MENTIONS_2B.test(text);
+  const mentions2a = MENTIONS_2A.test(text);
+  // Both named with no combining word — ambiguous which one is meant as "only";
+  // stay unresolved rather than guess.
+  if (mentions2b && mentions2a) return null;
+  if (mentions2b) return 'gstr2b_only';
+  if (mentions2a) return 'gstr2a_only';
+  return null;
 }

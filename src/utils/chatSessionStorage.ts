@@ -45,6 +45,7 @@ export function loadChatSessions(workbookKey: string): ChatSessionStore | null {
       activeSessionId: parsed.activeSessionId ?? null,
       sessions: parsed.sessions.map(reviveSession),
       assistantMode: parsed.assistantMode,
+      gstPurchasePortalPreference: parsed.gstPurchasePortalPreference,
     };
   } catch {
     return null;
@@ -57,6 +58,7 @@ export function saveChatSessions(workbookKey: string, store: ChatSessionStore): 
     const payload: ChatSessionStore = {
       activeSessionId: store.activeSessionId,
       assistantMode: store.assistantMode,
+      gstPurchasePortalPreference: store.gstPurchasePortalPreference,
       sessions: store.sessions.map((session) => ({
         ...session,
         turns: session.turns.map((turn) => ({

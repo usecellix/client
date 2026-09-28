@@ -65,6 +65,22 @@ export async function readAllSheetHeaders(
   });
 }
 
+/**
+ * Fresh, minimal, single-sheet existence check — a single `getItemOrNullObject` +
+ * `sync()`, nothing else. Deliberately independent of any broader/cached workbook
+ * read (`readAllSheetHeaders`'s own snapshot, or any other context-builder's) so a
+ * stale or partial read elsewhere can never cause collision detection to miss a
+ * sheet that genuinely exists right now.
+ */
+export async function sheetExists(name: string): Promise<boolean> {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(name);
+    sheet.load('isNullObject');
+    await ctx.sync();
+    return !sheet.isNullObject;
+  });
+}
+
 export async function readSheetsFull(sheetNames: string[]): Promise<SheetGrid[]> {
   if (!sheetNames.length) return [];
 

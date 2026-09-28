@@ -8,5 +8,8 @@ export {
   signOutUser,
   getAuthCompleteUrl,
   getAuthDialogUrl,
+  openEmailLoginPage,
+  waitForEmailLogin,
+  claimExcelLoginSession,
 } from './useAuth';
 export type { SocialProvider } from './useAuth';

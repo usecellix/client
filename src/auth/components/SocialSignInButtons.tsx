@@ -1,14 +1,27 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { signInWithProvider } from '@/auth/useAuth';
+import { signInWithProvider, openEmailLoginPage, waitForEmailLogin } from '@/auth/useAuth';
 
 interface SocialSignInButtonsProps {
   disabled?: boolean;
   onError?: (message: string) => void;
+  onEmailLoginOpened?: () => void;
+  /** Called once the paired browser-tab email/password login completes (SSE push). */
+  onEmailLoginComplete?: () => void;
 }
 
-export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({ disabled, onError }) => {
+export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
+  disabled,
+  onError,
+  onEmailLoginOpened,
+  onEmailLoginComplete,
+}) => {
   const [pending, setPending] = React.useState(false);
+  const cancelWaitRef = React.useRef<(() => void) | null>(null);
+
+  React.useEffect(() => {
+    return () => cancelWaitRef.current?.();
+  }, []);
 
   const handleSignIn = async () => {
     setPending(true);
@@ -23,6 +36,29 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({ disabl
 
   const busy = pending || disabled;
 
+  const handleEmailLogin = () => {
+    try {
+      const token = openEmailLoginPage();
+      onEmailLoginOpened?.();
+
+      cancelWaitRef.current?.();
+      const { promise, cancel } = waitForEmailLogin(token);
+      cancelWaitRef.current = cancel;
+      // Polls /excel-login/claim until the WebView has a session cookie, then
+      // refetch so AuthGate enters the app. Do not treat SSE close as failure.
+      promise
+        .then(() => onEmailLoginComplete?.())
+        .catch((error) => {
+          const message =
+            error instanceof Error ? error.message : 'Email login did not finish in Excel';
+          onError?.(message);
+        });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to open sign-in';
+      onError?.(message);
+    }
+  };
+
   return (
     <div className="flex w-fit flex-col gap-3">
       <Button
@@ -35,6 +71,15 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({ disabl
         <GoogleIcon />
         {pending ? 'Redirecting…' : 'Continue with Google'}
       </Button>
+
+      <button
+        type="button"
+        className="auth-login__email-link"
+        disabled={busy}
+        onClick={handleEmailLogin}
+      >
+        Log in with email and password
+      </button>
     </div>
   );
 };

@@ -7,8 +7,11 @@
 import {
   detectGstReconIntent,
   detectGstReconLayout,
+  detectPurchasePortalSourcePreference,
   extractGstReconContext,
+  GstPurchasePortalPreference,
   GstReconIntentType,
+  GstReconLayout,
   isCasualMissedRowsRecon,
 } from '@/utils/gstReconIntent';
 import { resolveGstPeriod } from '@/utils/gstPeriod';
@@ -18,7 +21,7 @@ import {
   discoverGstSheets,
   inferColumnMapping,
 } from '@/services/gstSheetDiscovery';
-import { readAllSheetHeaders, readSheetsFull } from '@/services/gstSheetReader';
+import { readAllSheetHeaders, readSheetsFull, sheetExists } from '@/services/gstSheetReader';
 import {
   buildGstReconAnswerText,
   buildGstReconUserFacingSummary,
@@ -27,8 +30,24 @@ import {
   reportGstReconAuditOutcome,
   runGstReconcile,
 } from '@/services/gstReconService';
+import { loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
 import { SheetAction } from '@/types/sheet-actions';
 import { UserFacingSummary } from '@/utils/userFacingResponse';
+import { GstReconMissedRow } from '@/types/conversationTurn';
+
+/** Every books row (PR_ONLY) from the result, ready to render as a clickable jump-to-cell list. */
+function extractMissedRows(result: GstReconcileResponse): GstReconMissedRow[] {
+  return result.rows
+    .filter((r) => r.status === 'PR_ONLY')
+    .map((r) => ({
+      vendorName: r.vendor_name || r.invoice_number || 'Unnamed row',
+      gstin: r.gstin || '',
+      reason: r.mismatch_reason || r.status,
+      explanation: r.explanation || r.difference || '',
+      sheetName: r.books_sheet_name ?? null,
+      row: r.books_row ?? null,
+    }));
+}
 
 export type GstReconChatOutcome =
   | {
@@ -44,6 +63,9 @@ export type GstReconChatOutcome =
       auditLogId?: string | null;
       /** The sheet these actions write to — the resolved name after Overwrite/Create-new, when applicable. */
       sheetName: string;
+      /** Books rows that didn't cleanly match the portal — rendered as a clickable list so
+       * each one can be jumped to directly in the books sheet, never the portal sheet. */
+      missedRows?: GstReconMissedRow[];
     }
   | {
       /**
@@ -55,6 +77,19 @@ export type GstReconChatOutcome =
       answer: string;
       collisionId: string;
       sheetName: string;
+    }
+  | {
+      /**
+       * A clarifying question, docked above the composer via the app's standard
+       * `QuestionChoicesPanel` mechanism (same as every other mid-conversation
+       * clarification) — answering it re-sends a wrapped reply through ordinary chat,
+       * which `tryHandleGstReconChat` recognizes as a continuation via `pendingContext`-
+       * style state (see `pendingPurchasePortalAsk`) and resolves without re-asking.
+       */
+      kind: 'question';
+      answer: string;
+      question: string;
+      options: string[];
     };
 
 /** Session-scoped partial context for multi-turn prompts. */
@@ -78,11 +113,149 @@ interface GstReconSheetCollision {
   result: GstReconcileResponse;
   prName: string;
   portalName: string;
+  layout: GstReconLayout;
   targetSheetName: string;
 }
 
 let pendingSheetCollision: GstReconSheetCollision | null = null;
 let sheetCollisionCounter = 0;
+
+/**
+ * Held while asking "GSTR-2B only, GSTR-2A only, or combined?" — remembers the ORIGINAL
+ * triggering message (for its period/layout/etc. wording) so the next message can resume
+ * the same run once answered. Single-slot, matching `pendingContext`'s own design (one
+ * outstanding ask at a time is enough) — resolved from the NEXT `tryHandleGstReconChat`
+ * call, same continuation shape as GSTIN/period/client prompts.
+ */
+interface PendingPurchasePortalAsk {
+  originalMessage: string;
+  workbookKey?: string;
+}
+
+let pendingPurchasePortalAsk: PendingPurchasePortalAsk | null = null;
+
+const PURCHASE_PORTAL_ASK_QUESTION =
+  'This workbook has both GSTR-2B and GSTR-2A sheets. Which should I reconcile against?';
+
+const PURCHASE_PORTAL_ASK_OPTION_LABELS: Record<GstPurchasePortalPreference, string> = {
+  gstr2b_only: 'GSTR-2B only',
+  gstr2a_only: 'GSTR-2A only',
+  combined: 'Both, combined',
+};
+
+const PURCHASE_PORTAL_ASK_OPTIONS: string[] = [
+  PURCHASE_PORTAL_ASK_OPTION_LABELS.gstr2b_only,
+  PURCHASE_PORTAL_ASK_OPTION_LABELS.gstr2a_only,
+  PURCHASE_PORTAL_ASK_OPTION_LABELS.combined,
+];
+
+function persistPurchasePortalPreference(
+  workbookKey: string | undefined,
+  preference: GstPurchasePortalPreference,
+): void {
+  if (!workbookKey) return;
+  const existing = loadChatSessions(workbookKey) ?? {
+    activeSessionId: null,
+    sessions: [],
+  };
+  saveChatSessions(workbookKey, { ...existing, gstPurchasePortalPreference: preference });
+}
+
+/**
+ * The standard docked-question flow (`answerQuestion` in `useConversation.ts`) never sends
+ * the raw answer alone — it wraps it as `Replying to your question "<Q>" about my earlier
+ * request "<original>": <answer>` so the reply carries enough context to be recognized as a
+ * GST-recon continuation (see `isGstReconPrompt`/`isCasualMissedRowsRecon`, both of which
+ * match against the embedded original request text). But that same embedding means the
+ * QUESTION text itself — which names both "GSTR-2B" and "GSTR-2A" — is present in the
+ * payload too, so running `detectPurchasePortalSourcePreference` against the whole string
+ * would see both mentioned and (correctly, by its own "don't guess" rule) return null even
+ * when the actual answer was unambiguous. Extracting just the answer segment (after the
+ * final ": ") avoids that false ambiguity.
+ */
+function extractPurchasePortalAnswer(message: string): GstPurchasePortalPreference | null {
+  const wrapperMatch = message.match(/:\s*([^:]+)$/);
+  const answerText = (wrapperMatch ? wrapperMatch[1] : message).trim();
+
+  const byLabel = (Object.entries(PURCHASE_PORTAL_ASK_OPTION_LABELS) as Array<
+    [GstPurchasePortalPreference, string]
+  >).find(([, label]) => label.toLowerCase() === answerText.toLowerCase());
+  if (byLabel) return byLabel[0];
+
+  return detectPurchasePortalSourcePreference(answerText);
+}
+
+/**
+ * A completed action batch whose target sheet name turned out to already exist at
+ * write (Accept) time, even though it did not when the batch was built — e.g. the
+ * name was free during chat-generation's collision check but got occupied before
+ * the user clicked Accept. Held so Overwrite/Create-new can retry directly against
+ * the already-computed actions, without re-running the reconciliation. Keyed
+ * separately from `pendingSheetCollision` (a different prefix on the id) since it
+ * carries no `result`/`prName`/`portalName` to rebuild a full chat summary from.
+ */
+interface GstReconWriteFailureCollision {
+  collisionId: string;
+  actions: SheetAction[];
+  targetSheetName: string;
+}
+
+const pendingWriteFailureCollisions = new Map<string, GstReconWriteFailureCollision>();
+
+const WRITE_FAILURE_COLLISION_PREFIX = 'write_collision_';
+
+/**
+ * Registers a write-time collision detected right before applying a GST-recon
+ * action batch (the target sheet name now exists, though it did not when the
+ * Accept card was built) and returns the id/name for a fresh collision card.
+ * Never applies or modifies anything itself — purely bookkeeping.
+ */
+export function registerGstReconWriteFailureCollision(
+  actions: SheetAction[],
+  targetSheetName: string,
+): { collisionId: string; sheetName: string } {
+  const collisionId = `${WRITE_FAILURE_COLLISION_PREFIX}${++sheetCollisionCounter}`;
+  pendingWriteFailureCollisions.set(collisionId, { collisionId, actions, targetSheetName });
+  return { collisionId, sheetName: targetSheetName };
+}
+
+async function resolveGstReconWriteFailureCollision(
+  collisionId: string,
+  choice: 'overwrite' | 'new',
+): Promise<GstReconChatOutcome> {
+  const collision = pendingWriteFailureCollisions.get(collisionId);
+  if (!collision) {
+    return {
+      kind: 'message_only',
+      answer: 'That choice is no longer available — please run the reconciliation again.',
+    };
+  }
+  pendingWriteFailureCollisions.delete(collisionId);
+  const { actions, targetSheetName } = collision;
+
+  if (choice === 'overwrite') {
+    return {
+      kind: 'recon_ready',
+      answer: `Sheet "${targetSheetName}" already existed — overwriting it.`,
+      actions: [{ type: 'DELETE_SHEET', sheetName: targetSheetName }, ...actions],
+      explanation: 'Retry after a name conflict detected at write time.',
+      userFacingSummary: { headline: 'Retry after a write-time name conflict.' },
+      sheetName: targetSheetName,
+    };
+  }
+
+  const headerIndex = await readAllSheetHeaders();
+  const taken = new Set(headerIndex.map((h) => h.name));
+  const finalSheetName = versionedSheetName(targetSheetName, taken);
+  return {
+    kind: 'recon_ready',
+    answer: `Sheet "${targetSheetName}" already existed — creating "${finalSheetName}" instead.`,
+    actions: rewriteActionSheetNames(actions, targetSheetName, finalSheetName),
+    explanation: 'Retry after a name conflict detected at write time.',
+    userFacingSummary: { headline: 'Retry after a write-time name conflict.' },
+    sheetName: finalSheetName,
+  };
+}
 
 export function getGstReconPendingContext(): GstReconPendingContext | null {
   return pendingContext;
@@ -184,11 +357,17 @@ function versionedSheetName(base: string, taken: Set<string>): string {
  * Resolve a pending sheet-name collision from a button click — `collisionId` must match
  * the currently held collision (guards against a stale/duplicate click on an old card).
  * Never parses typed text; the choice comes directly from which button was clicked.
+ * Dispatches to the write-time (Accept-time) collision store when `collisionId`
+ * belongs to it, so callers never need to know which flow originated the card.
  */
 export async function resolveGstReconSheetCollision(
   collisionId: string,
   choice: 'overwrite' | 'new',
 ): Promise<GstReconChatOutcome> {
+  if (collisionId.startsWith(WRITE_FAILURE_COLLISION_PREFIX)) {
+    return resolveGstReconWriteFailureCollision(collisionId, choice);
+  }
+
   if (!pendingSheetCollision || pendingSheetCollision.collisionId !== collisionId) {
     return {
       kind: 'message_only',
@@ -198,7 +377,7 @@ export async function resolveGstReconSheetCollision(
 
   const collision = pendingSheetCollision;
   pendingSheetCollision = null;
-  const { result, prName, portalName, targetSheetName } = collision;
+  const { result, prName, portalName, layout, targetSheetName } = collision;
   let actions = result.actions ?? [];
   let effectiveResult = result;
 
@@ -219,8 +398,8 @@ export async function resolveGstReconSheetCollision(
     effectiveResult = { ...result, output_sheet_name: finalSheetName };
   }
 
-  const userFacingSummary = buildGstReconUserFacingSummary(effectiveResult, prName, portalName);
-  const answer = buildGstReconAnswerText(effectiveResult, prName, portalName);
+  const userFacingSummary = buildGstReconUserFacingSummary(effectiveResult, prName, portalName, layout);
+  const answer = buildGstReconAnswerText(effectiveResult, prName, portalName, layout);
   pendingAuditLogId = effectiveResult.audit_log_id ?? null;
 
   return {
@@ -231,6 +410,7 @@ export async function resolveGstReconSheetCollision(
     userFacingSummary,
     auditLogId: effectiveResult.audit_log_id,
     sheetName: effectiveResult.output_sheet_name,
+    missedRows: extractMissedRows(effectiveResult),
   };
 }
 
@@ -239,8 +419,40 @@ export async function resolveGstReconSheetCollision(
  */
 export async function tryHandleGstReconChat(
   message: string,
-  options?: { conversationId?: string | null },
+  options?: {
+    conversationId?: string | null;
+    workbookKey?: string;
+    /**
+     * Internal only — set when resuming after the "GSTR-2B / GSTR-2A / combined?" question
+     * is answered, so the resumed run uses the just-chosen preference directly instead of
+     * re-deriving it from persisted storage. Persisting-then-reloading was fragile: if
+     * `workbookKey` were ever unavailable (or the storage round-trip lagged), the resumed
+     * call would find no stored preference and re-ask the identical question — the exact
+     * "asks twice" bug reported after this ask shipped. Passing the answer straight through
+     * removes storage from the resume path's correctness entirely; persistence still
+     * happens, but purely as a side effect for FUTURE runs, never as what THIS run depends on.
+     */
+    forcedPurchasePortalPreference?: GstPurchasePortalPreference;
+  },
 ): Promise<GstReconChatOutcome | null> {
+  if (pendingPurchasePortalAsk) {
+    const ask = pendingPurchasePortalAsk;
+    const preference = extractPurchasePortalAnswer(message);
+    if (preference) {
+      pendingPurchasePortalAsk = null;
+      persistPurchasePortalPreference(ask.workbookKey, preference);
+      return tryHandleGstReconChat(ask.originalMessage, {
+        ...options,
+        workbookKey: ask.workbookKey,
+        forcedPurchasePortalPreference: preference,
+      });
+    }
+    // Doesn't parse as an answer to the pending ask — fall through to ordinary intent
+    // handling rather than getting stuck re-asking forever if state ever desyncs from
+    // what's on screen (e.g. the user typed something unrelated instead of using the
+    // docked question card).
+  }
+
   let intent = detectGstReconIntent(message);
 
   // Continue multi-turn context collection
@@ -364,7 +576,51 @@ export async function tryHandleGstReconChat(
   const prName = discovery.purchaseRegister.name;
   const portalName = discovery.portal.name;
   const isSales = intent.type === 'SALES_VS_GSTR1';
-  const useDualPurchasePortals = casual && !isSales && intent.type !== 'IMS_VS_PR';
+  const eligibleForPortalChoice = casual && !isSales && intent.type !== 'IMS_VS_PR';
+  const bothPortalsPresent = Boolean(
+    discovery.gstr2b && discovery.gstr2a && discovery.gstr2b.name !== discovery.gstr2a.name,
+  );
+
+  let purchasePortalPreference: GstPurchasePortalPreference | null = null;
+  if (eligibleForPortalChoice && bothPortalsPresent) {
+    const explicitPreference = detectPurchasePortalSourcePreference(message);
+    purchasePortalPreference =
+      options?.forcedPurchasePortalPreference ??
+      explicitPreference ??
+      (options?.workbookKey
+        ? loadChatSessions(options.workbookKey)?.gstPurchasePortalPreference ?? null
+        : null);
+
+    if (!purchasePortalPreference) {
+      pendingPurchasePortalAsk = { originalMessage: message, workbookKey: options?.workbookKey };
+      pendingContext = null;
+      return {
+        kind: 'question',
+        answer: PURCHASE_PORTAL_ASK_QUESTION,
+        question: PURCHASE_PORTAL_ASK_QUESTION,
+        options: PURCHASE_PORTAL_ASK_OPTIONS,
+      };
+    }
+
+    if (explicitPreference) {
+      persistPurchasePortalPreference(options?.workbookKey, explicitPreference);
+    }
+  }
+
+  const useDualPurchasePortals =
+    eligibleForPortalChoice &&
+    (!bothPortalsPresent || purchasePortalPreference === 'combined');
+
+  // A deliberate single-source preference can name the OTHER portal than the one
+  // `preferredPortal(intent.type)` defaulted to (e.g. intent defaults to GSTR-2B but the
+  // user's remembered preference is 2A-only) — resolve the effective single-source sheet
+  // from the preference itself rather than trusting `portalName` in that case.
+  const effectivePortalName =
+    eligibleForPortalChoice && bothPortalsPresent && !useDualPurchasePortals
+      ? purchasePortalPreference === 'gstr2a_only'
+        ? (discovery.gstr2a?.name ?? portalName)
+        : (discovery.gstr2b?.name ?? portalName)
+      : portalName;
 
   const toRead = [prName];
   if (useDualPurchasePortals) {
@@ -372,10 +628,10 @@ export async function tryHandleGstReconChat(
     if (discovery.gstr2a && discovery.gstr2a.name !== discovery.gstr2b?.name) {
       toRead.push(discovery.gstr2a.name);
     }
-    if (!discovery.gstr2b && !discovery.gstr2a) toRead.push(portalName);
+    if (!discovery.gstr2b && !discovery.gstr2a) toRead.push(effectivePortalName);
   } else {
-    toRead.push(portalName);
-    if (discovery.ims && discovery.ims.name !== portalName) {
+    toRead.push(effectivePortalName);
+    if (discovery.ims && discovery.ims.name !== effectivePortalName) {
       toRead.push(discovery.ims.name);
     }
   }
@@ -407,23 +663,27 @@ export async function tryHandleGstReconChat(
       };
     }
   } else {
-    const portalGrid = byName.get(portalName);
+    const portalGrid = byName.get(effectivePortalName);
     if (!portalGrid?.values?.length || portalGrid.values.length < 2) {
       return {
         kind: 'message_only',
-        answer: `Sheet "${portalName}" looks empty. Paste the GSTR portal download into that sheet, then ask again.`,
+        answer: `Sheet "${effectivePortalName}" looks empty. Paste the GSTR portal download into that sheet, then ask again.`,
       };
     }
   }
 
   const portalFileType =
-    intent.type === 'PR_VS_GSTR2A'
-      ? 'GSTR2A'
-      : intent.type === 'IMS_VS_PR'
-        ? 'IMS'
-        : isSales
-          ? 'GSTR1'
-          : 'GSTR2B';
+    eligibleForPortalChoice && bothPortalsPresent && !useDualPurchasePortals
+      ? purchasePortalPreference === 'gstr2a_only'
+        ? 'GSTR2A'
+        : 'GSTR2B'
+      : intent.type === 'PR_VS_GSTR2A'
+        ? 'GSTR2A'
+        : intent.type === 'IMS_VS_PR'
+          ? 'IMS'
+          : isSales
+            ? 'GSTR1'
+            : 'GSTR2B';
 
   const sheetPayload = (
     name: string,
@@ -440,7 +700,7 @@ export async function tryHandleGstReconChat(
     };
   };
 
-  let portal_file = sheetPayload(portalName, portalFileType);
+  let portal_file = sheetPayload(effectivePortalName, portalFileType);
   let portal_file_2a: ReturnType<typeof sheetPayload> = null;
   if (useDualPurchasePortals) {
     const twoB = discovery.gstr2b ? sheetPayload(discovery.gstr2b.name, 'GSTR2B') : null;
@@ -462,6 +722,8 @@ export async function tryHandleGstReconChat(
     };
   }
 
+  const layout = casual ? detectGstReconLayout(message) : 'categorized';
+
   try {
     const result = await runGstReconcile({
       reconciliation_type: intentToApiType(intent.type),
@@ -470,7 +732,7 @@ export async function tryHandleGstReconChat(
       financial_year: ctx?.financialYear,
       client_name: ctx?.clientName,
       missed_books_only: casual,
-      layout: casual ? detectGstReconLayout(message) : undefined,
+      layout: casual ? layout : undefined,
       period_start: resolvedPeriod?.start,
       period_end: resolvedPeriod?.end,
       period_label: resolvedPeriod?.label,
@@ -519,22 +781,38 @@ export async function tryHandleGstReconChat(
     }
 
     const missed = result.summary.pr_only;
-    const hasIssues = missed > 0 || (result.summary.gstin_mismatch_count ?? 0) > 0;
-    const userFacingSummary = buildGstReconUserFacingSummary(result, prName, portalName);
-    const answer = buildGstReconAnswerText(result, prName, portalName);
+    const gstinMismatchCount = result.summary.gstin_mismatch_count ?? 0;
+    // portal_flat's whole sheet IS the portal-only rows — a books-side-only issue count
+    // would wrongly report "no missed rows" when portal-only rows are exactly what exist.
+    const hasIssues =
+      layout === 'portal_flat'
+        ? (result.summary.portal_only ?? 0) > 0
+        : missed > 0 || gstinMismatchCount > 0;
+    const userFacingSummary = buildGstReconUserFacingSummary(result, prName, effectivePortalName, layout);
+    const answer = buildGstReconAnswerText(result, prName, effectivePortalName, layout);
 
     if (casual && !hasIssues) {
       pendingAuditLogId = null;
       return { kind: 'message_only', answer };
     }
 
-    if (headerIndex.some((h) => h.name === result.output_sheet_name)) {
+    // `headerIndex` was captured earlier in this function and could in principle be
+    // stale or incomplete by now — never trust it alone for a decision this
+    // consequential. `headerIndex.some(...)` short-circuits the common case (no
+    // extra round trip needed when it already found the name); the fresh, minimal,
+    // single-sheet `sheetExists` check only runs when headerIndex said "not found",
+    // so a false negative there can never cause an undetected collision.
+    const collisionDetected =
+      headerIndex.some((h) => h.name === result.output_sheet_name) ||
+      (await sheetExists(result.output_sheet_name));
+    if (collisionDetected) {
       const collisionId = `collision_${++sheetCollisionCounter}`;
       pendingSheetCollision = {
         collisionId,
         result,
         prName,
-        portalName,
+        portalName: effectivePortalName,
+        layout,
         targetSheetName: result.output_sheet_name,
       };
       pendingAuditLogId = null;
@@ -555,6 +833,7 @@ export async function tryHandleGstReconChat(
       userFacingSummary,
       auditLogId: result.audit_log_id,
       sheetName: result.output_sheet_name,
+      missedRows: extractMissedRows(result),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

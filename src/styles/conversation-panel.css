@@ -3149,6 +3149,66 @@
   margin: 0;
 }
 
+/* GST recon missed-rows list — "<reason>: <link>" entries, each link a capsule pill
+   jumping straight to the exact books-sheet cell. The reason itself is plain inline
+   text, not part of the pill. Rendered ABOVE the Accept/Reject action card (block
+   presentation order), since response actions read as the last thing in a turn. */
+.cellix-missed-rows {
+  margin: 10px 0;
+}
+
+.cellix-missed-rows-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cx-gray-700);
+  margin-bottom: 6px;
+}
+
+.cellix-missed-rows-pills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cellix-missed-row-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.cellix-missed-row-reason {
+  color: var(--cx-gray-500);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.cellix-missed-row-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--cx-brand-50) 0%, var(--cx-brand-100) 100%);
+  border: 1px solid var(--cx-brand-100);
+  color: var(--cx-brand-700);
+  font-weight: 600;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.cellix-missed-row-pill:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--cx-brand-100) 0%, var(--cx-brand-100) 100%);
+}
+
+.cellix-missed-row-pill:disabled {
+  color: var(--cx-gray-500);
+  cursor: default;
+  background: var(--cx-gray-100);
+  border-color: var(--cx-gray-200);
+}
+
 /* Inline "revert the last change" row at the end of the conversation. Kept
    visually quiet — it sits in the message flow, so it must not read as another
    assistant turn. */

@@ -21,6 +21,7 @@ import FollowUpsSection from './FollowUpsSection';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
 import ActionResponseCard from './ActionResponseCard';
 import GstReconCollisionCard from './GstReconCollisionCard';
+import GstReconMissedRowsCard from './GstReconMissedRowsCard';
 
 /**
  * Revert affordance, rendered as one item inside the message's actions menu
@@ -102,6 +103,8 @@ interface TurnRendererProps {
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => void;
+  /** Jump to a specific books-sheet cell from the GST-recon missed-rows card. */
+  onJumpToGstReconRow: (sheetName: string, row: number) => void;
 }
 
 function PlanBlockView({
@@ -175,6 +178,7 @@ function BlockRenderer({
   onRunAsAction,
   onAnswerQuestion,
   onResolveGstReconCollision,
+  onJumpToGstReconRow,
   showActionButtons = true,
   dockedQuestions = false,
 }: {
@@ -198,6 +202,7 @@ function BlockRenderer({
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => void;
+  onJumpToGstReconRow: (sheetName: string, row: number) => void;
 }) {
   if (block.type === 'thinking' && block.visible === false) return null;
   if (block.type === 'status' && block.visible === false) return null;
@@ -310,6 +315,10 @@ function BlockRenderer({
         }
       />
     );
+  }
+
+  if (block.type === 'gst_recon_missed_rows') {
+    return <GstReconMissedRowsCard block={block} onJumpToRow={onJumpToGstReconRow} />;
   }
 
   if (block.type === 'actions') {
@@ -549,6 +558,16 @@ function UserMessageRow({
 }
 
 const ACTIONS_PRESENTATION_ORDER = 5;
+const MISSED_ROWS_PRESENTATION_ORDER = ACTIONS_PRESENTATION_ORDER - 1;
+// A progress block (status/thinking/answer) that CONTINUES a turn after an ANSWERED
+// QUESTION anchor still narrates what happened next (e.g. "Compared 22 rows…") — it
+// must land before the reference material (missed-rows list) and the response actions
+// that follow it, not tied with or after them. This is deliberately a DIFFERENT bump
+// target than the `actions`-anchor case below: there, real actions cards already exist
+// at the anchor's own rank, so the continuation must land AT/AFTER that rank to stay
+// beneath them; here, nothing has claimed the actions/missed-rows tier yet, so the
+// continuation must land BEFORE it instead.
+const CONTINUED_AFTER_QUESTION_PRESENTATION_ORDER = MISSED_ROWS_PRESENTATION_ORDER - 1;
 
 function blockPresentationOrder(block: TurnBlock): number {
   switch (block.type) {
@@ -564,6 +583,11 @@ function blockPresentationOrder(block: TurnBlock): number {
     case 'plan':
     case 'plan_only':
       return 4;
+    // Response actions (Accept/Reject and the sheet-collision choice) always read as
+    // the LAST thing in a turn — the missed-rows list is reference material the CA
+    // consults before deciding, so it renders just above them, not after.
+    case 'gst_recon_missed_rows':
+      return MISSED_ROWS_PRESENTATION_ORDER;
     case 'actions':
     case 'gst_recon_collision':
       return ACTIONS_PRESENTATION_ORDER;
@@ -602,9 +626,12 @@ function blockPresentationOrder(block: TurnBlock): number {
  * below the progress that produced it.
  */
 export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
-  const firstAnchorIndex = blocks.findIndex(
-    (b) => b.type === 'actions' || (b.type === 'question' && Boolean(b.answeredWith)),
+  const firstActionsAnchorIndex = blocks.findIndex((b) => b.type === 'actions');
+  const firstAnsweredQuestionIndex = blocks.findIndex(
+    (b) => b.type === 'question' && Boolean(b.answeredWith),
   );
+  const anchors = [firstActionsAnchorIndex, firstAnsweredQuestionIndex].filter((i) => i !== -1);
+  const firstAnchorIndex = anchors.length ? Math.min(...anchors) : -1;
 
   return blocks
     .map((block, index) => ({ block, index }))
@@ -615,7 +642,17 @@ export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
         const arrivesAfterAnAnchor =
           firstAnchorIndex !== -1 && entry.index > firstAnchorIndex;
         if (isProgressBlock && arrivesAfterAnAnchor) {
-          return ACTIONS_PRESENTATION_ORDER;
+          // An `actions` block that already exists BEFORE this progress block means
+          // a real action card already occupies the actions-tier rank, so the
+          // continuation must land AT that rank to stay beneath it (original
+          // stepwise fix). Otherwise the only anchor before it is an answered
+          // question, and nothing has claimed the actions/missed-rows tier yet —
+          // the continuation belongs just BEFORE it instead, e.g. "Compared 22
+          // rows…" must precede the missed-rows list and the Accept/Reject card
+          // that follow it later in the SAME turn, not tie with them.
+          return firstActionsAnchorIndex !== -1 && firstActionsAnchorIndex < entry.index
+            ? ACTIONS_PRESENTATION_ORDER
+            : CONTINUED_AFTER_QUESTION_PRESENTATION_ORDER;
         }
         return blockPresentationOrder(entry.block);
       };
@@ -644,6 +681,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onRevertChangeSet,
   dockedQuestions = false,
   onResolveGstReconCollision,
+  onJumpToGstReconRow,
 }) => {
   const hideProgress = turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
   const actionDialogueReady = showActionButtons && isTurnPresentationComplete(turn);
@@ -751,6 +789,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     onAnswerQuestion={onAnswerQuestion}
                     dockedQuestions={dockedQuestions}
                     onResolveGstReconCollision={onResolveGstReconCollision}
+                    onJumpToGstReconRow={onJumpToGstReconRow}
                   />
                 </React.Fragment>
               );

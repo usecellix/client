@@ -169,11 +169,11 @@ export class PreviewManager {
       let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       if (toApply.length > 0) {
         // applyActionsWithReport (not the void applyActions) — TASKS.md #40/#15 need
-        // their createdConditionalFormatIds/createdChartIds. Same "errors present +
-        // nothing applied = throw" behavior as applyActions, replicated here so
-        // Accept's error handling is unchanged.
+        // their createdConditionalFormatIds/createdChartIds. Any error is a
+        // reportable failure, not just a total wipeout — a batch that partly
+        // applied and partly threw must never be reported as a clean Accept.
         const result = await ActionEngine.applyActionsWithReport(toApply);
-        if (result.errors.length > 0 && result.applied === 0) {
+        if (result.errors.length > 0) {
           throw new Error(result.errors.join('; '));
         }
         createdConditionalFormatIds = result.createdConditionalFormatIds;

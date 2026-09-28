@@ -784,6 +784,7 @@ interface ConversationPanelProps {
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => void;
+  onJumpToGstReconRow: (sheetName: string, row: number) => void;
   onAnswerQuestion: (answer: string) => void;
   onClarificationAnswer: (answer: string) => void;
   onClarificationDismiss: () => void;
@@ -828,6 +829,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onAcceptAllActions,
   onRejectActions,
   onResolveGstReconCollision,
+  onJumpToGstReconRow,
   onAnswerQuestion,
   onClarificationAnswer,
   // onClarificationDismiss is supplied by App but no control invokes it yet —
@@ -882,7 +884,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       if (turn.phase !== 'awaiting_input') continue;
       const block = turn.blocks.find(
         (b): b is Extract<TurnBlock, { type: 'question' }> =>
-          b.type === 'question' && b.revealState !== 'hidden',
+          b.type === 'question' && b.revealState !== 'hidden' && !b.answeredWith,
       );
       if (block) return block;
     }
@@ -1065,6 +1067,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               onAcceptAllActions={onAcceptAllActions}
               onRejectActions={onRejectActions}
               onResolveGstReconCollision={onResolveGstReconCollision}
+              onJumpToGstReconRow={onJumpToGstReconRow}
               onAnswerQuestion={handleQuestionAnswer}
               dockedQuestions
               onToggleThinking={onToggleThinking}

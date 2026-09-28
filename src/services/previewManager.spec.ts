@@ -184,4 +184,27 @@ describe('PreviewManager — no writes before Accept (TASKS.md #148)', () => {
     expect(toApply.filter((a) => a.type === 'ADD_SHEET')).toHaveLength(MONTHS.length);
     expect(toApply).toHaveLength(batch.length);
   });
+
+  it('accept never reports success when applyActionsWithReport returns errors, even with a partial applied count', async () => {
+    // Regression: accept() used to only surface a failure when NOTHING in the
+    // batch applied (`errors.length > 0 && applied === 0`). A batch where most
+    // actions succeeded and one (e.g. ADD_SHEET) threw — the exact shape of a
+    // real "RichActionEngine error on ADD_SHEET: Error code: 0x80070057" — was
+    // silently reported as a clean Accept, leaving stale/partial content in the
+    // workbook with no error shown anywhere.
+    installExcelMock([]);
+    const pm = new PreviewManager();
+    const batch = freshBuildBatch();
+    await pm.render({ actions: batch, summary: 'build' });
+
+    vi.spyOn(
+      await import('@/utils/actionEngine').then((m) => m.ActionEngine),
+      'applyActionsWithReport',
+    ).mockResolvedValue({
+      applied: batch.length - 1,
+      errors: ['ADD_SHEET: RichActionEngine error on ADD_SHEET: Error code: 0x80070057'],
+    });
+
+    await expect(pm.accept()).rejects.toThrow(/0x80070057/);
+  });
 });

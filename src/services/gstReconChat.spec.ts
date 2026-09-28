@@ -4,6 +4,7 @@ import type { GstReconcileResponse } from '@/services/gstReconService';
 
 const PR_SHEET = 'Purchase Register';
 const PORTAL_SHEET = 'GSTR-2B';
+const PORTAL_2A_SHEET = 'GSTR-2A';
 const OUTPUT_SHEET = 'Missed vs GSTR-2B';
 
 const PR_HEADERS = [
@@ -105,11 +106,13 @@ function buildMockResult(overrides: Partial<GstReconcileResponse> = {}): GstReco
 
 const readAllSheetHeaders = vi.fn();
 const readSheetsFull = vi.fn();
+const sheetExists = vi.fn();
 const runGstReconcile = vi.fn();
 
 vi.mock('@/services/gstSheetReader', () => ({
   readAllSheetHeaders: (...args: unknown[]) => readAllSheetHeaders(...args),
   readSheetsFull: (...args: unknown[]) => readSheetsFull(...args),
+  sheetExists: (...args: unknown[]) => sheetExists(...args),
 }));
 
 vi.mock('@/services/gstReconService', async () => {
@@ -131,9 +134,13 @@ describe('gstReconChat — output sheet collision', () => {
     vi.stubGlobal('Excel', {});
     readAllSheetHeaders.mockReset();
     readSheetsFull.mockReset();
+    sheetExists.mockReset();
     runGstReconcile.mockReset();
 
     readSheetsFull.mockResolvedValue([grid(PR_SHEET, PR_HEADERS), grid(PORTAL_SHEET, PORTAL_HEADERS)]);
+    // Default: nothing collides. Individual tests override this to simulate
+    // headerIndex missing a sheet that genuinely exists.
+    sheetExists.mockResolvedValue(false);
     runGstReconcile.mockResolvedValue(buildMockResult());
   });
 
@@ -201,6 +208,40 @@ describe('gstReconChat — output sheet collision', () => {
     // sheetName lets the caller confirm "Sheet created as X" without re-deriving
     // the name from the action array.
     expect(outcome.sheetName).toBe(OUTPUT_SHEET);
+  });
+
+  it('resolving a sheet-name collision still carries the missedRows list on the recon_ready outcome — regression for the missed-rows card disappearing after Overwrite/Create-new', async () => {
+    runGstReconcile.mockResolvedValue(
+      buildMockResult({
+        rows: [
+          {
+            status: 'PR_ONLY',
+            invoice_number: '',
+            gstin: '',
+            vendor_name: 'Coral Bay Logistics',
+            mismatch_reason: 'blank_counterparty_gstin',
+            explanation: 'GSTIN is blank in the register for this row — cannot be matched.',
+            books_sheet_name: PR_SHEET,
+            books_row: 6,
+          },
+        ],
+      }),
+    );
+    const collision = await triggerCollision();
+
+    const { resolveGstReconSheetCollision } = await import('./gstReconChat');
+    const outcome = await resolveGstReconSheetCollision(collision.collisionId, 'overwrite');
+
+    expect(outcome.kind).toBe('recon_ready');
+    if (outcome.kind !== 'recon_ready') return;
+    expect(outcome.missedRows).toHaveLength(1);
+    expect(outcome.missedRows?.[0]).toMatchObject({
+      vendorName: 'Coral Bay Logistics',
+      gstin: '',
+      reason: 'blank_counterparty_gstin',
+      sheetName: PR_SHEET,
+      row: 6,
+    });
   });
 
   it('"Overwrite" never emits a CLEAR_RANGE/FORMAT_RANGE/CLEAR_ALL touching the old sheet\'s row 0', async () => {
@@ -277,5 +318,542 @@ describe('gstReconChat — output sheet collision', () => {
     if (outcome?.kind !== 'recon_ready') return;
     expect(outcome.actions).toEqual(fixtureActions(OUTPUT_SHEET));
     expect(outcome.sheetName).toBe(OUTPUT_SHEET);
+  });
+
+  it('collision detection still catches an existing sheet name when headerIndex misses it (e.g. a stale/partial context read) — the fresh sheetExists check is authoritative', async () => {
+    // headerIndex (a snapshot read earlier in the function) does NOT include the
+    // output sheet — simulating a partial/stale read that missed a sheet other
+    // than the active one. sheetExists, a separate fresh/minimal live check,
+    // still says it's there — collision must still be caught.
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+    ]);
+    sheetExists.mockImplementation((name: string) => Promise.resolve(name === OUTPUT_SHEET));
+
+    const outcome = await runCasualRecon();
+
+    expect(outcome?.kind).toBe('sheet_collision');
+    if (outcome?.kind !== 'sheet_collision') return;
+    expect(outcome.sheetName).toBe(OUTPUT_SHEET);
+    expect(sheetExists).toHaveBeenCalledWith(OUTPUT_SHEET);
+  });
+
+  it('sheetExists is skipped when headerIndex already found the collision (no redundant live check)', async () => {
+    await triggerCollision();
+    // triggerCollision's headerIndex already includes OUTPUT_SHEET, so the
+    // short-circuiting `||` must never even call the live check.
+    expect(sheetExists).not.toHaveBeenCalled();
+  });
+});
+
+describe('gstReconChat — missedRows on the recon_ready outcome (clickable jump-to-cell list)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('Excel', {});
+    readAllSheetHeaders.mockReset();
+    readSheetsFull.mockReset();
+    sheetExists.mockReset();
+    runGstReconcile.mockReset();
+
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+    ]);
+    readSheetsFull.mockResolvedValue([grid(PR_SHEET, PR_HEADERS), grid(PORTAL_SHEET, PORTAL_HEADERS)]);
+    sheetExists.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('carries one entry per PR_ONLY row, with the real books sheet name and row number for jumping to it', async () => {
+    runGstReconcile.mockResolvedValue(
+      buildMockResult({
+        rows: [
+          {
+            status: 'MATCHED',
+            invoice_number: 'INV-1',
+            gstin: '29ABCDE1234F1Z5',
+          },
+          {
+            status: 'PR_ONLY',
+            invoice_number: 'INV-2',
+            gstin: '29XYZAB5678C1Z9',
+            vendor_name: 'Acme Traders',
+            mismatch_reason: 'date_mismatch',
+            explanation: 'Same GSTIN and amount found in portal, but date differs.',
+            books_sheet_name: PR_SHEET,
+            books_row: 14,
+          },
+        ],
+      }),
+    );
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register');
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    // Only the PR_ONLY row — the MATCHED row is never included.
+    expect(outcome.missedRows).toHaveLength(1);
+    expect(outcome.missedRows?.[0]).toEqual({
+      vendorName: 'Acme Traders',
+      gstin: '29XYZAB5678C1Z9',
+      reason: 'date_mismatch',
+      explanation: 'Same GSTIN and amount found in portal, but date differs.',
+      sheetName: PR_SHEET,
+      row: 14,
+    });
+  });
+
+  it('falls back to the invoice number (or "Unnamed row") and empty GSTIN when the row is missing those fields — never a bare/undefined display value', async () => {
+    runGstReconcile.mockResolvedValue(
+      buildMockResult({
+        rows: [
+          {
+            status: 'PR_ONLY',
+            invoice_number: '',
+            gstin: '',
+            vendor_name: '',
+            mismatch_reason: 'blank_counterparty_gstin',
+            books_sheet_name: PR_SHEET,
+            books_row: 6,
+          },
+        ],
+      }),
+    );
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register');
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.missedRows?.[0].vendorName).toBe('Unnamed row');
+    expect(outcome.missedRows?.[0].gstin).toBe('');
+  });
+
+  it('has a null sheetName/row when the row has no books-side reference at all (never crashes, never fabricates a cell)', async () => {
+    runGstReconcile.mockResolvedValue(
+      buildMockResult({
+        rows: [
+          {
+            status: 'PR_ONLY',
+            invoice_number: 'INV-3',
+            gstin: '29ABCDE1234F1Z5',
+            vendor_name: 'Some Vendor',
+            mismatch_reason: 'genuinely_missing',
+          },
+        ],
+      }),
+    );
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register');
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.missedRows?.[0].sheetName).toBeNull();
+    expect(outcome.missedRows?.[0].row).toBeNull();
+  });
+});
+
+describe('gstReconChat — write-time collision safety net (registerGstReconWriteFailureCollision)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('Excel', {});
+    readAllSheetHeaders.mockReset();
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+      { name: OUTPUT_SHEET, headers: ['GSTIN', 'Vendor Name'] },
+    ]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('registers a write-time collision and resolves "overwrite" by deleting and recreating the same sheet — no reconciliation re-run needed', async () => {
+    const { registerGstReconWriteFailureCollision, resolveGstReconSheetCollision } = await import(
+      './gstReconChat'
+    );
+    const actions = fixtureActions(OUTPUT_SHEET);
+    const { collisionId, sheetName } = registerGstReconWriteFailureCollision(actions, OUTPUT_SHEET);
+    expect(sheetName).toBe(OUTPUT_SHEET);
+    expect(collisionId).toMatch(/^write_collision_/);
+
+    const outcome = await resolveGstReconSheetCollision(collisionId, 'overwrite');
+    expect(outcome.kind).toBe('recon_ready');
+    if (outcome.kind !== 'recon_ready') return;
+    expect(outcome.actions[0]).toEqual({ type: 'DELETE_SHEET', sheetName: OUTPUT_SHEET });
+    expect(outcome.actions.slice(1)).toEqual(actions);
+    expect(outcome.sheetName).toBe(OUTPUT_SHEET);
+  });
+
+  it('resolves "new" by renaming to a versioned sheet name — checked fresh against the live workbook', async () => {
+    const { registerGstReconWriteFailureCollision, resolveGstReconSheetCollision } = await import(
+      './gstReconChat'
+    );
+    const actions = fixtureActions(OUTPUT_SHEET);
+    const { collisionId } = registerGstReconWriteFailureCollision(actions, OUTPUT_SHEET);
+
+    const outcome = await resolveGstReconSheetCollision(collisionId, 'new');
+    expect(outcome.kind).toBe('recon_ready');
+    if (outcome.kind !== 'recon_ready') return;
+    const versionedName = `${OUTPUT_SHEET} (2)`;
+    expect(outcome.actions).toEqual(fixtureActions(versionedName));
+    expect(outcome.sheetName).toBe(versionedName);
+  });
+
+  it('a stale/unknown write-time collisionId is refused, never silently resolved', async () => {
+    const { resolveGstReconSheetCollision } = await import('./gstReconChat');
+    const outcome = await resolveGstReconSheetCollision('write_collision_does_not_exist', 'overwrite');
+    expect(outcome.kind).toBe('message_only');
+  });
+
+  it('write-time and chat-detected collisions never collide with each other — resolving one never touches the other\'s pending state', async () => {
+    const { registerGstReconWriteFailureCollision, resolveGstReconSheetCollision } = await import(
+      './gstReconChat'
+    );
+    const actions = fixtureActions(OUTPUT_SHEET);
+    const { collisionId: writeId } = registerGstReconWriteFailureCollision(actions, OUTPUT_SHEET);
+
+    // Resolving a DIFFERENT, chat-detected-style id must not find (or consume) the
+    // write-time entry, and must not crash — it should cleanly report "not available".
+    const wrongKind = await resolveGstReconSheetCollision('collision_999', 'overwrite');
+    expect(wrongKind.kind).toBe('message_only');
+
+    // The real write-time collision is still resolvable afterward.
+    const real = await resolveGstReconSheetCollision(writeId, 'overwrite');
+    expect(real.kind).toBe('recon_ready');
+  });
+});
+
+function sheetNameForLayout(layout?: string): string {
+  if (layout === 'books_flat') return `${OUTPUT_SHEET} — Books Only`;
+  if (layout === 'portal_flat') return `${OUTPUT_SHEET} — Portal Only`;
+  return OUTPUT_SHEET;
+}
+
+describe('gstReconChat — collision detection is scoped per layout-specific sheet name', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('Excel', {});
+    readAllSheetHeaders.mockReset();
+    readSheetsFull.mockReset();
+    sheetExists.mockReset();
+    runGstReconcile.mockReset();
+
+    readSheetsFull.mockResolvedValue([grid(PR_SHEET, PR_HEADERS), grid(PORTAL_SHEET, PORTAL_HEADERS)]);
+    sheetExists.mockResolvedValue(false);
+    runGstReconcile.mockImplementation(
+      (req: { layout?: string }) =>
+        Promise.resolve(
+          buildMockResult({
+            output_sheet_name: sheetNameForLayout(req.layout),
+            actions: fixtureActions(sheetNameForLayout(req.layout)),
+            // portal_flat's own row set is portal-only rows — give it something to
+            // report so this scenario reaches recon_ready instead of "no rows found".
+            summary: {
+              ...buildMockResult().summary,
+              portal_only: req.layout === 'portal_flat' ? 3 : 0,
+            },
+          }),
+        ) as never,
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('a different layout\'s sheet already existing does NOT trigger the collision card', async () => {
+    // Only the categorized sheet exists — books_flat's own name ("... — Books Only")
+    // does not, so switching to books_flat must create a sibling sheet, not collide.
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+      { name: OUTPUT_SHEET, headers: ['GSTIN', 'Vendor Name'] },
+    ]);
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat(
+      'Reconcile purchase register, just show me the missed rows',
+    );
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe(`${OUTPUT_SHEET} — Books Only`);
+  });
+
+  it('the SAME layout\'s own sheet name already existing DOES trigger the collision card', async () => {
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+      { name: `${OUTPUT_SHEET} — Books Only`, headers: ['GSTIN', 'Vendor Name'] },
+    ]);
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat(
+      'Reconcile purchase register, just show me the missed rows',
+    );
+
+    expect(outcome?.kind).toBe('sheet_collision');
+    if (outcome?.kind !== 'sheet_collision') return;
+    expect(outcome.sheetName).toBe(`${OUTPUT_SHEET} — Books Only`);
+  });
+
+  it('portal_flat and books_flat never collide with each other even when both already exist as sheets — each still resolves to its own run', async () => {
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+      { name: `${OUTPUT_SHEET} — Books Only`, headers: ['GSTIN', 'Vendor Name'] },
+    ]);
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    // portal_flat's own name ("... — Portal Only") is not among the existing sheets,
+    // even though books_flat's name is — must not collide.
+    const outcome = await tryHandleGstReconChat(
+      'Reconcile purchase register — rows in the portal not in my books',
+    );
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe(`${OUTPUT_SHEET} — Portal Only`);
+  });
+});
+
+class MemoryStorage implements Storage {
+  private store = new Map<string, string>();
+  get length(): number {
+    return this.store.size;
+  }
+  clear(): void {
+    this.store.clear();
+  }
+  getItem(key: string): string | null {
+    return this.store.get(key) ?? null;
+  }
+  key(index: number): string | null {
+    return Array.from(this.store.keys())[index] ?? null;
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, value);
+  }
+}
+
+describe('gstReconChat — GSTR-2B/2A portal source preference (ask once, remember)', () => {
+  const WORKBOOK_KEY = 'Client_Books.xlsx';
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('Excel', {});
+    vi.stubGlobal('localStorage', new MemoryStorage());
+    readAllSheetHeaders.mockReset();
+    readSheetsFull.mockReset();
+    sheetExists.mockReset();
+    runGstReconcile.mockReset();
+
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+      { name: PORTAL_2A_SHEET, headers: PORTAL_HEADERS },
+    ]);
+    readSheetsFull.mockImplementation((names: string[]) =>
+      Promise.resolve(
+        names.map((n) =>
+          n === PR_SHEET ? grid(PR_SHEET, PR_HEADERS) : grid(n, PORTAL_HEADERS),
+        ),
+      ),
+    );
+    sheetExists.mockResolvedValue(false);
+    runGstReconcile.mockImplementation(
+      (req: { portal_file?: { sheet_name: string }; portal_file_2a?: { sheet_name: string } }) => {
+        const usedBoth = Boolean(req.portal_file_2a);
+        const sheetName = usedBoth
+          ? 'Missed vs GSTR-2B GSTR-2A'
+          : req.portal_file?.sheet_name === PORTAL_2A_SHEET
+            ? 'Missed vs GSTR-2A'
+            : 'Missed vs GSTR-2B';
+        return Promise.resolve(
+          buildMockResult({
+            output_sheet_name: sheetName,
+            actions: fixtureActions(sheetName),
+          }),
+        );
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('an explicit phrase ("2b only") resolves immediately with no ask, and persists the choice', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register against 2b only', {
+      workbookKey: WORKBOOK_KEY,
+    });
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2B');
+    expect(runGstReconcile).toHaveBeenCalledTimes(1);
+    const call = runGstReconcile.mock.calls[0][0];
+    expect(call.portal_file.sheet_name).toBe(PORTAL_SHEET);
+    expect(call.portal_file_2a).toBeUndefined();
+
+    const { loadChatSessions } = await import('@/utils/chatSessionStorage');
+    expect(loadChatSessions(WORKBOOK_KEY)?.gstPurchasePortalPreference).toBe('gstr2b_only');
+  });
+
+  it('no explicit phrase and no stored preference produces a docked "question" outcome with the three plain-label options', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+
+    expect(outcome?.kind).toBe('question');
+    if (outcome?.kind !== 'question') return;
+    expect(outcome.question).toContain('GSTR-2B');
+    expect(outcome.question).toContain('GSTR-2A');
+    expect(outcome.options).toEqual(['GSTR-2B only', 'GSTR-2A only', 'Both, combined']);
+    expect(runGstReconcile).not.toHaveBeenCalled();
+  });
+
+  it('resolves via the exact wrapped reply useConversation.ts sends when a docked question is answered', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const asked = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+    expect(asked?.kind).toBe('question');
+    if (asked?.kind !== 'question') return;
+
+    // This is the literal shape `answerQuestion` in useConversation.ts sends back — it
+    // embeds the question text (which itself mentions both GSTR-2B and GSTR-2A) ahead of
+    // the actual answer. This is the regression test for the bug: naively scanning the
+    // whole payload for "2b"/"2a" mentions would see both and refuse to resolve.
+    const wrapped = `Replying to your question "${asked.question}" about my earlier request "Reconcile purchase register": GSTR-2B only`;
+    const outcome = await tryHandleGstReconChat(wrapped, { workbookKey: WORKBOOK_KEY });
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2B');
+    const call = runGstReconcile.mock.calls[0][0];
+    expect(call.portal_file.sheet_name).toBe(PORTAL_SHEET);
+    expect(call.portal_file_2a).toBeUndefined();
+
+    const { loadChatSessions } = await import('@/utils/chatSessionStorage');
+    expect(loadChatSessions(WORKBOOK_KEY)?.gstPurchasePortalPreference).toBe('gstr2b_only');
+  });
+
+  it('a wrapped reply answering "GSTR-2A only" runs against GSTR-2A only', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const asked = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+    if (asked?.kind !== 'question') throw new Error('expected question');
+
+    const wrapped = `Replying to your question "${asked.question}" about my earlier request "Reconcile purchase register": GSTR-2A only`;
+    const outcome = await tryHandleGstReconChat(wrapped, { workbookKey: WORKBOOK_KEY });
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2A');
+    const call = runGstReconcile.mock.calls[0][0];
+    expect(call.portal_file.sheet_name).toBe(PORTAL_2A_SHEET);
+  });
+
+  it('a wrapped reply answering "Both, combined" runs the dual-source union', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const asked = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+    if (asked?.kind !== 'question') throw new Error('expected question');
+
+    const wrapped = `Replying to your question "${asked.question}" about my earlier request "Reconcile purchase register": Both, combined`;
+    const outcome = await tryHandleGstReconChat(wrapped, { workbookKey: WORKBOOK_KEY });
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2B GSTR-2A');
+    const call = runGstReconcile.mock.calls[0][0];
+    expect(call.portal_file_2a).toBeDefined();
+  });
+
+  it('resolves on the first answer even when workbookKey is unavailable (persistence is a side effect, never a dependency of resuming)', async () => {
+    // Regression test: real usage showed the docked question being re-asked a second
+    // time after the user had already answered it once. Root cause — the resume path
+    // persisted the choice then RELOADED it from storage on the recursive call; if that
+    // round-trip ever failed silently (e.g. workbookKey unavailable), the resumed run
+    // found no preference and asked again. Passing no workbookKey here reproduces exactly
+    // that failure mode for the persistence step, and the fix (passing the resolved
+    // choice straight through instead of relying on storage) must still resolve first try.
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const asked = await tryHandleGstReconChat('Reconcile purchase register');
+    expect(asked?.kind).toBe('question');
+    if (asked?.kind !== 'question') return;
+
+    const wrapped = `Replying to your question "${asked.question}" about my earlier request "Reconcile purchase register": GSTR-2B only`;
+    const outcome = await tryHandleGstReconChat(wrapped);
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2B');
+    expect(runGstReconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unrelated message while the ask is pending falls through to ordinary handling instead of getting stuck', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const asked = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+    expect(asked?.kind).toBe('question');
+
+    const reply = await tryHandleGstReconChat('what is my total revenue this month', {
+      workbookKey: WORKBOOK_KEY,
+    });
+    // Not GST-recon phrasing and not a resolvable answer to the pending ask — falls
+    // through to null (the caller's generic chat path), matching the real dispatch gate.
+    expect(reply).toBeNull();
+    expect(runGstReconcile).not.toHaveBeenCalled();
+  });
+
+  it('a stored preference short-circuits the ask on a subsequent run — no re-ask', async () => {
+    const { saveChatSessions } = await import('@/utils/chatSessionStorage');
+    saveChatSessions(WORKBOOK_KEY, {
+      activeSessionId: null,
+      sessions: [],
+      gstPurchasePortalPreference: 'gstr2a_only',
+    });
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2A');
+  });
+
+  it('only one portal sheet present never triggers the ask, regardless of workbookKey', async () => {
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+    ]);
+    readSheetsFull.mockResolvedValue([grid(PR_SHEET, PR_HEADERS), grid(PORTAL_SHEET, PORTAL_HEADERS)]);
+
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('Reconcile purchase register', {
+      workbookKey: WORKBOOK_KEY,
+    });
+
+    expect(outcome?.kind).toBe('recon_ready');
   });
 });

@@ -76,4 +76,17 @@ describe('chatSessionStorage', () => {
 
     expect(loaded?.assistantMode).toBe('plan');
   });
+
+  it('round-trips gstPurchasePortalPreference per workbook', () => {
+    const store = {
+      activeSessionId: null,
+      sessions: [],
+      gstPurchasePortalPreference: 'gstr2b_only' as const,
+    };
+
+    saveChatSessions('Budget_2026.xlsx', store);
+    const loaded = loadChatSessions('Budget_2026.xlsx');
+
+    expect(loaded?.gstPurchasePortalPreference).toBe('gstr2b_only');
+  });
 });

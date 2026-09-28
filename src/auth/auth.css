@@ -69,6 +69,16 @@
   font-size: 0.8125rem;
 }
 
+.auth-login__notice {
+  margin: 0 0 0.85rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.375rem;
+  background: var(--cx-brand-50);
+  color: var(--cx-brand-700);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
 .auth-login__google-btn {
   flex-shrink: 0;
   max-width: 100%;
@@ -80,6 +90,28 @@
 
 .auth-login__google-btn:hover {
   border-color: var(--cx-brand-700) !important;
+}
+
+.auth-login__email-link {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--cx-brand-600);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.auth-login__email-link:hover:not(:disabled) {
+  color: var(--cx-brand-700);
+}
+
+.auth-login__email-link:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .auth-login__illustration {

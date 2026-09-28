@@ -12,10 +12,13 @@ const EXPAND_BREAKPOINT_PX = 200;
 
 interface LoginPageProps {
   error?: string | null;
+  /** Called once the paired browser-tab email/password login completes (SSE push). */
+  onEmailLoginComplete?: () => void;
 }
 
-export const LoginPage: React.FC<LoginPageProps> = ({ error }) => {
+export const LoginPage: React.FC<LoginPageProps> = ({ error, onEmailLoginComplete }) => {
   const [localError, setLocalError] = React.useState<string | null>(null);
+  const [awaitingBrowser, setAwaitingBrowser] = React.useState(false);
   const [needsExpand, setNeedsExpand] = React.useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const message = localError || error;
@@ -68,7 +71,24 @@ export const LoginPage: React.FC<LoginPageProps> = ({ error }) => {
 
             {message ? <p className="auth-login__error" role="alert">{message}</p> : null}
 
-            <SocialSignInButtons onError={setLocalError} />
+            {awaitingBrowser ? (
+              <p className="auth-login__notice" role="status">
+                Continue in the browser tab that just opened. Once you're signed in there,
+                come back to Excel — this screen will switch over automatically.
+              </p>
+            ) : null}
+
+            <SocialSignInButtons
+              onError={(message) => {
+                setLocalError(message);
+                setAwaitingBrowser(false);
+              }}
+              onEmailLoginOpened={() => {
+                setLocalError(null);
+                setAwaitingBrowser(true);
+              }}
+              onEmailLoginComplete={onEmailLoginComplete}
+            />
           </div>
 
           <img
