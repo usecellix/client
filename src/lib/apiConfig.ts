@@ -186,7 +186,6 @@ export function getPricingPageUrl(): string {
   return `${getMarketingSiteUrl()}/pricing`;
 }
 
-<<<<<<< HEAD
 /**
  * Marketing site's email/password login page, opened in the system's default
  * browser for manual (non-Google/Microsoft) sign-in — see
@@ -220,10 +219,10 @@ export function getExcelLoginWaitUrl(loginToken: string): string {
  */
 export function getExcelLoginClaimUrl(): string {
   return `${getApiBaseUrl()}/excel-login/claim`;
-=======
+}
+
 /** Opens the marketing site's signed-in dashboard — the entry point for account/settings. */
 export function getAccountSettingsUrl(): string {
   return `${getMarketingSiteUrl()}/app`;
->>>>>>> fa2707ef4b681a2740c1763599baab317b669d68
 }
 
