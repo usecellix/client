@@ -21,6 +21,10 @@ interface TurnErrorCardProps {
   spillBlockages?: SpillBlockage[];
   repairSuggestion?: RepairRequest;
   onRepair?: (prompt: string) => void;
+  /** Sheets a failed step needed that don't exist — TASKS.md #346. */
+  missingSheets?: string[];
+  /** Create them and apply just the rest of that step. */
+  onRetryMissingSheets?: () => void;
   disabled?: boolean;
   /** Injected in tests; defaults to the real Office.js clear. */
   clearSpillBlockers?: (blockage: SpillBlockage) => Promise<boolean>;
@@ -38,6 +42,8 @@ export function TurnErrorCard({
   spillBlockages,
   repairSuggestion,
   onRepair,
+  missingSheets,
+  onRetryMissingSheets,
   disabled = false,
   clearSpillBlockers = defaultClearSpillBlockers,
 }: TurnErrorCardProps) {
@@ -74,6 +80,22 @@ export function TurnErrorCard({
   return (
     <div className="cellix-error cellix-error-card cellix-block-enter" role="alert">
       <div className="cellix-error-card-message">{message}</div>
+
+      {missingSheets && missingSheets.length > 0 && onRetryMissingSheets && (
+        <div className="cellix-error-card-actions">
+          <button
+            type="button"
+            className="cellix-btn-secondary"
+            disabled={disabled}
+            onClick={onRetryMissingSheets}
+          >
+            {missingSheets.length === 1
+              ? `Create '${missingSheets[0]}' and finish this step`
+              : `Create ${missingSheets.length} sheets and finish this step`}
+          </button>
+          <span className="cellix-error-card-hint">Applies only what's left of this step.</span>
+        </div>
+      )}
 
       {blockages.length > 0 && (
         <div className="cellix-error-card-actions">

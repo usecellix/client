@@ -109,6 +109,24 @@ describe('convertLegacyToRich', () => {
       sheetName: 'Sheet1',
     });
   });
+
+  // TASKS.md #353 — the Sept 28 dashboard's "B:N at 95pt" resized only B.
+  it('keeps the column/row count on width and height actions', () => {
+    expect(
+      convertLegacyToRich({ type: 'SET_COLUMN_WIDTH', col: 1, colCount: 13, width: 95, sheetName: 'Main' }),
+    ).toEqual({ type: 'SET_COLUMN_WIDTH', col: 1, colCount: 13, width: 95, sheetName: 'Main' });
+    expect(
+      convertLegacyToRich({ type: 'SET_ROW_HEIGHT', row: 2, rowCount: 4, height: 30, sheetName: 'Main' }),
+    ).toEqual({ type: 'SET_ROW_HEIGHT', row: 2, rowCount: 4, height: 30, sheetName: 'Main' });
+    // A single-column width without a count still means one column.
+    expect(convertLegacyToRich({ type: 'SET_COLUMN_WIDTH', col: 0, width: 110, sheetName: 'Main' })).toEqual({
+      type: 'SET_COLUMN_WIDTH',
+      col: 0,
+      colCount: 1,
+      width: 110,
+      sheetName: 'Main',
+    });
+  });
 });
 
 describe('partitionActions', () => {

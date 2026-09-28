@@ -117,6 +117,7 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
       resumableRun: null,
       resumeRun: vi.fn(),
       dismissResumableRun: vi.fn(),
+      retryMissingSheets: vi.fn(),
     };
   });
 

@@ -234,12 +234,17 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
         colCount: action.colCount ?? 1,
       } as unknown as RichAction;
 
+    // The count is carried through, as HIDE_ROW/HIDE_COLUMN above already do.
+    // #216 taught the handler to honour it, but it was dropped here first, so
+    // "B:N at 95pt" resized only B and left C..N at Excel's default — every
+    // currency and date cell on the Sept 28 dashboard showed ####. TASKS.md #353.
     case 'SET_ROW_HEIGHT':
       if (action.row === undefined || action.height === undefined) return null;
       return {
         type: 'SET_ROW_HEIGHT',
         sheetName,
         row: action.row,
+        rowCount: action.rowCount ?? 1,
         height: action.height,
       } as unknown as RichAction;
 
@@ -249,6 +254,7 @@ export function convertLegacyToRich(action: SheetAction): RichAction | RichActio
         type: 'SET_COLUMN_WIDTH',
         sheetName,
         col: action.col,
+        colCount: action.colCount ?? 1,
         width: action.width,
       } as unknown as RichAction;
 

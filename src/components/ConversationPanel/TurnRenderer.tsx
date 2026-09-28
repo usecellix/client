@@ -135,6 +135,8 @@ interface TurnRendererProps {
   /** Regenerate/edit-and-resend the given turn in place (same id/position). */
   onRegenerate?: (turnId: string, overrideMessage?: string) => void;
   onRunAsAction: (message: string) => void;
+  /** Finish a step that failed for want of a sheet (`turn.missingSheetRetry`). TASKS.md #346. */
+  onRetryMissingSheets?: (turnId: string) => void;
   /** Powers the inline Revert control on this turn's header, when present. */
   onRevertChangeSet?: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
   /**
@@ -725,6 +727,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onFollowUp,
   onRegenerate,
   onRunAsAction,
+  onRetryMissingSheets,
   onRevertChangeSet,
   dockedQuestions = false,
   onResolveGstReconCollision,
@@ -861,6 +864,10 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
           spillBlockages={turn.spillBlockages}
           repairSuggestion={turn.repairSuggestion}
           onRepair={onFollowUp}
+          missingSheets={turn.missingSheetRetry?.sheets}
+          onRetryMissingSheets={
+            onRetryMissingSheets ? () => onRetryMissingSheets(turn.id) : undefined
+          }
           disabled={isWaiting && isActive}
         />
       )}

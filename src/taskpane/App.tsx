@@ -304,6 +304,7 @@ const App: React.FC = () => {
     resumableRun,
     resumeRun,
     dismissResumableRun,
+    retryMissingSheets,
   } = useConversation({
     workbookKey,
     workbookId,
@@ -348,6 +349,28 @@ const App: React.FC = () => {
       }
     },
     [acceptActions, isApplying, turns],
+  );
+
+  /**
+   * Finish a step whose Accept failed for want of a sheet — TASKS.md #346.
+   * Same in-flight guard as Accept: this IS an apply, of the rest of that step.
+   */
+  const handleRetryMissingSheets = useCallback(
+    async (turnId: string) => {
+      if (applyInProgressRef.current || isApplying) return;
+      applyInProgressRef.current = true;
+      setIsApplying(true);
+      try {
+        await retryMissingSheets(turnId);
+      } catch (error) {
+        // Already surfaced on the turn by acceptActions, as for Accept.
+        console.debug('[Cellix] Missing-sheet retry failed (already surfaced on the turn):', error);
+      } finally {
+        applyInProgressRef.current = false;
+        setIsApplying(false);
+      }
+    },
+    [isApplying, retryMissingSheets],
   );
 
   /**
@@ -547,6 +570,7 @@ const App: React.FC = () => {
       onOpenHistoryConversation={openConversationFromHistory}
       onAcceptActions={handleAcceptActions}
       onAcceptAllActions={handleAcceptAllActions}
+      onRetryMissingSheets={handleRetryMissingSheets}
       onRejectActions={handleRejectActions}
       onResolveGstReconCollision={resolveGstReconCollisionChoice}
       onJumpToGstReconRow={handleJumpToGstReconRow}

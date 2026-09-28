@@ -89,6 +89,14 @@ import type {
 } from '@/utils/userFacingResponse';
 import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
 import { toUserFacingApplyError } from '@/utils/toUserFacingApplyError';
+import {
+  actionTouchesSheet,
+  buildMissingSheetRetry,
+  describeMissingSheetFailure,
+  listWorksheetNames,
+  parseItemNotFoundFailures,
+  planMissingSheetRetry,
+} from '@/utils/missingSheetRetry';
 import { collectCascadeRejectIds, isWaveDependencySatisfied } from '@/utils/actionWaveGating';
 import { stripSheetPrefix } from '@/engine/addressUtils';
 import { guardAgainstOverwrite, isOverwriteGuardError } from '@/engine/overwriteGuard';
@@ -176,6 +184,13 @@ interface UseConversationReturn {
   resumeRun: () => Promise<void>;
   /** Decline the offer; the run itself is left untouched. */
   dismissResumableRun: () => void;
+  /**
+   * Create the sheets a failed step needed and apply just the rest of that
+   * step (`turn.missingSheetRetry`). Resolves false when refused; rethrows an
+   * apply failure after surfacing it on the turn, like `acceptActions`.
+   * TASKS.md #346.
+   */
+  retryMissingSheets: (turnId: string) => Promise<boolean>;
 }
 
 export interface UseConversationOptions {
@@ -2590,7 +2605,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const acceptActions = useCallback(
-    async (turnId: string, blockId: string): Promise<boolean> => {
+    async (
+      turnId: string,
+      blockId: string,
+      /**
+       * Apply these instead of the card's own actions — only the missing-sheet
+       * retry (TASKS.md #346) passes this, with the part of the step that
+       * did not land. Everything after the apply is unchanged: the card is
+       * marked accepted and a stepwise build carries on to its next step.
+       */
+      actionsOverride?: SheetAction[],
+    ): Promise<boolean> => {
       if (applyingActionsRef.current) return false;
 
       const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
@@ -2664,7 +2689,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       };
       try {
         if (onActions) {
-          await onActions(block.actions, block.explanation, {
+          // A pending preview applies its OWN full action list on accept, which
+          // would replay the writes that already landed. Drop it so the
+          // override is what gets applied.
+          if (actionsOverride) await onClearPreview?.();
+          await onActions(actionsOverride ?? block.actions, block.explanation, {
             changeSetId: block.changeSetId,
             changes: block.changes,
             // TASKS.md #150: the read-back's verdict comes back here so the UI
@@ -2689,6 +2718,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           // An earlier step's offers describe an earlier state of the workbook.
           repairSuggestion: undefined,
           spillBlockages: undefined,
+          missingSheetRetry: undefined,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'accepted' }
@@ -2741,11 +2771,32 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       } catch (error) {
         const rawMessage =
           error instanceof Error ? error.message : 'Failed to apply changes';
-        const messageText = toUserFacingApplyError(rawMessage);
         console.error('[Cellix] Accept apply failed:', rawMessage);
+
+        // TASKS.md #346 — a step that failed only for want of a sheet is
+        // finished in place, not by re-running the request. Not re-offered
+        // when the retry itself is what failed: the offer would just repeat.
+        let retry: ConversationTurn['missingSheetRetry'];
+        if (!actionsOverride && parseItemNotFoundFailures(rawMessage)) {
+          try {
+            const plan = buildMissingSheetRetry(
+              block.actions,
+              await listWorksheetNames(),
+              rawMessage,
+            );
+            if (plan) retry = { blockId, sheets: plan.missingSheets };
+          } catch (listError) {
+            console.warn('[Cellix] Could not check which sheets are missing:', listError);
+          }
+        }
+        const messageText = retry
+          ? describeMissingSheetFailure(retry.sheets)
+          : toUserFacingApplyError(rawMessage);
+
         updateTurn(turnId, (t) => ({
           ...t,
           error: messageText,
+          missingSheetRetry: retry,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'pending' }
@@ -2757,7 +2808,45 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         applyingActionsRef.current = false;
       }
     },
-    [continueStepwiseRun, onActions, onChangeSetApplied, updateTurn],
+    [continueStepwiseRun, onActions, onChangeSetApplied, onClearPreview, updateTurn],
+  );
+
+  /**
+   * Finish a step whose Accept failed only because sheets it writes to do not
+   * exist — TASKS.md #346. Creates them and re-applies just the actions that
+   * touch them; the rest of the step already landed. Recomputed from the live
+   * workbook at click time, not from when the offer was made.
+   */
+  const retryMissingSheets = useCallback(
+    async (turnId: string): Promise<boolean> => {
+      const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
+      const offer = turn?.missingSheetRetry;
+      const block = turn?.blocks.find(
+        (b): b is ActionBlock => b.id === offer?.blockId && b.type === 'actions',
+      );
+      if (!offer || !block) return false;
+
+      let plan: ReturnType<typeof planMissingSheetRetry> = null;
+      try {
+        plan = planMissingSheetRetry(block.actions, await listWorksheetNames());
+      } catch (listError) {
+        console.warn('[Cellix] Could not check which sheets are missing:', listError);
+      }
+
+      // No plan means the sheets exist now (created by hand in the meantime,
+      // or the list could not be read). The part of the step that failed
+      // still has to be applied — ADD_SHEET reuses a sheet that exists, so
+      // including a create is harmless and covers the unreadable case.
+      const actions = plan?.actions ?? [
+        ...offer.sheets.map((sheet): SheetAction => ({ type: 'ADD_SHEET', name: sheet, sheetName: sheet })),
+        ...block.actions.filter((action) => actionTouchesSheet(action, offer.sheets)),
+      ];
+
+      // The offer is cleared by acceptActions itself: on success with the rest
+      // of the turn's stale offers, on failure because a retry is not re-offered.
+      return acceptActions(turnId, block.id, actions);
+    },
+    [acceptActions, getActiveSession],
   );
 
   /**
@@ -3357,5 +3446,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     resumableRun,
     resumeRun,
     dismissResumableRun,
+    retryMissingSheets,
   };
 };

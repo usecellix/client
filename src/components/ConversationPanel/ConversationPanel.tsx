@@ -778,6 +778,8 @@ interface ConversationPanelProps {
   onOpenHistoryConversation: (conversationId: string) => Promise<boolean>;
   onAcceptActions: (turnId: string, blockId: string) => void;
   onAcceptAllActions?: (turnId: string, fromBlockId: string) => void;
+  /** Finish a step that failed for want of a sheet. TASKS.md #346. */
+  onRetryMissingSheets?: (turnId: string) => void;
   onRejectActions: (turnId: string, blockId: string) => void;
   onResolveGstReconCollision: (
     turnId: string,
@@ -835,6 +837,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onOpenHistoryConversation,
   onAcceptActions,
   onAcceptAllActions,
+  onRetryMissingSheets,
   onRejectActions,
   onResolveGstReconCollision,
   onJumpToGstReconRow,
@@ -1085,6 +1088,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               }
               onAcceptActions={onAcceptActions}
               onAcceptAllActions={onAcceptAllActions}
+              onRetryMissingSheets={onRetryMissingSheets}
               onRejectActions={onRejectActions}
               onResolveGstReconCollision={onResolveGstReconCollision}
               onJumpToGstReconRow={onJumpToGstReconRow}

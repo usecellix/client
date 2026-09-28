@@ -51,6 +51,20 @@ describe('TurnErrorCard', () => {
     expect(onRepair).toHaveBeenCalledWith('fix B2');
   });
 
+  // TASKS.md #346 — a step that failed for want of a sheet is finished in place.
+  it('offers to create the missing sheet and finish the step', () => {
+    const onRetry = vi.fn();
+    render(
+      <TurnErrorCard
+        message="This step writes to the sheet 'Main', which doesn't exist yet."
+        missingSheets={['Main']}
+        onRetryMissingSheets={onRetry}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: "Create 'Main' and finish this step" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
   it('is plain text when there is nothing to offer', () => {
     render(<TurnErrorCard message="Something went wrong." />);
     expect(screen.getByRole('alert').textContent).toBe('Something went wrong.');

@@ -57,6 +57,7 @@ import {
   preflightOverwriteGuard,
   pruneSpuriousAddSheets,
 } from './overwriteGuard';
+import { hoistSheetCreates } from './sheetCreateOrder';
 import { selectActionRanges } from './selectRanges';
 import { handleDataValidation } from './handlers/validation.handler';
 import { handleHideGridlines } from './handlers/gridlines.handler';
@@ -119,8 +120,10 @@ export class RichActionEngine {
     const createdChartIds: CreatedChartId[] = [];
     const sortedRangeChanges: CellChange[] = [];
     const sheetNameMismatches: SheetCreationOutcome[] = [];
+    // Creates first, so a write ordered ahead of its own sheet's ADD_SHEET
+    // does not hit ItemNotFound on a fresh workbook. TASKS.md #352.
     const prepared = annotateDestOverwriteForCreatedSheets(
-      pruneSpuriousAddSheets(actions),
+      hoistSheetCreates(pruneSpuriousAddSheets(actions)),
     );
 
     if (prepared.length === 0) {

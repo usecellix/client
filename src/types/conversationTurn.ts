@@ -215,6 +215,12 @@ export interface ConversationTurn {
    * area. Offered as a one-click clear that names the cells — TASKS.md #321.
    */
   spillBlockages?: SpillBlockage[];
+  /**
+   * An Accept that failed only because the step writes to sheets that don't
+   * exist. Offered as one click that creates them and re-applies just what is
+   * left of that step, instead of re-running the whole request. TASKS.md #346.
+   */
+  missingSheetRetry?: { blockId: string; sheets: string[] };
 }
 
 export function truncateTabLabel(text: string, max = 18): string {
