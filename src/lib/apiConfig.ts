@@ -168,15 +168,31 @@ const DEFAULT_MARKETING_SITE_URL = 'https://localhost:5173';
 
 /**
  * The marketing site (CELLIX-landing-page) — where the task pane's
- * "Upgrade the plan" action sends the user, since subscribing/changing plans
- * is a marketing-site-driven flow (pricing comparison, guest checkout).
+ * "Upgrade the plan" action AND the email/password sign-in flow
+ * (getEmailLoginUrl) send the user, since both are marketing-site-driven
+ * (pricing/checkout, and /login for the paired-tab sign-in handshake).
  * Matches the backend's own CHECKOUT_SUCCESS_URL/CHECKOUT_CANCEL_URL default
  * dev port.
+ *
+ * A missing VITE_MARKETING_SITE_URL in a PRODUCTION build must fail loudly,
+ * not fall back to localhost: that fallback silently sent a real AppSource
+ * reviewer's browser to their own machine when this var was never set in
+ * Vercel's project settings (the .env.production file that documents the
+ * var is gitignored and local-only — committing it would not have helped;
+ * Vercel still needs the var set in its own dashboard). A thrown error here
+ * fails the build/first render instead of shipping a silent dead end.
  */
 export function getMarketingSiteUrl(): string {
   const envValue = (import.meta as any)?.env?.VITE_MARKETING_SITE_URL as string | undefined;
   if (typeof envValue === 'string' && envValue.trim()) {
     return envValue.trim().replace(/\/+$/, '');
+  }
+  if (!(import.meta as any)?.env?.DEV) {
+    throw new Error(
+      '[Cellix] VITE_MARKETING_SITE_URL is not set in this production build. Set it in the ' +
+        'Vercel project\'s Environment Variables (Production scope) to https://www.usecellix.com ' +
+        '— without it, sign-in and upgrade links point at localhost for every real user.',
+    );
   }
   return DEFAULT_MARKETING_SITE_URL;
 }
@@ -187,17 +203,34 @@ export function getPricingPageUrl(): string {
 }
 
 /**
- * Marketing site's email/password login page, opened in the system's default
- * browser for manual (non-Google/Microsoft) sign-in — see
- * client/src/auth/useAuth.ts openEmailLoginPage. `from=excel` tells the page
- * to show a "go back to Excel" message instead of redirecting to /app on
- * success; `token` is a random id the page reports back to the Server on
- * success (POST /excel-login/complete), which pushes the result to the
- * Excel add-in's matching SSE connection (GET /excel-login/wait) — see
- * AuthGate.tsx.
+ * Marketing site's login page, opened in the system's default browser for
+ * EVERY sign-in method (email/password, Google) — see
+ * frontend/src/auth/useAuth.ts openEmailLoginPage/signInWithProvider.
+ * `from=excel` tells the page to show a "go back to Excel" message instead
+ * of redirecting to /app on success; `token` is a random id the page
+ * reports back to the Server on success (POST /excel-login/complete),
+ * which pushes the result to the Excel add-in's matching SSE connection
+ * (GET /excel-login/wait) — see AuthGate.tsx. `provider`, when set, makes
+ * the login page auto-trigger that OAuth provider on load instead of
+ * showing the picker (CELLIX-landing-page/src/pages/LoginPage.tsx).
+ *
+ * Google specifically no longer goes through Office's displayDialogAsync +
+ * a same-origin-cookie read: BETTER_AUTH_URL is a single fixed origin
+ * (www.usecellix.com, so the marketing site's own OAuth login works), which
+ * means the OAuth callback's session cookie is set on THAT origin — a
+ * dialog page served from app.usecellix.com can never see it, so
+ * Office.context.ui.messageParent never fired and every Google sign-in
+ * reported "Sign-in was cancelled" (Office error 12006) even after a
+ * successful Google login. Confirmed in AppSource certification feedback
+ * (Product ID b5d15e34-0e2e-4680-8791-6316c46b28d7, Oct 7 2026). Routing
+ * through this same external-browser pairing-token flow — already proven
+ * for email/password — sidesteps the cross-origin cookie problem entirely:
+ * nothing needs to read a cookie across origins, the token hand-off is
+ * origin-independent by design.
  */
-export function getEmailLoginUrl(loginToken: string): string {
-  return `${getMarketingSiteUrl()}/login?from=excel&token=${encodeURIComponent(loginToken)}`;
+export function getEmailLoginUrl(loginToken: string, provider?: 'google'): string {
+  const base = `${getMarketingSiteUrl()}/login?from=excel&token=${encodeURIComponent(loginToken)}`;
+  return provider ? `${base}&provider=${encodeURIComponent(provider)}` : base;
 }
 
 /**

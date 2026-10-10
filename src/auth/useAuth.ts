@@ -7,61 +7,20 @@ import {
 
 export type SocialProvider = 'google';
 
-export function getAuthCompleteUrl(provider?: SocialProvider): string {
-  const origin =
-    typeof window !== 'undefined' ? window.location.origin : 'https://localhost:3000';
-  const base = `${origin}/src/auth/auth-complete.html`;
-  return provider ? `${base}?provider=${encodeURIComponent(provider)}` : base;
-}
-
-export function getAuthDialogUrl(provider: SocialProvider): string {
-  const origin =
-    typeof window !== 'undefined' ? window.location.origin : 'https://localhost:3000';
-  return `${origin}/src/auth/auth-dialog.html?provider=${encodeURIComponent(provider)}`;
-}
-
-function canUseOfficeDialog(): boolean {
-  try {
-    return (
-      typeof Office !== 'undefined' &&
-      Boolean(Office.context?.ui?.displayDialogAsync)
-    );
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Office Dialog = small window inside Excel → default Google OAuth page.
- * Server uses prompt=select_account so Google shows its native account chooser when
- * that WebView already has Google cookies (after the first sign-in in this dialog).
+ * Opens the marketing site's login page in the system's default external
+ * browser (not an Office dialog — WebView2's dialog proved unreliable for
+ * messageParent/session-store updates, and separately cannot see a session
+ * cookie set on a different origin than the dialog's own — see
+ * getEmailLoginUrl's docblock). Returns a random token embedded in that
+ * URL — pass it to waitForEmailLogin to be told, via push (SSE) rather than
+ * polling, the moment that tab finishes signing in. `provider`, when given,
+ * makes the page start that OAuth provider immediately instead of showing
+ * the sign-in picker.
  */
-export async function signInWithProvider(provider: SocialProvider): Promise<void> {
-  if (canUseOfficeDialog()) {
-    await signInWithOfficeDialog(provider);
-    return;
-  }
-
-  await authClient.signIn.social({
-    provider,
-    callbackURL: getAuthCompleteUrl(provider),
-  });
-}
-
-function signInWithOfficeDialog(provider: SocialProvider): Promise<void> {
-  return openAuthDialog(getAuthDialogUrl(provider), { height: 70, width: 45 });
-}
-
-/**
- * Opens the marketing site's email/password login page in the system's
- * default external browser (not the Office dialog — WebView2's dialog proved
- * unreliable for messageParent/session-store updates here). Returns a random
- * token embedded in that URL — pass it to waitForEmailLogin to be told, via
- * push (SSE) rather than polling, the moment that tab finishes signing in.
- */
-export function openEmailLoginPage(): string {
+export function openEmailLoginPage(provider?: SocialProvider): string {
   const token = createLoginToken();
-  const url = getEmailLoginUrl(token);
+  const url = getEmailLoginUrl(token, provider);
   try {
     if (typeof Office !== 'undefined' && Office.context?.ui?.openBrowserWindow) {
       Office.context.ui.openBrowserWindow(url);
@@ -179,58 +138,6 @@ export async function claimExcelLoginSession(token: string): Promise<void> {
       `Could not claim Excel login session (${response.status})${detail ? `: ${detail}` : ''}`,
     );
   }
-}
-
-function openAuthDialog(
-  dialogUrl: string,
-  size: { height: number; width: number },
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    Office.context.ui.displayDialogAsync(
-      dialogUrl,
-      { ...size, promptBeforeOpen: false },
-      (asyncResult) => {
-        if (asyncResult.status === Office.AsyncResultStatus.Failed) {
-          reject(new Error(asyncResult.error?.message || 'Could not open sign-in dialog'));
-          return;
-        }
-
-        const dialog = asyncResult.value;
-
-        // Office types both dialog events with one handler signature taking the
-        // union of payloads, so each handler must accept it and narrow.
-        type DialogArg = { message: string; origin: string | undefined } | { error: number };
-
-        const onMessage = (arg: DialogArg) => {
-          if (!('message' in arg)) return;
-          dialog.close();
-          try {
-            const data = JSON.parse(arg.message) as { type?: string; ok?: boolean };
-            if (data.type === 'auth-complete' && data.ok) {
-              window.location.reload();
-              resolve();
-              return;
-            }
-            reject(new Error('Sign-in did not complete. Please try again.'));
-          } catch {
-            reject(new Error('Invalid sign-in response from dialog'));
-          }
-        };
-
-        const onEvent = (arg: DialogArg) => {
-          if (!('error' in arg)) return;
-          if (arg.error === 12006) {
-            reject(new Error('Sign-in was cancelled'));
-            return;
-          }
-          reject(new Error(`Sign-in dialog error (${arg.error})`));
-        };
-
-        dialog.addEventHandler(Office.EventType.DialogMessageReceived, onMessage);
-        dialog.addEventHandler(Office.EventType.DialogEventReceived, onEvent);
-      },
-    );
-  });
 }
 
 export async function signOutUser(): Promise<void> {

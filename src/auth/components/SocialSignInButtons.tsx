@@ -1,44 +1,46 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { signInWithProvider, openEmailLoginPage, waitForEmailLogin } from '@/auth/useAuth';
+import { openEmailLoginPage, waitForEmailLogin } from '@/auth/useAuth';
 
 interface SocialSignInButtonsProps {
   disabled?: boolean;
   onError?: (message: string) => void;
   onEmailLoginOpened?: () => void;
-  /** Called once the paired browser-tab email/password login completes (SSE push). */
+  /** Called once the paired browser-tab login completes (SSE push) — Google or email/password. */
   onEmailLoginComplete?: () => void;
 }
 
+/**
+ * Both buttons below open the SAME external-browser pairing-token flow
+ * (openEmailLoginPage + waitForEmailLogin) that already proved reliable for
+ * email/password sign-in — Google just passes provider: 'google' so the
+ * marketing site's login page auto-starts that OAuth flow instead of
+ * showing the picker. Previously Google went through Office's
+ * displayDialogAsync and read the session via a same-origin cookie; that
+ * cookie is set on the marketing site's origin (BETTER_AUTH_URL), which a
+ * dialog served from the add-in's own origin can never see, so every real
+ * Google sign-in reported "Sign-in was cancelled" (Office error 12006)
+ * after a successful Google login — the exact failure AppSource
+ * certification reported (Product ID b5d15e34-0e2e-4680-8791-6316c46b28d7,
+ * Oct 7 2026). See getEmailLoginUrl's docblock in apiConfig.ts.
+ */
 export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
   disabled,
   onError,
   onEmailLoginOpened,
   onEmailLoginComplete,
 }) => {
-  const [pending, setPending] = React.useState(false);
+  const [pendingProvider, setPendingProvider] = React.useState<'google' | 'email' | null>(null);
   const cancelWaitRef = React.useRef<(() => void) | null>(null);
 
   React.useEffect(() => {
     return () => cancelWaitRef.current?.();
   }, []);
 
-  const handleSignIn = async () => {
-    setPending(true);
+  const startPairedLogin = (provider: 'google' | undefined, kind: 'google' | 'email') => {
     try {
-      await signInWithProvider('google');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to sign in with Google';
-      onError?.(message);
-      setPending(false);
-    }
-  };
-
-  const busy = pending || disabled;
-
-  const handleEmailLogin = () => {
-    try {
-      const token = openEmailLoginPage();
+      const token = openEmailLoginPage(provider);
+      setPendingProvider(kind);
       onEmailLoginOpened?.();
 
       cancelWaitRef.current?.();
@@ -50,14 +52,19 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
         .then(() => onEmailLoginComplete?.())
         .catch((error) => {
           const message =
-            error instanceof Error ? error.message : 'Email login did not finish in Excel';
+            error instanceof Error
+              ? error.message
+              : `${kind === 'google' ? 'Google' : 'Email'} login did not finish in Excel`;
           onError?.(message);
-        });
+        })
+        .finally(() => setPendingProvider(null));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to open sign-in';
       onError?.(message);
     }
   };
+
+  const busy = pendingProvider !== null || disabled;
 
   return (
     <div className="flex w-fit flex-col gap-3">
@@ -66,17 +73,17 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
         variant="outline"
         className="auth-login__google-btn h-10 w-auto justify-center gap-2 bg-white text-[#3c4043] hover:bg-[#f8f9fa]"
         disabled={busy}
-        onClick={() => void handleSignIn()}
+        onClick={() => startPairedLogin('google', 'google')}
       >
         <GoogleIcon />
-        {pending ? 'Redirecting…' : 'Continue with Google'}
+        {pendingProvider === 'google' ? 'Waiting for sign-in…' : 'Continue with Google'}
       </Button>
 
       <button
         type="button"
         className="auth-login__email-link"
         disabled={busy}
-        onClick={handleEmailLogin}
+        onClick={() => startPairedLogin(undefined, 'email')}
       >
         Log in with email and password
       </button>
