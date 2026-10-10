@@ -1,4 +1,5 @@
 import type { RepairRequest } from '@/services/repairRequest';
+import { AssistantMode } from '@/types/mode';
 import type { SpillBlockage } from '@/services/spillBlockers';
 import { SheetAction } from '@/hooks/useSseStream';
 import { CellChange } from '@/types/changeSet';
@@ -88,6 +89,12 @@ export interface ActionBlock {
    */
   irreversibleActionTypes?: string[];
   /**
+   * Set once this accepted change has been reverted. Kept on the block, not in
+   * the revert control, so the card and the menu still say so after the menu
+   * is closed or the pane is reloaded. TASKS.md #404.
+   */
+  reverted?: boolean;
+  /**
    * Set only for a GST-recon "missed rows" batch — the sheet name its
    * CREATE_SHEET/WRITE_TABLE actions target. Lets Accept do one last, fresh
    * existence check for that specific name immediately before applying (the
@@ -96,6 +103,22 @@ export interface ActionBlock {
    * collision card instead of writing over it silently.
    */
   gstReconOutputSheetName?: string;
+  /**
+   * Set only for an attachment import (bank statement): the new sheet its
+   * actions create. Accept re-checks that the name is still free and, if a
+   * sheet has taken it since the card was built, moves the import to the next
+   * free name. An import never writes into an existing sheet.
+   *
+   * Also marks the block for `chatSessionStorage`, which keeps the imported
+   * rows out of the copy it saves.
+   */
+  importSheetName?: string;
+  /**
+   * The question the user typed alongside an attached statement. It is asked
+   * as an ordinary chat turn once this import has been accepted, because only
+   * then is the statement in the workbook for the assistant to read.
+   */
+  followUp?: { prompt: string; mode: AssistantMode };
 }
 
 export interface StatusBlock {
@@ -134,6 +157,12 @@ export interface MatchResult {
   col: number;
   colLetter?: string;
   rowNum?: number;
+  /**
+   * When set, the pointer selects from `col` to this 0-based column, so a
+   * whole row of a table is shown and not one cell. Sent with answers that
+   * were computed over a sheet's rows.
+   */
+  endCol?: number;
 }
 
 export interface MatchesBlock {
@@ -221,6 +250,19 @@ export interface ConversationTurn {
    * left of that step, instead of re-running the whole request. TASKS.md #346.
    */
   missingSheetRetry?: { blockId: string; sheets: string[] };
+  /**
+   * Files the user sent with this message (an attached bank statement). Shown
+   * as chips in the message, like an attachment in any chat. A message with a
+   * file cannot be edited or regenerated: the file itself is not kept.
+   */
+  attachmentNames?: string[];
+  /**
+   * Set when this turn carries on the turn before it instead of starting a new
+   * exchange: the question typed with an attached statement is answered here,
+   * after the import above it was accepted. It is drawn without a user message
+   * of its own, so the two read as one exchange.
+   */
+  continuesTurnId?: string;
 }
 
 export function truncateTabLabel(text: string, max = 18): string {

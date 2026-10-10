@@ -48,6 +48,9 @@ export function TurnErrorCard({
   clearSpillBlockers = defaultClearSpillBlockers,
 }: TurnErrorCardProps) {
   const [clear, setClear] = useState<ClearState>({ status: 'idle' });
+  // A message with line breaks is a title followed by detail lines (what went
+  // wrong, then what to do). A single-line message renders exactly as before.
+  const [title, ...details] = message.split('\n').filter((line) => line.trim());
   const blockages = spillBlockages ?? [];
   const allBlockers = blockages.flatMap((b) => b.blockers);
 
@@ -79,7 +82,20 @@ export function TurnErrorCard({
 
   return (
     <div className="cellix-error cellix-error-card cellix-block-enter" role="alert">
-      <div className="cellix-error-card-message">{message}</div>
+      <div className="cellix-error-card-message">
+        {details.length > 0 ? (
+          <>
+            <div className="cellix-error-card-title">{title}</div>
+            {details.map((line, index) => (
+              <div key={index} className="cellix-error-card-detail">
+                {line}
+              </div>
+            ))}
+          </>
+        ) : (
+          message
+        )}
+      </div>
 
       {missingSheets && missingSheets.length > 0 && onRetryMissingSheets && (
         <div className="cellix-error-card-actions">

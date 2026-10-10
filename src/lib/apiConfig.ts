@@ -92,6 +92,11 @@ export function getGstReconcileEndpoint(): string {
   return `${getApiBaseUrl()}/gst/reconcile`;
 }
 
+/** Bank statement import: decoded file in, sheet actions out. ATTACHMENT_EXTRACTION_PLAN.md §6. */
+export function getBankStatementImportEndpoint(): string {
+  return `${getApiBaseUrl()}/ingest/bank-statement`;
+}
+
 export function getAuditApplyEndpoint(changeSetId: string): string {
   return `${getApiBaseUrl()}/audit/apply/${encodeURIComponent(changeSetId)}`;
 }

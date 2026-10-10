@@ -9,6 +9,7 @@ import {
 import { CellChange, ChangeSetSummary } from '@/types/changeSet';
 import { SheetAction } from '@/types/sheet-actions';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
+import type { FormatSnapshot } from '@/engine/formatSnapshot';
 
 export interface AuditStats {
   totalCost: number;
@@ -49,6 +50,9 @@ export async function markChangeSetApplied(
   // off Excel by the frontend. The backend's shadow-based diff skips sparse
   // ranges, so without this Revert has nothing to undo for those sorts.
   sortedRangeChanges?: CellChange[],
+  // TASKS.md #400 — what each FORMAT_RANGE / AUTOFIT_COLUMNS overwrote, read just
+  // before it ran. Without it a formatting change has nothing to revert from.
+  formatSnapshots?: FormatSnapshot[],
 ): Promise<ChangeSetSummary> {
   const body: Record<string, unknown> = {};
   // Fastify rejects Content-Type: application/json with an empty body (400) —
@@ -63,6 +67,9 @@ export async function markChangeSetApplied(
   }
   if (sortedRangeChanges && sortedRangeChanges.length > 0) {
     body.sortedRangeChanges = sortedRangeChanges;
+  }
+  if (formatSnapshots && formatSnapshots.length > 0) {
+    body.formatSnapshots = formatSnapshots;
   }
   const result = await auditFetch<{ changeSet: ChangeSetSummary }>(
     getAuditApplyEndpoint(changeSetId),

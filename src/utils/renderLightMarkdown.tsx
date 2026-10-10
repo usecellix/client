@@ -116,6 +116,43 @@ export function renderInlineBoldMarkdown(text: string): React.ReactNode {
   return renderLineSegments(line);
 }
 
+const ROW_MARKER = /\(row (\d+)\)/g;
+
+/**
+ * As `renderLightMarkdownPlain`, with every "(row N)" handed to `renderRow`,
+ * which may return something to show in its place (a pointer to that row) or
+ * null to leave the text as it is.
+ */
+export function renderLightMarkdownWithRows(
+  text: string,
+  renderRow: (rowNumber: number, key: string) => React.ReactNode | null,
+): React.ReactNode {
+  const paragraphs = text.trim().split(/\n\n+/);
+  return paragraphs.map((para, pi) => (
+    <p key={pi} className="cellix-response-md-p">
+      {para.split('\n').map((line, li) => {
+        const parts: React.ReactNode[] = [];
+        let last = 0;
+        for (const match of line.matchAll(ROW_MARKER)) {
+          const at = match.index ?? 0;
+          const pointer = renderRow(Number(match[1]), `${pi}-${li}-${at}`);
+          if (!pointer) continue;
+          if (at > last) parts.push(<React.Fragment key={`t${at}`}>{renderLineSegments(line.slice(last, at))}</React.Fragment>);
+          parts.push(pointer);
+          last = at + match[0].length;
+        }
+        if (last < line.length) parts.push(<React.Fragment key="tail">{renderLineSegments(line.slice(last))}</React.Fragment>);
+        return (
+          <React.Fragment key={li}>
+            {li > 0 && <br />}
+            {parts}
+          </React.Fragment>
+        );
+      })}
+    </p>
+  ));
+}
+
 /** Cursor-style: paragraphs + `**bold**` + inline code/formulas, single newlines → `<br />`. */
 export function renderLightMarkdownPlain(text: string): React.ReactNode {
   const paragraphs = text.trim().split(/\n\n+/);

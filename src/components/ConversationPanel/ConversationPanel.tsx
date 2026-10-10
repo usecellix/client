@@ -4,7 +4,6 @@ import {
   AtSign,
   Check,
   ChevronDown,
-  FileText,
   Folder,
   Grid3X3,
   HelpCircle,
@@ -21,15 +20,24 @@ import { isTurnPresentationComplete } from '@/utils/turnPresentation';
 import { RestoreResult } from '@/types/checkpoint';
 import { SheetAction } from '@/types/sheet-actions';
 import { TurnBlock } from '@/types/conversationTurn';
+import { RawTable } from '@/types/rawTable';
+import { ATTACHMENT_ACCEPT, attachmentExtension } from '@/services/attachments/attachmentError';
 import { useSession } from '@/auth/auth-client';
 import { TextAnimate } from '@/components/ui/text-animate';
 import PanelHeader from './PanelHeader';
+import AttachmentChip from './AttachmentChip';
 import TurnRenderer from './TurnRenderer';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
-import CreditUpgradeCard from './CreditUpgradeCard';
+import CreditUpgradeCard, { CREDIT_NOTICE_THRESHOLD } from './CreditUpgradeCard';
 import ResumeRunCard from './ResumeRunCard';
 
 /* global Excel */
+
+export type ImportAttachmentHandler = (
+  rawTable: RawTable,
+  fileName: string,
+  question?: string,
+) => void | boolean | Promise<void | boolean>;
 
 interface PanelInputProps {
   onSend: (message: string) => void;
@@ -40,6 +48,15 @@ interface PanelInputProps {
   placeholder?: string;
   mode: AssistantMode;
   onModeChange: (mode: AssistantMode) => void;
+  /**
+   * Imports an attached file that has been decoded in the task pane, with the
+   * question the user typed alongside it, if any. The returned promise should
+   * settle when that import's turn has finished, so the next attached file is
+   * not started on top of it; resolving `false` means the import failed and
+   * the question was not used. Without this prop, attached files are shown but
+   * not imported.
+   */
+  onImportAttachment?: ImportAttachmentHandler;
 }
 
 interface ModeSwitchProps {
@@ -281,9 +298,18 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   placeholder = 'Ask anything about your spreadsheet…',
   mode,
   onModeChange,
+  onImportAttachment,
 }) => {
   const [message, setMessage] = React.useState('');
   const [attachedFiles, setAttachedFiles] = React.useState<File[]>([]);
+  const [attachmentNotice, setAttachmentNotice] = React.useState<string | null>(null);
+  // Files that have been read and are waiting for Send, and the counter that
+  // tells their chips Send was pressed.
+  const [readyAttachmentKeys, setReadyAttachmentKeys] = React.useState<string[]>([]);
+  const [importRequest, setImportRequest] = React.useState(0);
+  // What the user typed alongside the attached file. Handed to the first import
+  // that Send starts, which asks it once the statement is in the workbook.
+  const attachmentQuestionRef = useRef('');
   const [composerSegments, setComposerSegments] = React.useState<ComposerSegment[]>([]);
   const [referenceOptions, setReferenceOptions] = React.useState<ReferenceOption[]>([]);
   const [referenceMenuOpen, setReferenceMenuOpen] = React.useState(false);
@@ -292,8 +318,13 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   const [activeReferenceIndex, setActiveReferenceIndex] = React.useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // True from the moment one attachment's import is handed off until its turn
+  // ends. Files import one at a time; a second file attached meanwhile waits.
+  const importInFlightRef = useRef(false);
   const referenceMenuRef = useRef<HTMLDivElement>(null);
   const nextSegmentIdRef = useRef(0);
+
+  const inputDisabled = disabled || isWaitingClarification;
 
   const createSegmentId = () => {
     nextSegmentIdRef.current += 1;
@@ -437,10 +468,20 @@ export const PanelInput: React.FC<PanelInputProps> = ({
       .join(' ');
     const composedMessage = [segmentText, message.trim()].filter(Boolean).join(' ');
 
+    // A file is attached: this Send imports it, and whatever was typed goes with
+    // it as the question to answer once the statement is in the workbook.
+    if (readyAttachmentKeys.length > 0 && !disabled) {
+      attachmentQuestionRef.current = composedMessage;
+      setImportRequest((count) => count + 1);
+      setMessage('');
+      setComposerSegments([]);
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      return;
+    }
+
     if (composedMessage && !disabled) {
       onSend(composedMessage);
       setMessage('');
-      setAttachedFiles([]);
       setComposerSegments([]);
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }
@@ -449,11 +490,22 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   const handleFileSelect = (files: FileList | null) => {
     if (!files?.length) return;
 
+    // The picker's `accept` list is only a hint the user can override, so the
+    // type is checked again here rather than leaving a chip that cannot be read.
+    const picked = Array.from(files);
+    const supported = picked.filter((file) => attachmentExtension(file.name) !== null);
+    const refused = picked.filter((file) => attachmentExtension(file.name) === null);
+    setAttachmentNotice(
+      refused.length
+        ? `${refused.map((file) => file.name).join(', ')} cannot be attached. Use a PDF, XLSX, XLS or CSV file.`
+        : null,
+    );
+
     setAttachedFiles((current) => {
       const existingKeys = new Set(
         current.map((file) => `${file.name}:${file.size}:${file.lastModified}`),
       );
-      const nextFiles = Array.from(files).filter((file) => {
+      const nextFiles = supported.filter((file) => {
         const key = `${file.name}:${file.size}:${file.lastModified}`;
         return !existingKeys.has(key);
       });
@@ -468,6 +520,41 @@ export const PanelInput: React.FC<PanelInputProps> = ({
 
   const removeAttachedFile = (fileToRemove: File) => {
     setAttachedFiles((current) => current.filter((file) => file !== fileToRemove));
+  };
+
+  const attachmentKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
+
+  const setAttachmentReady = (file: File, ready: boolean) => {
+    const key = attachmentKey(file);
+    setReadyAttachmentKeys((current) => {
+      const has = current.includes(key);
+      if (ready === has) return current;
+      return ready ? [...current, key] : current.filter((k) => k !== key);
+    });
+    // The file is read (and unlocked): the next thing the user does is type a
+    // question or press Enter, both of which happen in the message box.
+    if (ready) textareaRef.current?.focus();
+  };
+
+  /** Starts one file's import. False means "not now": the chip keeps the file and offers it again. */
+  const startAttachmentImport = (file: File, rawTable: RawTable): boolean => {
+    if (!onImportAttachment || importInFlightRef.current || inputDisabled || isProcessing) return false;
+    importInFlightRef.current = true;
+    removeAttachedFile(file);
+    const question = attachmentQuestionRef.current;
+    attachmentQuestionRef.current = '';
+    void Promise.resolve()
+      .then(() => onImportAttachment(rawTable, file.name, question || undefined))
+      .then((ok) => {
+        // The import failed, so the question was never asked. Give it back
+        // rather than lose what the user typed, unless they have typed since.
+        if (ok === false && question) setMessage((current) => current || question);
+      })
+      .catch((error) => console.error('[Cellix] Attachment import failed to start:', error))
+      .finally(() => {
+        importInFlightRef.current = false;
+      });
+    return true;
   };
 
   const removeComposerSegment = (segmentId: string) => {
@@ -568,12 +655,13 @@ export const PanelInput: React.FC<PanelInputProps> = ({
     }
   };
 
-  const inputDisabled = disabled || isWaitingClarification;
   const resolvedPlaceholder = isWaitingClarification
     ? '⏸ Answer the question above first…'
     : isProcessing
       ? 'Processing your request…'
-      : placeholder;
+      : readyAttachmentKeys.length > 0
+        ? 'Ask about this statement, or press Enter to import it'
+        : placeholder;
   const visibleMessageLength = Math.max(message.trimEnd().length + 1, 4);
   const textareaInlineSize = message
     ? composerSegments.length === 0
@@ -586,8 +674,30 @@ export const PanelInput: React.FC<PanelInputProps> = ({
       <div
         className={`cellix-input-shell mode-${mode} ${isProcessing ? 'processing' : ''} ${
           isWaitingClarification ? 'clarifying' : ''
-        }`}
+        }${attachedFiles.length > 0 ? ' has-attachments' : ''}`}
       >
+        {attachedFiles.length > 0 && (
+          <div className="cellix-attachment-list" aria-label="Attached documents">
+            {attachedFiles.map((file) => (
+              <AttachmentChip
+                key={attachmentKey(file)}
+                file={file}
+                disabled={inputDisabled || isProcessing}
+                onRemove={() => removeAttachedFile(file)}
+                onImport={
+                  onImportAttachment ? (rawTable) => startAttachmentImport(file, rawTable) : undefined
+                }
+                importRequest={importRequest}
+                onReadyChange={(ready) => setAttachmentReady(file, ready)}
+              />
+            ))}
+          </div>
+        )}
+        {attachmentNotice && (
+          <div className="cellix-attachment-note is-error cellix-attachment-notice" role="alert">
+            {attachmentNotice}
+          </div>
+        )}
         <div className="cellix-reference-editor" onClick={() => textareaRef.current?.focus()}>
           {composerSegments.map((segment) => {
             if (segment.type === 'text') {
@@ -683,28 +793,6 @@ export const PanelInput: React.FC<PanelInputProps> = ({
             )}
           </div>
         )}
-        {attachedFiles.length > 0 && (
-          <div className="cellix-attachment-list" aria-label="Attached documents">
-            {attachedFiles.map((file) => (
-              <div
-                key={`${file.name}:${file.size}:${file.lastModified}`}
-                className="cellix-attachment-chip"
-                title={file.name}
-              >
-                <FileText size={13} />
-                <span>{file.name}</span>
-                <button
-                  type="button"
-                  onClick={() => removeAttachedFile(file)}
-                  aria-label={`Remove ${file.name}`}
-                  disabled={inputDisabled}
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
         <div className="cellix-input-toolbar">
           <div className="cellix-input-toolbar-left">
             <ModeSwitch mode={mode} onModeChange={onModeChange} disabled={isProcessing} />
@@ -722,7 +810,7 @@ export const PanelInput: React.FC<PanelInputProps> = ({
               ref={fileInputRef}
               type="file"
               className="cellix-upload-doc-input"
-              accept=".csv,.doc,.docx,.pdf,.txt,.xls,.xlsx"
+              accept={ATTACHMENT_ACCEPT}
               multiple
               onChange={(event) => handleFileSelect(event.target.files)}
             />
@@ -736,8 +824,11 @@ export const PanelInput: React.FC<PanelInputProps> = ({
               type="button"
               className="cellix-send-btn"
               onClick={handleSend}
-              disabled={(!message.trim() && composerSegments.length === 0) || inputDisabled}
-              aria-label="Send"
+              disabled={
+                (!message.trim() && composerSegments.length === 0 && readyAttachmentKeys.length === 0) ||
+                inputDisabled
+              }
+              aria-label={readyAttachmentKeys.length > 0 ? 'Send with the attached statement' : 'Send'}
             >
               <ArrowRight size={14} />
             </button>
@@ -764,6 +855,8 @@ interface ConversationPanelProps {
   isComparing: boolean;
   onCloseCompare: () => void;
   onSend: (message: string) => void;
+  /** Imports an attached file once the task pane has decoded it, with any question typed alongside. */
+  onImportAttachment?: ImportAttachmentHandler;
   onStop: () => void;
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
@@ -812,6 +905,7 @@ interface ConversationPanelProps {
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
+  onImportAttachment,
   sessions,
   activeSessionId,
   turns,
@@ -945,9 +1039,13 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   // the balance actually crosses into low — that is a different, newly urgent
   // fact from the healthy balance the user waved away, and it is the one
   // moment the nudge exists for. TASKS.md #203.
+  const creditBelowNoticeThreshold =
+    creditAccount != null && creditAccount.availableBalance < CREDIT_NOTICE_THRESHOLD;
+
+  // Dismissing hides the card for now; dropping under the threshold again brings it back.
   useEffect(() => {
-    if (isLowCreditBalance) setCreditNoticeDismissed(false);
-  }, [isLowCreditBalance]);
+    if (isLowCreditBalance || creditBelowNoticeThreshold) setCreditNoticeDismissed(false);
+  }, [isLowCreditBalance, creditBelowNoticeThreshold]);
 
   const composerInput = (
     <PanelInput
@@ -960,6 +1058,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           : onSend
       }
       onStop={onStop}
+      onImportAttachment={onImportAttachment}
       disabled={isWaitingForResponse}
       isProcessing={isWaitingForResponse}
       // The docked card is the thing asking; this field is optional detail
@@ -986,11 +1085,10 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   // can be qualified in prose instead of forcing Other. Sending from it
   // answers the question (folding in the selected option) rather than starting
   // a new turn. TASKS.md #186.
-  // Shown whenever a balance is known — not only when it is low. The header
-  // chip that used to carry this was removed (TASKS.md #200), so this card is
-  // now the only place the balance appears while working; gating it on
-  // `isLowCreditBalance` would hide the number entirely for most users, and
-  // that rule deliberately never fires on the free tier at all.
+  // Shown only once the balance is under CREDIT_NOTICE_THRESHOLD (TASKS.md
+  // #373). It used to show whenever a balance was known (#200), which put a
+  // credit count and an Upgrade button on every screen for users with plenty
+  // left. The settings menu still carries the balance at any level.
   // Not on the start screen (TASKS.md #202). `composerDock` is the SAME element
   // in both places — centred over the illustration when there are no turns, and
   // pinned to the bottom once the conversation starts — so the card followed it
@@ -998,7 +1096,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   // balance belongs next to work in progress, not in front of a blank slate;
   // the settings menu still carries it before anything has been asked.
   const showCreditNotice =
-    Boolean(creditAccount) &&
+    creditBelowNoticeThreshold &&
     !creditNoticeDismissed &&
     !pendingQuestion &&
     !showStartScreen;
@@ -1021,7 +1119,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       {showCreditNotice && creditAccount && (
         <CreditUpgradeCard
           balance={creditAccount.availableBalance}
-          isLow={isLowCreditBalance}
+          isLow
           onDismiss={() => setCreditNoticeDismissed(true)}
         />
       )}

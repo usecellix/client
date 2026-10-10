@@ -150,6 +150,16 @@ export interface OutcomeVerificationOptions {
    * never created. This is the structural check that closes that gap.
    */
   expectedSheetNames?: string[];
+  /**
+   * Sheet names a DELETE_SHEET action in this same batch removed on purpose.
+   * The ChangeSet's diff still carries a before/after row for every cell that
+   * was on a deleted sheet, so without this the per-cell loop below finds the
+   * sheet gone and reports it as the worst possible outcome failure
+   * ("(sheet missing)") for an outcome that was the whole point of the batch.
+   * A sheet that goes missing WITHOUT a matching DELETE_SHEET here still
+   * reports, because its name is absent from this set.
+   */
+  deletedSheetNames?: string[];
 }
 
 /**
@@ -170,6 +180,9 @@ export async function verifyAppliedOutcome(
   };
 
   const expectedSheetNames = [...new Set(options?.expectedSheetNames ?? [])].filter(Boolean);
+  const deletedSheetNames = new Set(
+    (options?.deletedSheetNames ?? []).filter(Boolean),
+  );
 
   if (!changes?.length && expectedSheetNames.length === 0) return empty;
 
@@ -220,6 +233,12 @@ export async function verifyAppliedOutcome(
       await ctx.sync();
 
       if (sheet.isNullObject) {
+        if (deletedSheetNames.has(sheetName)) {
+          // This batch's own DELETE_SHEET removed it on purpose — the sheet
+          // being gone is the correct outcome, not a mismatch.
+          verified += sheetChanges.length;
+          continue;
+        }
         // The ChangeSet says we wrote here and the sheet is not there at all.
         // That is the strongest possible outcome failure, not an unreadable cell.
         for (const change of sheetChanges) {

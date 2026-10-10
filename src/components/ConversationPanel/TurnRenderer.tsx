@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, CheckCircle2, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
+import { Check, CheckCircle2, FileSpreadsheet, FileText, Pencil, RefreshCw, RotateCcw, X } from 'lucide-react';
 import { TurnErrorCard } from './TurnErrorCard';
 import {
   ActionBlock,
@@ -46,6 +46,26 @@ import GstReconMissedRowsCard from './GstReconMissedRowsCard';
  * partial-progress semantics as every other multi-step apply in this app —
  * there is no atomic multi-changeset revert on the server to fall back on).
  */
+/** The menu's "this was undone" line: shown in place of the Revert control, with nothing to click. */
+function RevertedMenuItem() {
+  return (
+    <div className="cellix-user-msg-menu-item cellix-user-msg-menu-item-done" aria-disabled="true">
+      <Check size={13} />
+      <span>Reverted</span>
+    </div>
+  );
+}
+
+/**
+ * The server's answer for a change that was reverted before: "cannot be
+ * reverted (status: reverted)". There is nothing left to undo, so it is recorded
+ * as reverted, not offered as a retry that can never succeed. TASKS.md #404.
+ */
+function isAlreadyReverted(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^Audit API 404\b/.test(message) && /status: reverted/.test(message);
+}
+
 export function TurnRevertControl({
   changeSetIds,
   onRevert,
@@ -58,12 +78,7 @@ export function TurnRevertControl({
   );
 
   if (state === 'reverted') {
-    return (
-      <div className="cellix-user-msg-menu-item cellix-user-msg-menu-item-done" aria-disabled="true">
-        <Check size={13} />
-        <span>Reverted</span>
-      </div>
-    );
+    return <RevertedMenuItem />;
   }
 
   // TASKS.md #242 — a 422 here means the server's own fail-closed
@@ -101,8 +116,13 @@ export function TurnRevertControl({
         setState('reverting');
         try {
           for (const changeSetId of [...changeSetIds].reverse()) {
-            const result = await revertChangeSet(changeSetId);
-            await onRevert(changeSetId, result.inverseActions);
+            let inverseActions: SheetAction[] = [];
+            try {
+              inverseActions = (await revertChangeSet(changeSetId)).inverseActions;
+            } catch (err) {
+              if (!isAlreadyReverted(err)) throw err;
+            }
+            await onRevert(changeSetId, inverseActions);
           }
           setState('reverted');
         } catch (err) {
@@ -426,6 +446,7 @@ function UserMessageRow({
   onRegenerate,
   onResend,
   revertibleChangeSetIds,
+  reverted,
   onRevertChangeSet,
 }: {
   turnId: string;
@@ -434,6 +455,8 @@ function UserMessageRow({
   onRegenerate?: (turnId: string, overrideMessage?: string) => void;
   onResend?: (text: string) => void;
   revertibleChangeSetIds?: string[];
+  /** This message's change was reverted and nothing of it is left to revert. */
+  reverted?: boolean;
   onRevertChangeSet?: (changeSetId: string, inverseActions: SheetAction[]) => Promise<void>;
 }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -472,7 +495,9 @@ function UserMessageRow({
   const revertControls =
     onRevertChangeSet && revertibleChangeSetIds?.length
       ? [<TurnRevertControl key="revert" changeSetIds={revertibleChangeSetIds} onRevert={onRevertChangeSet} />]
-      : null;
+      : reverted
+        ? [<RevertedMenuItem key="reverted" />]
+        : null;
 
   if (!canResend && !revertControls) {
     return <div className="cellix-user-msg cellix-block-enter">{text}</div>;
@@ -746,7 +771,12 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
       // never captured by the shadow workbook) has no real inverse to apply. Showing the
       // button anyway lets revert() report a "successful" no-op (inverseActions: []) while
       // the sheet visibly doesn't change back.
-      !b.irreversibleActionTypes?.length,
+      !b.irreversibleActionTypes?.length &&
+      // Already undone: offering it again only earns a refusal from the server. TASKS.md #404.
+      !b.reverted,
+  );
+  const revertedSomething = turn.blocks.some(
+    (b) => b.type === 'actions' && b.proposalStatus === 'accepted' && b.reverted,
   );
 
   const orderedBlocks = useMemo(() => orderBlocksForDisplay(turn.blocks), [turn.blocks]);
@@ -799,17 +829,44 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
     return true;
   });
 
+  // An import whose question is still to be answered is not finished: its
+  // footer and follow-up suggestions belong under the answer, which arrives in
+  // the turn that continues this one.
+  const answerStillToCome = turn.blocks.some(
+    (b) => b.type === 'actions' && Boolean(b.followUp) && b.proposalStatus !== 'rejected',
+  );
+
   return (
-    <div className="cellix-turn">
-      <UserMessageRow
-        turnId={turn.id}
-        text={turn.userMessage}
-        disabled={isWaiting}
-        onRegenerate={onRegenerate}
-        onResend={onFollowUp}
-        revertibleChangeSetIds={revertibleActionBlocks.map((b) => b.changeSetId!)}
-        onRevertChangeSet={onRevertChangeSet}
-      />
+    <div className={`cellix-turn${turn.continuesTurnId ? ' is-continuation' : ''}`}>
+      {turn.continuesTurnId ? null : turn.attachmentNames?.length ? (
+        // A message sent with a file. No edit or regenerate: the file is not kept.
+        <div className="cellix-user-msg cellix-user-msg-with-files cellix-block-enter">
+          <div className="cellix-user-msg-files">
+            {turn.attachmentNames.map((name) => (
+              <span key={name} className="cellix-user-msg-file" title={name}>
+                {/\.pdf$/i.test(name) ? (
+                  <FileText size={12} className="is-pdf" />
+                ) : (
+                  <FileSpreadsheet size={12} className="is-sheet" />
+                )}
+                <span>{name}</span>
+              </span>
+            ))}
+          </div>
+          <span className="cellix-user-msg-text">{turn.userMessage}</span>
+        </div>
+      ) : (
+        <UserMessageRow
+          turnId={turn.id}
+          text={turn.userMessage}
+          disabled={isWaiting}
+          onRegenerate={onRegenerate}
+          onResend={onFollowUp}
+          revertibleChangeSetIds={revertibleActionBlocks.map((b) => b.changeSetId!)}
+          reverted={revertedSomething}
+          onRevertChangeSet={onRevertChangeSet}
+        />
+      )}
 
       {hasVisibleBlocks && (
         <>
@@ -844,10 +901,10 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                 </React.Fragment>
               );
             })}
-            {turnHasActions && completedAnswer && (
+            {turnHasActions && completedAnswer && !answerStillToCome && (
               <ResponseFooter content={completedAnswer.content} timestamp={turn.timestamp} />
             )}
-            {followUps.length > 0 && followUpHandler && (
+            {followUps.length > 0 && followUpHandler && !answerStillToCome && (
               <FollowUpsSection
                 followUps={followUps}
                 onFollowUp={followUpHandler}
