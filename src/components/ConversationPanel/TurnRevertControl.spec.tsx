@@ -121,3 +121,60 @@ describe('TurnRevertControl — multiple change sets treated as one action', () 
     expect(onRevert).toHaveBeenCalledWith('cs_step2', []);
   });
 });
+
+/**
+ * TASKS.md #404 — live: a change was reverted, the menu was closed and opened
+ * again, and it offered "Revert this change" a second time. The server refused
+ * (404, "status: reverted") and the control showed "Retry revert", which could
+ * never succeed. The reverted state now lives on the message; these cover what
+ * the control does when it still meets a change that was already reverted, as
+ * it will for a conversation reopened from history.
+ */
+describe('TurnRevertControl — a change that was already reverted (#404)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const alreadyReverted = new Error(
+    'Audit API 404: {"success":false,"error":{"code":"NOT_FOUND","message":"Change set cs_1 cannot be reverted (status: reverted)"}}',
+  );
+
+  it('records it as reverted with nothing to apply, and never offers a retry', async () => {
+    vi.spyOn(auditService, 'revertChangeSet').mockRejectedValue(alreadyReverted);
+    const onRevert = vi.fn().mockResolvedValue(undefined);
+
+    render(<TurnRevertControl changeSetIds={['cs_1']} onRevert={onRevert} />);
+    fireEvent.click(screen.getByRole('menuitem', { name: /revert this change/i }));
+
+    await waitFor(() => expect(screen.getByText(/^reverted$/i)).toBeTruthy());
+    expect(onRevert).toHaveBeenCalledWith('cs_1', []);
+    expect(screen.queryByText(/retry revert/i)).toBeNull();
+  });
+
+  it('carries on to the other steps of the same message', async () => {
+    vi.spyOn(auditService, 'revertChangeSet').mockImplementation(async (id: string) => {
+      if (id === 'cs_step2') throw alreadyReverted;
+      return { changeSet: {} as never, inverseActions: [{ type: 'DELETE_SHEET', sheetName: 'S' } as never] };
+    });
+    const onRevert = vi.fn().mockResolvedValue(undefined);
+
+    render(<TurnRevertControl changeSetIds={['cs_step1', 'cs_step2']} onRevert={onRevert} />);
+    fireEvent.click(screen.getByRole('menuitem', { name: /revert this change/i }));
+
+    await waitFor(() => expect(screen.getByText(/^reverted$/i)).toBeTruthy());
+    expect(onRevert).toHaveBeenNthCalledWith(1, 'cs_step2', []);
+    expect(onRevert).toHaveBeenNthCalledWith(2, 'cs_step1', [{ type: 'DELETE_SHEET', sheetName: 'S' }]);
+  });
+
+  it('still treats any other 404 as a failure, not as done', async () => {
+    vi.spyOn(auditService, 'revertChangeSet').mockRejectedValue(new Error('Audit API 404: Change set cs_1 not found'));
+    const onRevert = vi.fn();
+
+    render(<TurnRevertControl changeSetIds={['cs_1']} onRevert={onRevert} />);
+    fireEvent.click(screen.getByRole('menuitem', { name: /revert this change/i }));
+
+    await waitFor(() => expect(screen.getByText(/retry revert/i)).toBeTruthy());
+    expect(onRevert).not.toHaveBeenCalled();
+  });
+});

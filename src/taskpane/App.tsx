@@ -5,6 +5,7 @@ import { useConversation, PreviewActionsMeta } from '@/hooks/useConversation';
 import { useCreditBalance } from '@/hooks/useCreditBalance';
 import { ActionEngine } from '@/utils/actionEngine';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
+import type { FormatSnapshot } from '@/engine/formatSnapshot';
 import type { SheetCreationOutcome } from '@/engine/handlers/sheet.handler';
 import { CellChange } from '@/types/changeSet';
 import { jumpToWorkbookSource } from '@/utils/jumpToWorkbookSource';
@@ -23,6 +24,7 @@ import {
 } from '@/utils/pendingWorkbookContext';
 import { SheetAction } from '@/types/sheet-actions';
 import { RestoreResult } from '@/types/checkpoint';
+import { RawTable } from '@/types/rawTable';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE, isAssistantMode } from '@/types/mode';
 import { resolveWorkbookKey, loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
 import { resolveWorkbookId } from '@/utils/workbookIdentity';
@@ -73,6 +75,7 @@ const App: React.FC = () => {
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;
       let sortedRangeChanges: CellChange[] | undefined;
+      let formatSnapshots: FormatSnapshot[] | undefined;
       let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       try {
         if (previewManager.active) {
@@ -80,6 +83,7 @@ const App: React.FC = () => {
           createdConditionalFormatIds = result?.createdConditionalFormatIds;
           createdChartIds = result?.createdChartIds;
           sortedRangeChanges = result?.sortedRangeChanges;
+          formatSnapshots = result?.formatSnapshots;
           sheetNameMismatches = result?.sheetNameMismatches;
         } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
           // Already applied earlier — do not re-run INSERT_COLUMN / writes.
@@ -98,6 +102,7 @@ const App: React.FC = () => {
           createdConditionalFormatIds = result.createdConditionalFormatIds;
           createdChartIds = result.createdChartIds;
           sortedRangeChanges = result.sortedRangeChanges;
+          formatSnapshots = result.formatSnapshots;
           sheetNameMismatches = result.sheetNameMismatches;
         }
 
@@ -109,6 +114,7 @@ const App: React.FC = () => {
               createdConditionalFormatIds,
               createdChartIds,
               sortedRangeChanges,
+              formatSnapshots,
             );
           } catch (error) {
             // Spec 22 Bug 3: do not swallow apply failures — UI must not show Applied.
@@ -150,8 +156,15 @@ const App: React.FC = () => {
           .filter((a) => a.type === 'ADD_SHEET' || a.type === 'CREATE_SHEET')
           .map((a) => String(a.sheetName ?? a.name ?? '').trim())
           .filter(Boolean);
+        // A DELETE_SHEET's sheet being gone afterwards is the intended
+        // outcome, not a mismatch (TASKS.md #370).
+        const deletedSheetNames = actions
+          .filter((a) => a.type === 'DELETE_SHEET')
+          .map((a) => String(a.sheetName ?? '').trim())
+          .filter(Boolean);
         const verification = await verifyAppliedOutcomeSafe(meta?.changes ?? [], {
           expectedSheetNames,
+          deletedSheetNames,
         });
         if (sheetNameMismatches?.length) {
           for (const mismatch of sheetNameMismatches) {
@@ -284,6 +297,7 @@ const App: React.FC = () => {
     isWaitingClarification,
     activeClarification,
     sendMessage,
+    importBankStatement,
     answerQuestion,
     answerClarification,
     dismissClarification,
@@ -305,6 +319,7 @@ const App: React.FC = () => {
     resumeRun,
     dismissResumableRun,
     retryMissingSheets,
+    markChangeSetReverted,
   } = useConversation({
     workbookKey,
     workbookId,
@@ -474,6 +489,19 @@ const App: React.FC = () => {
   };
 
   /**
+   * Imports a bank statement the composer has already decoded in the task
+   * pane. It runs as a turn of its own so the result, and its Accept card, sit
+   * in the thread like any other change. No workbook context is read or sent:
+   * the import does not depend on what is in the workbook, and the model is not
+   * involved. A question typed alongside the file is asked once the import has
+   * been accepted. Root/ATTACHMENT_EXTRACTION_PLAN.md §6.5.
+   */
+  const handleImportAttachment = async (rawTable: RawTable, fileName: string, question?: string) => {
+    if (isWaitingForResponse) return false;
+    return importBankStatement(rawTable, fileName, { mode, followUpPrompt: question });
+  };
+
+  /**
    * Regenerate (same text) or edit-and-resend (new text) an existing turn
    * in place, rather than appending a duplicate further down the thread —
    * the message stays anchored, only its answer changes.
@@ -521,12 +549,14 @@ const App: React.FC = () => {
   };
 
   const handleRevertHistoryEntry = useCallback(
-    async (_changeSetId: string, inverseActions: SheetAction[]) => {
+    async (changeSetId: string, inverseActions: SheetAction[]) => {
       if (inverseActions.length > 0) {
         await ActionEngine.applyActions(inverseActions);
       }
+      // Only once the workbook is back: a failed apply throws above and leaves it offered.
+      markChangeSetReverted(changeSetId);
     },
-    [],
+    [markChangeSetReverted],
   );
 
   const handleRestoreCheckpoint = useCallback(
@@ -560,6 +590,7 @@ const App: React.FC = () => {
       isComparing={isComparing}
       onCloseCompare={() => setCompareResult(null)}
       onSend={handleSend}
+      onImportAttachment={handleImportAttachment}
       onStop={endConversation}
       onNewChat={newChat}
       onSelectSession={selectSession}

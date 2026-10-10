@@ -34,13 +34,17 @@ export async function navigateToCell(
   sheetName: string,
   row: number,
   col: number,
+  /** When given, selects from `col` to this 0-based column on the same row. */
+  endCol?: number,
 ): Promise<void> {
   return Excel.run(async (context) => {
     const sheet = sheetName
       ? context.workbook.worksheets.getItem(sheetName)
       : context.workbook.worksheets.getActiveWorksheet();
     sheet.activate();
-    const address = `${columnIndexToLetter(col)}${row + 1}`;
+    const start = `${columnIndexToLetter(col)}${row + 1}`;
+    const address =
+      endCol !== undefined && endCol > col ? `${start}:${columnIndexToLetter(endCol)}${row + 1}` : start;
     sheet.getRange(address).select();
     await context.sync();
   });

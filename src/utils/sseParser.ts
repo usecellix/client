@@ -89,6 +89,8 @@ export interface SseMatchData {
   col: number;
   colLetter?: string;
   rowNum?: number;
+  /** Last 0-based column of a pointer that covers a whole row. */
+  endCol?: number;
 }
 
 export interface SseMatchesData {
@@ -404,6 +406,10 @@ export function parseSseEventBlock(block: string): ParsedSseEvent | null {
                 col: Number(m.col ?? 0),
                 colLetter: m.colLetter ? String(m.colLetter) : undefined,
                 rowNum: typeof m.rowNum === 'number' ? m.rowNum : undefined,
+                // This event replaces the pointers the answer event carried, so
+                // a field left out here is lost: without endCol a row pointer
+                // selects one cell.
+                endCol: typeof m.endCol === 'number' ? m.endCol : undefined,
               })),
               summary: parsed.summary ? String(parsed.summary) : undefined,
               conversationId: parsed.conversationId as string | undefined,

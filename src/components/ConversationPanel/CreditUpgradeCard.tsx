@@ -3,6 +3,12 @@ import { Coins, X } from 'lucide-react';
 import { getUpgradeUrl } from '@/lib/apiConfig';
 import { openExternalUrl } from '@/utils/openExternalUrl';
 
+/**
+ * The card is shown only while the balance is under this many credits. Above
+ * it the balance is in the settings menu and stays out of the way.
+ */
+export const CREDIT_NOTICE_THRESHOLD = 300;
+
 interface CreditUpgradeCardProps {
   /** Credits left across all buckets. */
   balance: number;

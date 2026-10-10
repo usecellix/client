@@ -40,6 +40,9 @@ function toLegacyFormat(fmt: RichFormatSpec): FormatSpec {
     fontName: fmt.fontName,
     fontColor: fmt.fontColor,
     fillColor: fmt.fillColor,
+    // Dropped here until TASKS.md #400: a FORMAT_RANGE could set a fill but never remove one,
+    // so putting back "no fill" on Revert had no way to be said.
+    clearFill: fmt.clearFill,
     numberFormat: fmt.numberFormat,
     horizontalAlignment: fmt.horizontalAlignment,
     verticalAlignment: fmt.verticalAlignment,

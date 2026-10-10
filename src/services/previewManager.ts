@@ -2,6 +2,7 @@ import { SheetAction, SheetActionType } from '@/types/sheet-actions';
 import { CellChange } from '@/types/changeSet';
 import { ActionEngine } from '@/utils/actionEngine';
 import type { CreatedConditionalFormatId, CreatedChartId } from '@/engine/actionEngine';
+import type { FormatSnapshot } from '@/engine/formatSnapshot';
 import type { SheetCreationOutcome } from '@/engine/handlers/sheet.handler';
 import {
   annotateDestOverwriteForCreatedSheets,
@@ -145,6 +146,7 @@ export class PreviewManager {
         createdConditionalFormatIds?: CreatedConditionalFormatId[];
         createdChartIds?: CreatedChartId[];
         sortedRangeChanges?: CellChange[];
+        formatSnapshots?: FormatSnapshot[];
         sheetNameMismatches?: SheetCreationOutcome[];
       }
     | void
@@ -166,6 +168,7 @@ export class PreviewManager {
       let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
       let createdChartIds: CreatedChartId[] | undefined;
       let sortedRangeChanges: CellChange[] | undefined;
+      let formatSnapshots: FormatSnapshot[] | undefined;
       let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       if (toApply.length > 0) {
         // applyActionsWithReport (not the void applyActions) — TASKS.md #40/#15 need
@@ -179,11 +182,16 @@ export class PreviewManager {
         createdConditionalFormatIds = result.createdConditionalFormatIds;
         createdChartIds = result.createdChartIds;
         sortedRangeChanges = result.sortedRangeChanges;
+        formatSnapshots = result.formatSnapshots;
         sheetNameMismatches = result.sheetNameMismatches;
       }
       this.reset();
-      return createdConditionalFormatIds || createdChartIds || sortedRangeChanges || sheetNameMismatches
-        ? { createdConditionalFormatIds, createdChartIds, sortedRangeChanges, sheetNameMismatches }
+      return createdConditionalFormatIds ||
+        createdChartIds ||
+        sortedRangeChanges ||
+        formatSnapshots ||
+        sheetNameMismatches
+        ? { createdConditionalFormatIds, createdChartIds, sortedRangeChanges, formatSnapshots, sheetNameMismatches }
         : undefined;
     } catch (error) {
       // Keep pending + applied flags so a retry does not double-write.

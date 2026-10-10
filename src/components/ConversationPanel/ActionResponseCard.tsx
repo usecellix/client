@@ -270,10 +270,19 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
     ) : null;
 
   if (isAccepted) {
+    // An applied change that was then reverted is no longer in the workbook, so the card
+    // must not go on saying "Applied". TASKS.md #404.
+    const reverted = block.reverted === true;
     return (
-      <div className={`cellix-changes-card cellix-block-enter is-applied${compactClass}`}>
+      <div className={`cellix-changes-card cellix-block-enter ${reverted ? 'is-reverted' : 'is-applied'}${compactClass}`}>
         {summaryBody}
-        {footer(<span className="cellix-action-status is-applied">Applied</span>)}
+        {footer(
+          reverted ? (
+            <span className="cellix-action-status is-reverted">Reverted</span>
+          ) : (
+            <span className="cellix-action-status is-applied">Applied</span>
+          ),
+        )}
         {detailsBody}
       </div>
     );

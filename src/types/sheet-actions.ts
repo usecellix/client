@@ -8,7 +8,7 @@ export interface FormatSpec {
   fontColor?: string;
   fillColor?: string;
   clearFill?: boolean;
-  horizontalAlignment?: 'left' | 'center' | 'right';
+  horizontalAlignment?: 'left' | 'center' | 'right' | 'general';
   verticalAlignment?: 'top' | 'middle' | 'bottom';
   wrapText?: boolean;
   numberFormat?: string;

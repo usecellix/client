@@ -1,5 +1,6 @@
 import { partitionActions } from '../engine/actionNormalizer';
 import { richActionEngine, CreatedConditionalFormatId, CreatedChartId } from '../engine/actionEngine';
+import type { FormatSnapshot } from '../engine/formatSnapshot';
 import { SheetCreationOutcome } from '../engine/handlers/sheet.handler';
 import { isOverwriteGuardError } from '../engine/overwriteGuard';
 import {
@@ -69,6 +70,8 @@ export class ActionEngine {
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
     sortedRangeChanges?: CellChange[];
+    /** What each formatting action overwrote — Revert's data. TASKS.md #400. */
+    formatSnapshots?: FormatSnapshot[];
     /** ADD_SHEET/CREATE_SHEET outcomes where the live sheet name diverged from what was requested. */
     sheetNameMismatches?: SheetCreationOutcome[];
   }> {
@@ -77,6 +80,7 @@ export class ActionEngine {
     let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
     let createdChartIds: CreatedChartId[] | undefined;
     let sortedRangeChanges: CellChange[] | undefined;
+    let formatSnapshots: FormatSnapshot[] | undefined;
     let sheetNameMismatches: SheetCreationOutcome[] | undefined;
     // Populated before the try so a throw still reports what the guard did.
     let guardBlocked: SheetAction[] = [];
@@ -118,6 +122,7 @@ export class ActionEngine {
       createdConditionalFormatIds = richResult.createdConditionalFormatIds;
       createdChartIds = richResult.createdChartIds;
       sortedRangeChanges = richResult.sortedRangeChanges;
+      formatSnapshots = richResult.formatSnapshots;
       sheetNameMismatches = richResult.sheetNameMismatches;
       if (richResult.errors.some((e) => e.includes('Write blocked:'))) {
         throw new Error(richResult.errors.find((e) => e.includes('Write blocked:')) ?? richResult.errors[0]);
@@ -140,6 +145,7 @@ export class ActionEngine {
       ...(createdConditionalFormatIds ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds ? { createdChartIds } : {}),
       ...(sortedRangeChanges ? { sortedRangeChanges } : {}),
+      ...(formatSnapshots ? { formatSnapshots } : {}),
       ...(sheetNameMismatches ? { sheetNameMismatches } : {}),
     };
   }

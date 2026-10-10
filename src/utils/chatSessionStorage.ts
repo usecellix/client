@@ -1,10 +1,51 @@
 import { ChatSession, ChatSessionStore } from '@/types/chatSession';
-import { ConversationTurn } from '@/types/conversationTurn';
+import { ConversationTurn, TurnBlock } from '@/types/conversationTurn';
 
 const STORAGE_PREFIX = 'cellix:chat-sessions:';
 
 function storageKey(workbookKey: string): string {
   return `${STORAGE_PREFIX}${workbookKey}`;
+}
+
+const IMPORT_EXPIRED_NOTE =
+  'This import was not accepted before the pane was closed. Attach the file again to import it.';
+
+/**
+ * The copy of an attachment import that is saved to browser storage, with its
+ * rows removed.
+ *
+ * An import card carries every transaction of the user's bank statement in its
+ * write action. That is needed to apply the card, and for nothing after: once
+ * accepted the rows are in the workbook. Saving them would leave a second copy
+ * of the statement in browser storage indefinitely, and a long statement is
+ * large enough to exhaust the storage quota and stop every chat from saving.
+ */
+export function stripImportedRows(block: TurnBlock): TurnBlock {
+  if (block.type !== 'actions' || !block.importSheetName) return block;
+  return {
+    ...block,
+    actions: block.actions.map((action) =>
+      action.type === 'WRITE_TABLE' ? { ...action, rows: [] } : action,
+    ),
+  };
+}
+
+/**
+ * The other half of `stripImportedRows`: an import still pending when it was
+ * saved comes back without its rows, so it can no longer be applied. It is
+ * closed with a note instead of being left as a card whose Accept would create
+ * an empty sheet.
+ */
+export function expireRowlessImport(block: TurnBlock): TurnBlock {
+  if (block.type !== 'actions' || !block.importSheetName) return block;
+  if (block.proposalStatus !== 'pending') return block;
+  return {
+    ...block,
+    proposalStatus: 'rejected',
+    userFacingSummary: block.userFacingSummary
+      ? { ...block.userFacingSummary, supportingDetail: IMPORT_EXPIRED_NOTE }
+      : { headline: block.explanation, supportingDetail: IMPORT_EXPIRED_NOTE },
+  };
 }
 
 function reviveTurnDates(turn: ConversationTurn): ConversationTurn {
@@ -13,6 +54,9 @@ function reviveTurnDates(turn: ConversationTurn): ConversationTurn {
     timestamp: new Date(turn.timestamp),
     phase: turn.phase === 'processing' ? 'complete' : turn.phase,
     blocks: turn.blocks.map((block) => {
+      if (block.type === 'actions') {
+        return expireRowlessImport(block);
+      }
       if (block.type === 'answer' && block.revealState === 'typing') {
         return { ...block, revealState: 'complete' as const };
       }
@@ -63,6 +107,7 @@ export function saveChatSessions(workbookKey: string, store: ChatSessionStore): 
         ...session,
         turns: session.turns.map((turn) => ({
           ...turn,
+          blocks: turn.blocks.map(stripImportedRows),
           timestamp:
             turn.timestamp instanceof Date
               ? turn.timestamp.toISOString()

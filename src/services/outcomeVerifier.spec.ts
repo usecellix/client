@@ -121,6 +121,32 @@ describe('verifyAppliedOutcome', () => {
     expect(describeOutcome(result)).toContain('Main');
   });
 
+  // TASKS.md #370 — a DELETE_SHEET's own ChangeSet diff still carries a row
+  // for every cell that was on the deleted sheet, so without this the sheet
+  // being gone afterwards (the whole point of the batch) was reported as the
+  // worst possible outcome failure.
+  it('treats a sheet named in deletedSheetNames as verified when it is gone afterwards', async () => {
+    installExcelMock({});
+    const result = await verifyAppliedOutcome(
+      [change('Bank Statement', 'A1', 'Date'), change('Bank Statement', 'B1', 'Description')],
+      { deletedSheetNames: ['Bank Statement'] },
+    );
+
+    expect(result.verified).toBe(2);
+    expect(result.mismatches).toHaveLength(0);
+    expect(describeOutcome(result)).toBeNull();
+  });
+
+  it('still reports a sheet that goes missing without a matching DELETE_SHEET in this batch', async () => {
+    installExcelMock({});
+    const result = await verifyAppliedOutcome([change('Bank Statement', 'A1', 'Date')], {
+      deletedSheetNames: ['Some Other Sheet'],
+    });
+
+    expect(result.mismatches[0].actual).toBe('(sheet missing)');
+    expect(describeOutcome(result)).toContain('could not be found afterwards');
+  });
+
   it('catches "Accept applied nothing" — cells still hold their old values', async () => {
     installExcelMock({ January: { A1: '', B1: '' } });
     const result = await verifyAppliedOutcome([
