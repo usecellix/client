@@ -33,3 +33,27 @@ export function attachmentExtension(fileName: string): SupportedAttachmentExtens
     ? (ext as SupportedAttachmentExtension)
     : null;
 }
+
+/**
+ * What a file being dragged is, judged from its MIME type: a browser hides the
+ * name until the file is dropped, but tells the type. A blank or unfamiliar type
+ * is 'unknown' rather than refused, because Windows reports a CSV as Excel or as
+ * nothing; the name is checked again on drop (`attachmentExtension`).
+ */
+export type DraggedFileKind = 'pdf' | 'sheet' | 'unsupported' | 'unknown';
+
+const SHEET_MIME_TYPES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'text/csv',
+  'application/csv',
+];
+
+export function draggedFileKind(mimeType: string): DraggedFileKind {
+  const mime = mimeType.toLowerCase();
+  if (!mime) return 'unknown';
+  if (mime === 'application/pdf') return 'pdf';
+  if (SHEET_MIME_TYPES.includes(mime)) return 'sheet';
+  // Anything with a definite, different type (Word, an image, a zip...) is not a statement.
+  return 'unsupported';
+}

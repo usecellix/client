@@ -147,6 +147,38 @@ describe('AttachmentChip', () => {
     await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(true));
   });
 
+  it('unlocks on its own once the typed password is right, with no Enter', async () => {
+    decode.mockRejectedValueOnce(new AttachmentError('password_required', 'Needs a password.'));
+    decode.mockResolvedValueOnce(table);
+    const { onImport } = renderChip();
+
+    const input = await passwordInput();
+    fireEvent.change(input, { target: { value: 'secret' } });
+    await waitFor(() => expect(status()).toBe(READY), { timeout: 3000 });
+
+    expect(decode).toHaveBeenLastCalledWith(file, 'secret');
+    expect(screen.queryByLabelText('Password for statement.pdf')).toBeNull();
+    expect(onImport).not.toHaveBeenCalled();
+  });
+
+  it('says nothing and keeps the field while a typed password is still wrong', async () => {
+    decode.mockRejectedValueOnce(new AttachmentError('password_required', 'Needs a password.'));
+    decode.mockRejectedValueOnce(new AttachmentError('password_incorrect', 'That password did not open the PDF.'));
+    decode.mockResolvedValueOnce(table);
+    renderChip();
+
+    const input = await passwordInput();
+    fireEvent.change(input, { target: { value: 'sec' } });
+    await waitFor(() => expect(decode).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    // The wrong guess leaves the field, its text and the focus untouched.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((await passwordInput()).value).toBe('sec');
+    expect(status()).toBe('Password protected');
+
+    fireEvent.change(input, { target: { value: 'secret' } });
+    await waitFor(() => expect(status()).toBe(READY), { timeout: 3000 });
+  });
+
   it('is not released by a Send pressed before it was unlocked', async () => {
     decode.mockRejectedValueOnce(new AttachmentError('password_required', 'Needs a password.'));
     decode.mockResolvedValueOnce(table);

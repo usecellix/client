@@ -4989,3 +4989,78 @@
   background: #fef3c7;
   color: #92400e;
 }
+
+/* Shown over the whole pane while a file is dragged onto it: the pane blurs and
+   dims, with an icon and one line in the middle. It takes no pointer events, so
+   the drop still lands on the pane underneath.
+
+   Kept this plain on purpose. A file dragged in from the desktop brings the
+   operating system's own drag preview, which on Windows is a blank white square
+   with a "Copy" tag at the cursor. A web page can neither restyle nor hide it
+   (other chat apps show the same square), and attempts to dress it up, such as a
+   card drawn behind it, cannot know where it is drawn. */
+.cellix-panel {
+  position: relative;
+}
+
+.cellix-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  animation: cellix-drop-overlay-in 120ms ease-out;
+}
+
+.cellix-drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.cellix-drop-overlay-card strong {
+  color: var(--cx-brand-700, #4338ca);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cellix-drop-overlay-card.is-refused,
+.cellix-drop-overlay-card.is-refused strong {
+  color: var(--cx-danger, #b91c1c);
+}
+
+.cellix-drop-overlay-icons {
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cellix-drop-overlay-icons .cellix-file-badge {
+  display: block;
+}
+
+@keyframes cellix-drop-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cellix-drop-overlay {
+    animation: none;
+  }
+}

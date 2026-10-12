@@ -31,6 +31,9 @@ interface AttachmentChipProps {
 /** `ready`: read (and unlocked if it had a password), waiting for the user to press Send. */
 type Phase = 'idle' | 'reading' | 'password' | 'ready' | 'waiting' | 'error';
 
+/** Pause after the last keystroke before a typed password is tried on its own. */
+const PASSWORD_AUTO_TRY_DELAY_MS = 600;
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -42,8 +45,8 @@ function formatSize(bytes: number): string {
  * here in the task pane (the file itself is not uploaded), and then waits in
  * the message box like an attachment in any chat: it goes when the user presses
  * Send, with whatever they typed alongside it. A password-protected PDF shows a
- * short password field beside the capsule first; Enter there only unlocks the
- * file. The password is used for that one read and then dropped.
+ * short password field beside the capsule first. Typing the right password unlocks
+ * the file by itself (Enter also works). The password is used for that one read and then dropped.
  * Root/ATTACHMENT_EXTRACTION_PLAN.md §6.5.
  */
 const AttachmentChip: React.FC<AttachmentChipProps> = ({
@@ -94,6 +97,32 @@ const AttachmentChip: React.FC<AttachmentChipProps> = ({
     },
     [file],
   );
+
+  // While the user types a password, try it quietly once they pause. A wrong
+  // guess says nothing and keeps the field as it is, so the right password
+  // unlocks the file without pressing Enter. Enter still works and still reports
+  // a wrong password. Each attempt is a full open of the file, hence the pause.
+  useEffect(() => {
+    if (phase !== 'password' || !password) return;
+    const attempted = password;
+    const timer = window.setTimeout(async () => {
+      try {
+        const rawTable = await decodeAttachment(file, attempted);
+        if (!mountedRef.current) return;
+        setPassword('');
+        setWrongPassword(null);
+        setDecoded(rawTable);
+        setReleased(false);
+        setPhase('ready');
+      } catch (error) {
+        if (!mountedRef.current) return;
+        if (error instanceof AttachmentError && error.code === 'password_incorrect') return;
+        setPhase('error');
+        setFailure(error instanceof AttachmentError ? error.message : 'This file could not be read.');
+      }
+    }, PASSWORD_AUTO_TRY_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [password, phase, file]);
 
   // Start reading the moment the file is attached. The ref keeps a development
   // double-mount from reading the same file twice.
@@ -208,7 +237,7 @@ const AttachmentChip: React.FC<AttachmentChipProps> = ({
               setWrongPassword(null);
             }}
             placeholder={wrongPassword ? 'Wrong password, try again' : 'PDF password'}
-            title="This PDF is password protected. Type its password and press Enter to unlock it."
+            title="This PDF is password protected. Type its password; it unlocks on its own, or press Enter."
             aria-label={`Password for ${file.name}`}
             aria-invalid={wrongPassword ? true : undefined}
             autoComplete="off"

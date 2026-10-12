@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useMemo, useState, KeyboardEvent } from 'react';
 import {
+  AlertCircle,
   ArrowRight,
   AtSign,
   Check,
@@ -21,11 +22,12 @@ import { RestoreResult } from '@/types/checkpoint';
 import { SheetAction } from '@/types/sheet-actions';
 import { TurnBlock } from '@/types/conversationTurn';
 import { RawTable } from '@/types/rawTable';
-import { ATTACHMENT_ACCEPT, attachmentExtension } from '@/services/attachments/attachmentError';
+import { ATTACHMENT_ACCEPT, attachmentExtension, draggedFileKind, DraggedFileKind } from '@/services/attachments/attachmentError';
 import { useSession } from '@/auth/auth-client';
 import { TextAnimate } from '@/components/ui/text-animate';
 import PanelHeader from './PanelHeader';
 import AttachmentChip from './AttachmentChip';
+import FileTypeBadge from './FileTypeBadge';
 import TurnRenderer from './TurnRenderer';
 import QuestionChoicesPanel from './QuestionChoicesPanel';
 import CreditUpgradeCard, { CREDIT_NOTICE_THRESHOLD } from './CreditUpgradeCard';
@@ -57,6 +59,12 @@ interface PanelInputProps {
    * not imported.
    */
   onImportAttachment?: ImportAttachmentHandler;
+  /**
+   * Files dropped on the task pane. The panel owns the drop target (the whole
+   * pane, not just the box), so it hands each drop over here, where it goes
+   * through the same checks as the paperclip. `id` changes on every drop.
+   */
+  droppedFiles?: { id: number; files: File[] } | null;
 }
 
 interface ModeSwitchProps {
@@ -299,6 +307,7 @@ export const PanelInput: React.FC<PanelInputProps> = ({
   mode,
   onModeChange,
   onImportAttachment,
+  droppedFiles,
 }) => {
   const [message, setMessage] = React.useState('');
   const [attachedFiles, setAttachedFiles] = React.useState<File[]>([]);
@@ -487,7 +496,7 @@ export const PanelInput: React.FC<PanelInputProps> = ({
     }
   };
 
-  const handleFileSelect = (files: FileList | null) => {
+  const handleFileSelect = (files: FileList | File[] | null) => {
     if (!files?.length) return;
 
     // The picker's `accept` list is only a hint the user can override, so the
@@ -517,6 +526,18 @@ export const PanelInput: React.FC<PanelInputProps> = ({
       fileInputRef.current.value = '';
     }
   };
+
+  // A drop on the pane is treated exactly like picking the file with the paperclip,
+  // and is ignored whenever the paperclip is disabled.
+  const handledDropRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!droppedFiles || handledDropRef.current === droppedFiles.id) return;
+    handledDropRef.current = droppedFiles.id;
+    if (inputDisabled || isProcessing) return;
+    handleFileSelect(droppedFiles.files);
+    // handleFileSelect is recreated every render; a drop is handled once, by id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [droppedFiles]);
 
   const removeAttachedFile = (fileToRemove: File) => {
     setAttachedFiles((current) => current.filter((file) => file !== fileToRemove));
@@ -1047,6 +1068,62 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     if (isLowCreditBalance || creditBelowNoticeThreshold) setCreditNoticeDismissed(false);
   }, [isLowCreditBalance, creditBelowNoticeThreshold]);
 
+  // Drag a file onto the pane to attach it. `dragDepth` counts enter and leave
+  // events, because moving over a child element fires a leave on its parent.
+  const [dropFiles, setDropFiles] = useState<{ id: number; files: File[] } | null>(null);
+  const [draggedKinds, setDraggedKinds] = useState<DraggedFileKind[] | null>(null);
+  const draggedKindsRef = useRef<DraggedFileKind[] | null>(null);
+  const isDraggingFile = draggedKinds !== null;
+  const dragDepthRef = useRef(0);
+  const dragCarriesFiles = (event: React.DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
+  const draggedKindsOf = (event: React.DragEvent): DraggedFileKind[] =>
+    Array.from(event.dataTransfer?.items ?? [])
+      .filter((item) => item.kind === 'file')
+      .map((item) => draggedFileKind(item.type));
+  const showDraggedKinds = (kinds: DraggedFileKind[] | null) => {
+    draggedKindsRef.current = kinds;
+    setDraggedKinds(kinds);
+  };
+  // Only a drag made up entirely of files that can never be attached is refused
+  // at the cursor; a mixed or uncertain drag is let through and sorted on drop.
+  const dragIsAllUnsupported = (kinds: DraggedFileKind[] | null) =>
+    !!kinds && kinds.length > 0 && kinds.every((kind) => kind === 'unsupported');
+
+  const handlePaneDragEnter = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    if (!draggedKindsRef.current) showDraggedKinds(draggedKindsOf(event));
+  };
+  const handlePaneDragOver = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    // Without this the webview opens the dropped file instead of handing it over.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = dragIsAllUnsupported(draggedKindsRef.current) ? 'none' : 'copy';
+  };
+  const handlePaneDragLeave = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) showDraggedKinds(null);
+  };
+  const handlePaneDrop = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    showDraggedKinds(null);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length) setDropFiles((current) => ({ id: (current?.id ?? 0) + 1, files }));
+  };
+
+  const dragHasPdf = !!draggedKinds?.includes('pdf');
+  const dragHasSheet = !!draggedKinds?.includes('sheet');
+  const dragRefused = dragIsAllUnsupported(draggedKinds);
+  const dropTitle = dragRefused
+    ? "This file type can't be attached"
+    : dragHasPdf && !dragHasSheet && draggedKinds?.length === 1
+      ? 'Drop the PDF to attach it'
+      : 'Drop to attach';
+
   const composerInput = (
     <PanelInput
       onSend={
@@ -1059,6 +1136,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       }
       onStop={onStop}
       onImportAttachment={onImportAttachment}
+      droppedFiles={dropFiles}
       disabled={isWaitingForResponse}
       isProcessing={isWaitingForResponse}
       // The docked card is the thing asking; this field is optional detail
@@ -1140,7 +1218,39 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   );
 
   return (
-    <div className="cellix-panel">
+    <div
+      className={`cellix-panel${isDraggingFile ? ' is-dragging-file' : ''}${dragRefused ? ' is-drag-refused' : ''}`}
+      onDragEnter={handlePaneDragEnter}
+      onDragOver={handlePaneDragOver}
+      onDragLeave={handlePaneDragLeave}
+      onDrop={handlePaneDrop}
+    >
+      {isDraggingFile && (
+        <div className="cellix-drop-overlay" aria-hidden="true">
+          <div className={`cellix-drop-overlay-card${dragRefused ? ' is-refused' : ''}`}>
+            <span className="cellix-drop-overlay-icons">
+              {dragRefused ? (
+                <AlertCircle size={32} strokeWidth={1.6} />
+              ) : (
+                <>
+                  {(dragHasPdf || !dragHasSheet) && (
+                    <span className="is-pdf">
+                      <FileTypeBadge kind="pdf" size={44} />
+                    </span>
+                  )}
+                  {(dragHasSheet || !dragHasPdf) && (
+                    <span className="is-sheet">
+                      <FileTypeBadge kind="sheet" size={44} />
+                    </span>
+                  )}
+                </>
+              )}
+            </span>
+            <strong>{dropTitle}</strong>
+            <span>{dragRefused ? 'Use a PDF, XLSX, XLS or CSV file' : 'PDF, XLSX, XLS or CSV'}</span>
+          </div>
+        </div>
+      )}
       <PanelHeader
         sessions={sessions}
         activeSessionId={activeSessionId}

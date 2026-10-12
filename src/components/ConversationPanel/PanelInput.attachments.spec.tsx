@@ -199,4 +199,71 @@ describe('PanelInput — attachments', () => {
     );
     expect(decode).not.toHaveBeenCalled();
   });
+
+  describe('files dropped on the pane', () => {
+    const noop = vi.fn();
+    const renderWithDrop = (droppedFiles: { id: number; files: File[] } | null, disabled = false) =>
+      render(
+        <PanelInput
+          onSend={onSend}
+          mode="action"
+          onModeChange={noop}
+          onImportAttachment={onImportAttachment}
+          droppedFiles={droppedFiles}
+          disabled={disabled}
+        />,
+      );
+
+    it('attaches a dropped statement exactly as the paperclip would', async () => {
+      decode.mockResolvedValue(table);
+      renderWithDrop({ id: 1, files: [pdf] });
+
+      await waitUntilReady();
+      expect(decode).toHaveBeenCalledTimes(1);
+      expect(onImportAttachment).not.toHaveBeenCalled();
+    });
+
+    it('refuses a dropped file of another type with the same message as the picker', () => {
+      const docx = new File(['x'], 'Account_Statement.docx');
+      renderWithDrop({ id: 1, files: [docx] });
+
+      expect(screen.getByRole('alert').textContent).toBe(
+        'Account_Statement.docx cannot be attached. Use a PDF, XLSX, XLS or CSV file.',
+      );
+      expect(decode).not.toHaveBeenCalled();
+    });
+
+    it('takes the supported file and names the refused one when both are dropped', async () => {
+      decode.mockResolvedValue(table);
+      renderWithDrop({ id: 1, files: [pdf, new File(['x'], 'notes.txt')] });
+
+      await waitUntilReady();
+      expect(screen.getByRole('alert').textContent).toContain('notes.txt cannot be attached');
+    });
+
+    it('ignores a drop while the box is disabled', () => {
+      renderWithDrop({ id: 1, files: [pdf] }, true);
+
+      expect(decode).not.toHaveBeenCalled();
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it('handles each drop once, even when the composer re-renders', async () => {
+      decode.mockResolvedValue(table);
+      const drop = { id: 1, files: [pdf] };
+      const view = renderWithDrop(drop);
+      await waitUntilReady();
+
+      view.rerender(
+        <PanelInput
+          onSend={onSend}
+          mode="action"
+          onModeChange={noop}
+          onImportAttachment={onImportAttachment}
+          droppedFiles={drop}
+        />,
+      );
+      expect(decode).toHaveBeenCalledTimes(1);
+    });
+  });
 });
