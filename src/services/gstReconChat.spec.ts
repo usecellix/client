@@ -100,6 +100,7 @@ function buildMockResult(overrides: Partial<GstReconcileResponse> = {}): GstReco
     output_sheet_name: OUTPUT_SHEET,
     audit_log_id: 'audit-1',
     missed_books_only: true,
+    layout_cache_id: 'layout_cache_1',
     ...overrides,
   };
 }
@@ -108,6 +109,7 @@ const readAllSheetHeaders = vi.fn();
 const readSheetsFull = vi.fn();
 const sheetExists = vi.fn();
 const runGstReconcile = vi.fn();
+const runGstReconRelayout = vi.fn();
 
 vi.mock('@/services/gstSheetReader', () => ({
   readAllSheetHeaders: (...args: unknown[]) => readAllSheetHeaders(...args),
@@ -122,6 +124,7 @@ vi.mock('@/services/gstReconService', async () => {
   return {
     ...actual,
     runGstReconcile: (...args: unknown[]) => runGstReconcile(...args),
+    runGstReconRelayout: (...args: unknown[]) => runGstReconRelayout(...args),
   };
 });
 
@@ -855,5 +858,106 @@ describe('gstReconChat — GSTR-2B/2A portal source preference (ask once, rememb
     });
 
     expect(outcome?.kind).toBe('recon_ready');
+  });
+});
+
+describe('gstReconChat — relayout follow-up ("change the layout of Missed vs X")', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('Excel', {});
+    readAllSheetHeaders.mockReset();
+    readSheetsFull.mockReset();
+    sheetExists.mockReset();
+    runGstReconcile.mockReset();
+    runGstReconRelayout.mockReset();
+
+    readSheetsFull.mockResolvedValue([grid(PR_SHEET, PR_HEADERS), grid(PORTAL_SHEET, PORTAL_HEADERS)]);
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+    ]);
+    sheetExists.mockResolvedValue(false);
+    runGstReconcile.mockResolvedValue(buildMockResult());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('asking to change the layout before any reconciliation has run returns a plain message, never a crash', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const outcome = await tryHandleGstReconChat('change the layout of Missed vs GSTR-2B to a single table');
+
+    expect(outcome?.kind).toBe('message_only');
+    if (outcome?.kind !== 'message_only') return;
+    expect(outcome.answer).toMatch(/run the reconciliation again/i);
+    expect(runGstReconRelayout).not.toHaveBeenCalled();
+  });
+
+  it('after a completed casual run, a relayout follow-up calls runGstReconRelayout with the cached id — no re-reconcile', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    const first = await tryHandleGstReconChat('Reconcile purchase register');
+    expect(first?.kind).toBe('recon_ready');
+
+    runGstReconRelayout.mockResolvedValue({
+      actions: fixtureActions('Missed vs GSTR-2B — Books Only'),
+      output_sheet_name: 'Missed vs GSTR-2B — Books Only',
+      layout: 'books_flat',
+    });
+
+    const outcome = await tryHandleGstReconChat(
+      'change the layout of Missed vs GSTR-2B to a single table',
+    );
+
+    expect(runGstReconRelayout).toHaveBeenCalledTimes(1);
+    expect(runGstReconRelayout).toHaveBeenCalledWith({
+      layout_cache_id: 'layout_cache_1',
+      layout: 'books_flat',
+    });
+    expect(runGstReconcile).toHaveBeenCalledTimes(1); // only the original run — no re-run
+    expect(outcome?.kind).toBe('recon_ready');
+    if (outcome?.kind !== 'recon_ready') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2B — Books Only');
+  });
+
+  it('a relayout result colliding with an existing sheet produces a button-choice card, same as a fresh run', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    await tryHandleGstReconChat('Reconcile purchase register');
+
+    // The books_flat sheet name already exists in this workbook.
+    readAllSheetHeaders.mockResolvedValue([
+      { name: PR_SHEET, headers: PR_HEADERS },
+      { name: PORTAL_SHEET, headers: PORTAL_HEADERS },
+      { name: OUTPUT_SHEET, headers: ['GSTIN', 'Vendor Name'] },
+      { name: 'Missed vs GSTR-2B — Books Only', headers: ['GSTIN', 'Vendor Name'] },
+    ]);
+    runGstReconRelayout.mockResolvedValue({
+      actions: fixtureActions('Missed vs GSTR-2B — Books Only'),
+      output_sheet_name: 'Missed vs GSTR-2B — Books Only',
+      layout: 'books_flat',
+    });
+
+    const outcome = await tryHandleGstReconChat(
+      'change the layout of Missed vs GSTR-2B to a single table',
+    );
+
+    expect(outcome?.kind).toBe('sheet_collision');
+    if (outcome?.kind !== 'sheet_collision') return;
+    expect(outcome.sheetName).toBe('Missed vs GSTR-2B — Books Only');
+  });
+
+  it('a server error on relayout surfaces as a plain message, not a thrown exception', async () => {
+    const { tryHandleGstReconChat } = await import('./gstReconChat');
+    await tryHandleGstReconChat('Reconcile purchase register');
+
+    runGstReconRelayout.mockRejectedValue(new Error('cache entry expired'));
+
+    const outcome = await tryHandleGstReconChat(
+      'change the layout of Missed vs GSTR-2B to a single table',
+    );
+
+    expect(outcome?.kind).toBe('message_only');
+    if (outcome?.kind !== 'message_only') return;
+    expect(outcome.answer).toMatch(/cache entry expired/i);
   });
 });

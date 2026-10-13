@@ -785,6 +785,7 @@ interface ConversationPanelProps {
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => void;
+  onRejectGstReconCollision: (turnId: string, blockId: string, collisionId: string) => void;
   onJumpToGstReconRow: (sheetName: string, row: number) => void;
   onAnswerQuestion: (answer: string) => void;
   onClarificationAnswer: (answer: string) => void;
@@ -837,6 +838,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onAcceptAllActions,
   onRejectActions,
   onResolveGstReconCollision,
+  onRejectGstReconCollision,
   onJumpToGstReconRow,
   onAnswerQuestion,
   onClarificationAnswer,
@@ -1087,6 +1089,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
               onAcceptAllActions={onAcceptAllActions}
               onRejectActions={onRejectActions}
               onResolveGstReconCollision={onResolveGstReconCollision}
+              onRejectGstReconCollision={onRejectGstReconCollision}
               onJumpToGstReconRow={onJumpToGstReconRow}
               onAnswerQuestion={handleQuestionAnswer}
               dockedQuestions

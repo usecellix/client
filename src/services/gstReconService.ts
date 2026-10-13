@@ -15,6 +15,10 @@ export function getGstReconAuditOutcomeEndpoint(auditLogId: string): string {
   return `${getApiBaseUrl()}/gst/reconcile/audit/${encodeURIComponent(auditLogId)}/outcome`;
 }
 
+export function getGstReconRelayoutEndpoint(): string {
+  return `${getApiBaseUrl()}/gst/reconcile/relayout`;
+}
+
 export type GstReconType =
   | 'PR_VS_GSTR2B'
   | 'PR_VS_GSTR2A'
@@ -134,6 +138,14 @@ export interface GstReconcileResponse {
   period_applied?: { label: string; start: string; end: string };
   /** Present instead of running the reconciliation when the stated period matched zero rows in books or portal. */
   period_zero_message?: string;
+  /**
+   * Present only for a casual (missed_books_only) run — names the server-side cache
+   * entry holding this run's matched rows, so a follow-up "change the layout of
+   * Missed vs X" prompt can re-map them into a different layout via
+   * `runGstReconRelayout` without re-reading the workbook or re-matching. Absent
+   * (null) for the full/gated report, which has no layout variants to switch between.
+   */
+  layout_cache_id?: string | null;
 }
 
 function formatInr(n: number): string {
@@ -467,6 +479,29 @@ export async function runGstReconcile(
   request: GstReconcileRequest,
 ): Promise<GstReconcileResponse> {
   return reconcileFetch<GstReconcileResponse>(getGstReconcileEndpoint(), request);
+}
+
+export interface GstReconRelayoutRequest {
+  layout_cache_id: string;
+  layout: GstReconLayout;
+  output_sheet_name?: string;
+}
+
+export interface GstReconRelayoutResponse {
+  actions: SheetAction[];
+  output_sheet_name: string;
+  layout: GstReconLayout;
+}
+
+/**
+ * Follow-up to an earlier `runGstReconcile` casual run — "change the layout of
+ * Missed vs X" re-maps that run's already-matched rows into a different sheet
+ * layout via `layout_cache_id`, with no workbook re-read and no re-matching.
+ */
+export async function runGstReconRelayout(
+  request: GstReconRelayoutRequest,
+): Promise<GstReconRelayoutResponse> {
+  return reconcileFetch<GstReconRelayoutResponse>(getGstReconRelayoutEndpoint(), request);
 }
 
 export async function reportGstReconAuditOutcome(

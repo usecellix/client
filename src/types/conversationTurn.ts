@@ -178,6 +178,8 @@ export interface GstReconMissedRowsBlock {
   id: string;
   type: 'gst_recon_missed_rows';
   rows: GstReconMissedRow[];
+  /** Heading override (bank recon reuses this card for its unreconciled items). */
+  title?: string;
 }
 
 export type TurnBlock =

@@ -7,12 +7,15 @@
 import {
   detectGstReconIntent,
   detectGstReconLayout,
+  detectGstReconRelayoutTarget,
   detectPurchasePortalSourcePreference,
   extractGstReconContext,
+  extractRelayoutTargetSheetName,
   GstPurchasePortalPreference,
   GstReconIntentType,
   GstReconLayout,
   isCasualMissedRowsRecon,
+  isGstReconRelayoutPrompt,
 } from '@/utils/gstReconIntent';
 import { resolveGstPeriod } from '@/utils/gstPeriod';
 import {
@@ -29,6 +32,7 @@ import {
   GstReconType,
   reportGstReconAuditOutcome,
   runGstReconcile,
+  runGstReconRelayout,
 } from '@/services/gstReconService';
 import { loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
 import { SheetAction } from '@/types/sheet-actions';
@@ -66,6 +70,10 @@ export type GstReconChatOutcome =
       /** Books rows that didn't cleanly match the portal — rendered as a clickable list so
        * each one can be jumped to directly in the books sheet, never the portal sheet. */
       missedRows?: GstReconMissedRow[];
+      /** Label shown in the response's internal details; defaults to the GST wording. */
+      processingLabel?: string;
+      /** Heading for the clickable row list; defaults to "Missed rows". */
+      missedRowsTitle?: string;
     }
   | {
       /**
@@ -119,6 +127,24 @@ interface GstReconSheetCollision {
 
 let pendingSheetCollision: GstReconSheetCollision | null = null;
 let sheetCollisionCounter = 0;
+
+/**
+ * Maps a completed casual run's output sheet name (e.g. "Missed vs GSTR-2B") to the
+ * server-side `layout_cache_id` that lets a LATER "change the layout" follow-up
+ * re-map those same rows without re-running the reconciliation. Keyed by sheet name
+ * (not a single slot) so a workbook with both a purchase and a sales "Missed vs…"
+ * sheet in the same conversation can target either independently. Entries are
+ * replaced, never merged, on each fresh run of the same sheet — always points at the
+ * MOST RECENT matching rows for that sheet, same recency guarantee the actual sheet
+ * content itself has (a later run's Overwrite/Create-new already supersedes the data
+ * an earlier run wrote).
+ */
+const layoutCacheIdBySheetName = new Map<string, string>();
+
+function rememberLayoutCacheId(sheetName: string, layoutCacheId: string | null | undefined): void {
+  if (!layoutCacheId) return;
+  layoutCacheIdBySheetName.set(sheetName, layoutCacheId);
+}
 
 /**
  * Held while asking "GSTR-2B only, GSTR-2A only, or combined?" — remembers the ORIGINAL
@@ -354,6 +380,134 @@ function versionedSheetName(base: string, taken: Set<string>): string {
 }
 
 /**
+ * Discard a pending sheet-name collision from a Reject click — clears whichever store
+ * (`pendingSheetCollision` or the write-time `pendingWriteFailureCollisions`) currently
+ * holds `collisionId`, same dispatch-by-prefix as `resolveGstReconSheetCollision`, but
+ * writes nothing: no DELETE_SHEET, no versioned sheet, no sheet at all. Mirrors the plain
+ * Accept/Reject actions card's Reject, which discards without writing — a sheet-name
+ * collision card is a response-action card too and should offer the same escape hatch.
+ * A stale/already-resolved collisionId is a silent no-op (nothing to discard).
+ */
+export function discardGstReconSheetCollision(collisionId: string): void {
+  if (collisionId.startsWith(WRITE_FAILURE_COLLISION_PREFIX)) {
+    pendingWriteFailureCollisions.delete(collisionId);
+    return;
+  }
+  if (pendingSheetCollision && pendingSheetCollision.collisionId === collisionId) {
+    pendingSheetCollision = null;
+  }
+}
+
+const LAYOUT_LABELS: Record<GstReconLayout, string> = {
+  categorized: 'grouped by reason',
+  books_flat: 'a single table',
+  portal_flat: 'a single table (portal-only rows)',
+};
+
+/**
+ * Handles a FOLLOW-UP "change the layout of Missed vs X" prompt — re-maps an already
+ * completed casual run's rows into a different layout via the cached
+ * `layout_cache_id`, with no workbook re-read and no re-matching. Falls back to a
+ * plain explanatory message (never a silent no-op, never a crash) when there's
+ * nothing to re-map: no completed run remembered at all, the named sheet isn't one
+ * this conversation produced, or the server-side cache entry has since expired
+ * (30-minute TTL — see `missed-books-layout-cache.ts`), in which case the user is
+ * pointed at re-running the reconciliation instead.
+ */
+async function handleGstReconRelayoutRequest(message: string): Promise<GstReconChatOutcome> {
+  const namedSheet = extractRelayoutTargetSheetName(message);
+  const candidateNames = namedSheet
+    ? [namedSheet]
+    : Array.from(layoutCacheIdBySheetName.keys());
+
+  if (!candidateNames.length) {
+    return {
+      kind: 'message_only',
+      answer:
+        "I don't have a recent reconciliation result to re-lay-out — run the reconciliation again and I can change its layout right after.",
+    };
+  }
+  if (!namedSheet && candidateNames.length > 1) {
+    return {
+      kind: 'message_only',
+      answer: `I have more than one recent result to choose from (${candidateNames.join(', ')}) — name which sheet, e.g. "change the layout of ${candidateNames[0]} to a single table".`,
+    };
+  }
+
+  const targetSheetName = candidateNames[0];
+  const layoutCacheId = layoutCacheIdBySheetName.get(targetSheetName);
+  if (!layoutCacheId) {
+    return {
+      kind: 'message_only',
+      answer: `I don't have a recent result for "${targetSheetName}" to re-lay-out — run the reconciliation again and I can change its layout right after.`,
+    };
+  }
+
+  const newLayout = detectGstReconRelayoutTarget(message);
+
+  try {
+    const relayouted = await runGstReconRelayout({ layout_cache_id: layoutCacheId, layout: newLayout });
+    rememberLayoutCacheId(relayouted.output_sheet_name, layoutCacheId);
+
+    const headerIndex = await readAllSheetHeaders();
+    const collisionDetected =
+      relayouted.output_sheet_name !== targetSheetName &&
+      (headerIndex.some((h) => h.name === relayouted.output_sheet_name) ||
+        (await sheetExists(relayouted.output_sheet_name)));
+
+    const answer = `Switched "${targetSheetName}" to ${LAYOUT_LABELS[newLayout]} — same rows, same counts, just re-formatted. ${
+      relayouted.output_sheet_name !== targetSheetName
+        ? `This layout writes to its own sheet: "${relayouted.output_sheet_name}".`
+        : ''
+    }`.trim();
+
+    if (collisionDetected) {
+      const collisionId = `collision_${++sheetCollisionCounter}`;
+      pendingSheetCollision = {
+        collisionId,
+        result: {
+          job_id: `relayout_${collisionId}`,
+          status: 'complete',
+          reconciliation_type: '',
+          summary: {} as GstReconcileResponse['summary'],
+          rows: [],
+          actions: relayouted.actions,
+          confidence: 1,
+          exceptions: [],
+          output_sheet_name: relayouted.output_sheet_name,
+          audit_log_id: null,
+        },
+        prName: '',
+        portalName: '',
+        layout: newLayout,
+        targetSheetName: relayouted.output_sheet_name,
+      };
+      return {
+        kind: 'sheet_collision',
+        answer,
+        collisionId,
+        sheetName: relayouted.output_sheet_name,
+      };
+    }
+
+    return {
+      kind: 'recon_ready',
+      answer,
+      actions: relayouted.actions,
+      explanation: answer,
+      userFacingSummary: { headline: answer, bullets: [] },
+      sheetName: relayouted.output_sheet_name,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      kind: 'message_only',
+      answer: `I couldn't change the layout: ${msg}`,
+    };
+  }
+}
+
+/**
  * Resolve a pending sheet-name collision from a button click — `collisionId` must match
  * the currently held collision (guards against a stale/duplicate click on an old card).
  * Never parses typed text; the choice comes directly from which button was clicked.
@@ -398,6 +552,12 @@ export async function resolveGstReconSheetCollision(
     effectiveResult = { ...result, output_sheet_name: finalSheetName };
   }
 
+  // The sheet that actually ends up on the workbook may differ from
+  // `result.output_sheet_name` (Create-new's versioned name) — a later "change the
+  // layout" follow-up names the REAL sheet, so the cache id must be reachable under
+  // that final name too, not just the pre-collision one.
+  rememberLayoutCacheId(effectiveResult.output_sheet_name, result.layout_cache_id);
+
   const userFacingSummary = buildGstReconUserFacingSummary(effectiveResult, prName, portalName, layout);
   const answer = buildGstReconAnswerText(effectiveResult, prName, portalName, layout);
   pendingAuditLogId = effectiveResult.audit_log_id ?? null;
@@ -435,6 +595,10 @@ export async function tryHandleGstReconChat(
     forcedPurchasePortalPreference?: GstPurchasePortalPreference;
   },
 ): Promise<GstReconChatOutcome | null> {
+  if (isGstReconRelayoutPrompt(message)) {
+    return handleGstReconRelayoutRequest(message);
+  }
+
   if (pendingPurchasePortalAsk) {
     const ask = pendingPurchasePortalAsk;
     const preference = extractPurchasePortalAnswer(message);
@@ -795,6 +959,8 @@ export async function tryHandleGstReconChat(
       pendingAuditLogId = null;
       return { kind: 'message_only', answer };
     }
+
+    if (casual) rememberLayoutCacheId(result.output_sheet_name, result.layout_cache_id);
 
     // `headerIndex` was captured earlier in this function and could in principle be
     // stale or incomplete by now — never trust it alone for a decision this

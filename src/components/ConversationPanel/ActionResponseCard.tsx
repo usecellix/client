@@ -161,7 +161,9 @@ export const ActionResponseCard: React.FC<ActionResponseCardProps> = ({
 
   const gstReconBadge = isGstRecon && !isStaged ? (
     <div className="cellix-step-badge" data-testid="gst-recon-result-badge">
-      <span className="cellix-step-label">GST Recon Result</span>
+      <span className="cellix-step-label">
+        {/bank reconciliation/i.test(summary.headline ?? "") ? "Bank Recon Result" : "GST Recon Result"}
+      </span>
     </div>
   ) : null;
 

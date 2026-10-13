@@ -207,6 +207,72 @@ export function detectGstReconLayout(message: string): GstReconLayout {
 }
 
 /**
+ * A FOLLOW-UP request to re-lay-out an already-created missed-rows sheet — distinct
+ * from `detectGstReconLayout`, which picks a layout for a FRESH reconciliation run.
+ * Requires an explicit change-the-layout verb ("change"/"switch"/"convert"/"make it a
+ * single table"/etc.) alongside layout wording, so an ordinary first-time request like
+ * "reconcile purchase register, just show the missed rows" is never misrouted here —
+ * that one has no change-layout verb and correctly goes through the normal reconcile
+ * path with `detectGstReconLayout` instead.
+ */
+const RELAYOUT_VERB =
+  /\b(change|switch|convert|turn|redo|rearrange|rebuild|reformat|re-?layout|make|put|group)\b/i;
+const RELAYOUT_LAYOUT_WORDS =
+  /\b(layout|single\s+table|one\s+table|flat\s+table|flat\s+list|categorized|sections?|grouped?|by\s+reason|portal[-\s]?flat|portal[-\s]+only|books[-\s]?flat|books[-\s]+only)\b/i;
+
+export function isGstReconRelayoutPrompt(message: string): boolean {
+  const text = message.trim();
+  if (!text) return false;
+  return RELAYOUT_VERB.test(text) && RELAYOUT_LAYOUT_WORDS.test(text);
+}
+
+/**
+ * Which layout a relayout follow-up is asking for. Reuses the same phrase detection
+ * as `detectGstReconLayout` for the two flat variants, plus explicit "single table" /
+ * "one table" / "flat" wording (natural phrasing for THIS follow-up specifically, even
+ * without the books/portal-direction phrasing a fresh-run request would use), and
+ * "categorized" / "grouped" / "sections" to switch back. Falls back to `books_flat`
+ * when a relayout prompt is clearly asking to flatten but doesn't say which direction
+ * — books-side is the far more common ask ("list the missed rows with their reason"),
+ * and `detectGstReconLayout` already defaults ambiguous direction-less input away from
+ * guessing a flat layout at all, so this narrower fallback only applies once the
+ * relayout intent itself is already confirmed.
+ */
+export function detectGstReconRelayoutTarget(message: string): GstReconLayout {
+  const text = message.trim();
+  // Explicit "single/one/flat table" wording is a stronger, more specific signal than a
+  // bare mention of "sections"/"grouped" — those words can appear while describing what
+  // to GET RID OF too ("rearrange the sections into a single table"), so an explicit
+  // flat-table phrase always wins the direction even when "sections" is also present.
+  if (/\b(single|one|flat)\s+table\b|\bflat\s+list\b/i.test(text)) {
+    return /\bportal[-\s]?flat\b|\bportal[-\s]+only\b/i.test(text) ? 'portal_flat' : 'books_flat';
+  }
+  if (/\b(categorized|grouped|sections?|by\s+reason)\b/i.test(text)) return 'categorized';
+  if (/\b(portal[-\s]?flat|portal[-\s]+only)\b/i.test(text) || PORTAL_HAS_NOT_RECORDED.test(text)) {
+    return 'portal_flat';
+  }
+  if (PORTAL_THEN_BOOKS_MISSING.test(text)) return 'portal_flat';
+  return 'books_flat';
+}
+
+/**
+ * Loosely matches "Missed vs GSTR-2B", "Missed vs GSTR-1", etc. (with optional layout
+ * suffix, e.g. "— Books Only") to let a relayout follow-up name which sheet it means
+ * when more than one might exist in the same workbook/conversation.
+ */
+export function extractRelayoutTargetSheetName(message: string): string | null {
+  // Stops at sentence punctuation, the connector words that typically follow the sheet
+  // name ("... to a single table", "... into one table", "... as a flat list"), OR the
+  // layout wording itself directly abutting the name with no connector at all ("make
+  // Missed vs GSTR-1 one table") — without the last clause, the lazy quantifier still
+  // swallows the trailing layout phrase whenever no connector/punctuation precedes it.
+  const m = message.match(
+    /\bMissed\s+vs\s+[A-Za-z0-9\-/ ]+?(?=\s*(?:[.,!?]|\bto\b|\binto\b|\bas\b|\b(?:single|one|flat)\s+(?:table|list)\b|\blayout\b|\bcategorized\b|\bsections?\b|\bgrouped?\b|\bportal[-\s]|\bbooks[-\s]|$))/i,
+  );
+  return m ? m[0].trim() : null;
+}
+
+/**
  * Which GST portal source(s) a casual Purchase Register reconciliation should use, when
  * the workbook has both a GSTR-2B and a GSTR-2A sheet. 2B and 2A carry different legal
  * meaning (2B is the return-period ITC-eligibility source; 2A is everything a supplier

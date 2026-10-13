@@ -39,7 +39,10 @@ import { buildClientStatusMessage, isLikelyChitchat, isSimpleCreateTask } from '
 import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
 import { previewLocalChangeSet } from '@/services/auditService';
 import { isGstReconPrompt } from '@/utils/gstReconIntent';
+import { isBankReconPrompt } from '@/utils/bankReconIntent';
+import { getBankReconPendingContext, tryHandleBankReconChat } from '@/services/bankReconChat';
 import {
+  discardGstReconSheetCollision,
   finalizeGstReconAudit,
   getGstReconPendingContext,
   GstReconChatOutcome,
@@ -140,6 +143,8 @@ interface UseConversationReturn {
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => Promise<void>;
+  /** Reject button click on a GST-recon sheet-name-collision card — discards, writes nothing. */
+  rejectGstReconCollisionChoice: (turnId: string, blockId: string, collisionId: string) => void;
   endConversation: () => void;
   newChat: () => void;
   clearConversation: () => void;
@@ -1180,7 +1185,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         explanation: outcome.explanation,
         userFacingSummary: outcome.userFacingSummary,
         internalDetails: {
-          processingLabel: 'GST reconciliation (deterministic match)',
+          processingLabel: outcome.processingLabel ?? 'GST reconciliation (deterministic match)',
           rawActionSummary: `${outcome.actions.length} Excel actions (CREATE_SHEET + WRITE_TABLE)`,
         },
         gstReconOutputSheetName: outcome.sheetName,
@@ -1212,6 +1217,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 id: `gst_recon_missed_rows_${turnId}`,
                 type: 'gst_recon_missed_rows',
                 rows: outcome.missedRows,
+                title: outcome.missedRowsTitle,
               }
             : null;
         return {
@@ -1291,6 +1297,57 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       await applyGstReconOutcome(turnId, runtime, outcome);
     },
     [applyGstReconOutcome, updateTurn, workbookKey],
+  );
+
+  /**
+   * Chat-native bank reconciliation: find the bank statement + books ledger sheets, match on
+   * the server, then reuse the GST outcome rendering (Accept/Reject, collision, question).
+   */
+  const dispatchBankReconChat = useCallback(
+    async (turnId: string, message: string) => {
+      const runtime = runtimeRef.current.get(turnId);
+      if (!runtime) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Looking for the bank statement and bank ledger…', true, true),
+      }));
+
+      await delay(150);
+      if (runtime.aborted) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Matching bank transactions…', true, true),
+      }));
+
+      const outcome = await tryHandleBankReconChat(message, {
+        conversationId: conversationIdRef.current,
+      });
+
+      if (!outcome) {
+        updateTurn(turnId, (turn) => ({
+          ...turn,
+          phase: 'complete',
+          blocks: finalizeSteps(
+            [
+              ...withoutStatus(turn.blocks),
+              {
+                id: answerBlockId(turnId),
+                type: 'answer',
+                content: 'I could not start bank reconciliation for that request.',
+                revealState: 'typing',
+              } satisfies AnswerBlock,
+            ],
+            turn.userMessage,
+          ),
+        }));
+        return;
+      }
+
+      await applyGstReconOutcome(turnId, runtime, outcome);
+    },
+    [applyGstReconOutcome, updateTurn],
   );
 
   const runVisualTimeline = useCallback(
@@ -2211,6 +2268,47 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         return;
       }
 
+      // Chat-native bank reconciliation (BRS) — checked before GST; the intent detector
+      // never claims a prompt that mentions GSTR / 2B / ITC.
+      if (isBankReconPrompt(trimmed) || getBankReconPendingContext()) {
+        try {
+          await dispatchBankReconChat(turnId, trimmed);
+        } catch (error: unknown) {
+          const messageText =
+            error instanceof Error
+              ? error.message
+              : 'Bank reconciliation failed. Check the sheets and try again.';
+          pushHistory({
+            role: 'assistant',
+            content: messageText,
+            timestamp: new Date().toISOString(),
+            type: 'answer',
+          });
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            phase: 'error',
+            error: messageText,
+            blocks: finalizeSteps(
+              [
+                ...withoutStatus(turn.blocks),
+                {
+                  id: answerBlockId(turnId),
+                  type: 'answer',
+                  content: messageText,
+                  revealState: 'complete',
+                } satisfies AnswerBlock,
+              ],
+              turn.userMessage,
+            ),
+          }));
+        } finally {
+          setIsWaitingForResponse(false);
+          abortControllerRef.current = null;
+          runtimeRef.current.delete(turnId);
+        }
+        return;
+      }
+
       // Chat-native GST reconciliation (no form) — discover sheets, match, Accept/Reject.
       // Also continue multi-turn context collection when a prior GST recon is awaiting GSTIN/period.
       if (isGstReconPrompt(trimmed) || getGstReconPendingContext()) {
@@ -2356,6 +2454,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     },
     [
       dispatchGstReconChat,
+      dispatchBankReconChat,
       dispatchLocalSheetActions,
       ensureActiveSession,
       getActiveSession,
@@ -2938,6 +3037,42 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     [onActions, pushHistory, updateTurn],
   );
 
+  /**
+   * Reject a pending sheet-name collision card outright — same intent as the plain
+   * Accept/Reject actions card's Reject: discard, write nothing. Clears whichever
+   * pending-collision store currently holds `collisionId` (fresh or write-time) so a
+   * stale click on an already-resolved card is a harmless no-op, then drops the card
+   * from the turn in favor of a plain "discarded" answer block.
+   */
+  const rejectGstReconCollisionChoice = useCallback(
+    (turnId: string, blockId: string, collisionId: string) => {
+      discardGstReconSheetCollision(collisionId);
+      void finalizeGstReconAudit('rejected');
+
+      const message = 'Discarded — nothing was written to the workbook.';
+      pushHistory({
+        role: 'assistant',
+        content: message,
+        timestamp: new Date().toISOString(),
+        type: 'answer',
+      });
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        phase: 'complete',
+        blocks: [
+          ...turn.blocks.filter((b) => b.id !== blockId),
+          {
+            id: `${blockId}_resolved`,
+            type: 'answer',
+            content: message,
+            revealState: 'complete',
+          } satisfies AnswerBlock,
+        ],
+      }));
+    },
+    [pushHistory, updateTurn],
+  );
+
   const toggleThinking = useCallback(
     (turnId: string, blockId: string) => {
       updateTurn(turnId, (t) => ({
@@ -3340,6 +3475,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     acceptAllActions,
     rejectActions,
     resolveGstReconCollisionChoice,
+    rejectGstReconCollisionChoice,
     endConversation,
     newChat,
     clearConversation,

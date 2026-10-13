@@ -100,6 +100,7 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
     acceptAllActions: vi.fn(),
       rejectActions: vi.fn(),
       resolveGstReconCollisionChoice: vi.fn(),
+      rejectGstReconCollisionChoice: vi.fn(),
       endConversation: vi.fn(),
       newChat: vi.fn(),
       clearConversation: vi.fn(),

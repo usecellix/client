@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   detectGstReconIntent,
   detectGstReconLayout,
+  detectGstReconRelayoutTarget,
+  extractRelayoutTargetSheetName,
   isCasualMissedRowsRecon,
   isGstReconPrompt,
+  isGstReconRelayoutPrompt,
 } from './gstReconIntent';
 
 describe('gstReconIntent', () => {
@@ -91,5 +94,105 @@ describe('detectGstReconLayout', () => {
     expect(booksFlat).toBe('books_flat');
     expect(portalFlat).toBe('portal_flat');
     expect(booksFlat).not.toBe(portalFlat);
+  });
+});
+
+describe('isGstReconRelayoutPrompt — a FOLLOW-UP to change an already-created sheet, not a fresh run', () => {
+  it('matches a change-layout verb plus layout wording', () => {
+    expect(isGstReconRelayoutPrompt('change the layout of Missed vs GSTR-1 to a single table')).toBe(
+      true,
+    );
+    expect(isGstReconRelayoutPrompt('switch Missed vs GSTR-2B to one table')).toBe(true);
+    expect(isGstReconRelayoutPrompt('convert it to a flat list')).toBe(true);
+    expect(isGstReconRelayoutPrompt('rearrange the sections into a single table')).toBe(true);
+  });
+
+  it('does NOT match an ordinary first-time layout request — that one has no change-layout verb', () => {
+    expect(isGstReconRelayoutPrompt('Reconcile purchase register, just show the missed rows')).toBe(
+      false,
+    );
+    expect(isGstReconRelayoutPrompt('reconcile sales register with a simple layout')).toBe(false);
+  });
+
+  it('does NOT match a change-layout verb with no layout wording, or layout wording with no verb', () => {
+    expect(isGstReconRelayoutPrompt('change the GSTIN for this client')).toBe(false);
+    expect(isGstReconRelayoutPrompt('the layout looks great')).toBe(false);
+  });
+
+  // Regression: these naturally-phrased follow-ups were previously rejected by this
+  // gate before `detectGstReconRelayoutTarget` ever ran, because "make"/"put"/"group"
+  // weren't recognized verbs and "by reason"/"portal flat"/"portal-only" weren't
+  // recognized layout wording.
+  it('matches "make"/"put ... back"/"group" as change-layout verbs', () => {
+    expect(isGstReconRelayoutPrompt('make Missed vs GSTR-1 one table')).toBe(true);
+    expect(isGstReconRelayoutPrompt('put the sections back')).toBe(true);
+    expect(isGstReconRelayoutPrompt('group it by reason again')).toBe(true);
+  });
+
+  it('matches portal-direction wording ("portal-only" / "portal flat") as layout wording', () => {
+    expect(isGstReconRelayoutPrompt('change it to portal-only rows')).toBe(true);
+    expect(isGstReconRelayoutPrompt('switch to portal flat')).toBe(true);
+  });
+
+  // "make"/"put"/"group" are much more generic verbs than "change"/"switch"/"convert" —
+  // confirms they still require the equally-specific layout wording to trigger, so an
+  // unrelated sentence using one of them never false-positives into a relayout prompt.
+  it('generic verbs ("make"/"put"/"group") never false-positive without layout wording', () => {
+    expect(isGstReconRelayoutPrompt('make a new sheet called Summary')).toBe(false);
+    expect(isGstReconRelayoutPrompt('put the GSTIN in column B')).toBe(false);
+    expect(isGstReconRelayoutPrompt('group the vendors by region')).toBe(false);
+  });
+});
+
+describe('detectGstReconRelayoutTarget', () => {
+  it('defaults to books_flat for an unqualified "single table" / "one table" / "flat" ask', () => {
+    expect(detectGstReconRelayoutTarget('change the layout to a single table')).toBe('books_flat');
+    expect(detectGstReconRelayoutTarget('switch to one table')).toBe('books_flat');
+  });
+
+  it('selects categorized for "grouped" / "sections" / "by reason" / "categorized"', () => {
+    expect(detectGstReconRelayoutTarget('switch back to categorized')).toBe('categorized');
+    expect(detectGstReconRelayoutTarget('group it by reason again')).toBe('categorized');
+    expect(detectGstReconRelayoutTarget('put the sections back')).toBe('categorized');
+  });
+
+  it('selects portal_flat for explicit portal-only wording', () => {
+    expect(detectGstReconRelayoutTarget('change it to portal-only rows')).toBe('portal_flat');
+    expect(detectGstReconRelayoutTarget('switch to portal flat')).toBe('portal_flat');
+  });
+
+  // Regression: "sections" can appear while describing what to GET RID OF, not what's
+  // being asked for — "rearrange the SECTIONS into a single table" was previously
+  // misread as 'categorized' because the bare "sections" mention won. An explicit
+  // "single/one/flat table" phrase must take priority over a mere "sections" mention.
+  it('an explicit "single/one/flat table" phrase wins over an incidental "sections" mention', () => {
+    expect(detectGstReconRelayoutTarget('rearrange the sections into a single table')).toBe(
+      'books_flat',
+    );
+  });
+});
+
+describe('extractRelayoutTargetSheetName', () => {
+  it('extracts a "Missed vs X" sheet name from a relayout prompt', () => {
+    expect(extractRelayoutTargetSheetName('change the layout of Missed vs GSTR-1 to a single table')).toBe(
+      'Missed vs GSTR-1',
+    );
+    expect(extractRelayoutTargetSheetName('switch Missed vs GSTR-2B / GSTR-2A to one table.')).toBe(
+      'Missed vs GSTR-2B / GSTR-2A',
+    );
+  });
+
+  it('returns null when no sheet name is named', () => {
+    expect(extractRelayoutTargetSheetName('change the layout to a single table')).toBeNull();
+  });
+
+  // Regression: "make Missed vs GSTR-1 one table" has no connector word ("to"/"into"/
+  // "as") between the sheet name and the layout phrase — without a dedicated stop
+  // condition for that, the match swallowed "one table" into the sheet name itself.
+  it('stops before layout wording that directly abuts the sheet name with no connector word', () => {
+    expect(extractRelayoutTargetSheetName('make Missed vs GSTR-1 one table')).toBe('Missed vs GSTR-1');
+    expect(extractRelayoutTargetSheetName('reformat Missed vs GSTR-2B as a flat list')).toBe(
+      'Missed vs GSTR-2B',
+    );
   });
 });

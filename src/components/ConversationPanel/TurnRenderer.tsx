@@ -150,6 +150,8 @@ interface TurnRendererProps {
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => void;
+  /** Reject button choice on a GST-recon sheet-name collision card. */
+  onRejectGstReconCollision: (turnId: string, blockId: string, collisionId: string) => void;
   /** Jump to a specific books-sheet cell from the GST-recon missed-rows card. */
   onJumpToGstReconRow: (sheetName: string, row: number) => void;
 }
@@ -225,6 +227,7 @@ function BlockRenderer({
   onRunAsAction,
   onAnswerQuestion,
   onResolveGstReconCollision,
+  onRejectGstReconCollision,
   onJumpToGstReconRow,
   showActionButtons = true,
   dockedQuestions = false,
@@ -249,6 +252,7 @@ function BlockRenderer({
     collisionId: string,
     choice: 'overwrite' | 'new',
   ) => void;
+  onRejectGstReconCollision: (turnId: string, blockId: string, collisionId: string) => void;
   onJumpToGstReconRow: (sheetName: string, row: number) => void;
 }) {
   if (block.type === 'thinking' && block.visible === false) return null;
@@ -360,6 +364,7 @@ function BlockRenderer({
         onCreateNew={() =>
           onResolveGstReconCollision(turn.id, block.id, block.collisionId, 'new')
         }
+        onReject={() => onRejectGstReconCollision(turn.id, block.id, block.collisionId)}
       />
     );
   }
@@ -728,6 +733,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
   onRevertChangeSet,
   dockedQuestions = false,
   onResolveGstReconCollision,
+  onRejectGstReconCollision,
   onJumpToGstReconRow,
 }) => {
   const hideProgress = turn.phase === 'complete' || turn.phase === 'awaiting_input' || turn.phase === 'error';
@@ -836,6 +842,7 @@ const TurnRenderer: React.FC<TurnRendererProps> = ({
                     onAnswerQuestion={onAnswerQuestion}
                     dockedQuestions={dockedQuestions}
                     onResolveGstReconCollision={onResolveGstReconCollision}
+                    onRejectGstReconCollision={onRejectGstReconCollision}
                     onJumpToGstReconRow={onJumpToGstReconRow}
                   />
                 </React.Fragment>

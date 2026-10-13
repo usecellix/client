@@ -44,7 +44,7 @@ export const GstReconMissedRowsCard: React.FC<GstReconMissedRowsCardProps> = ({
 
   return (
     <div className="cellix-missed-rows" data-testid="gst-recon-missed-rows-card">
-      <div className="cellix-missed-rows-title">Missed rows ({block.rows.length})</div>
+      <div className="cellix-missed-rows-title">{block.title ?? 'Missed rows'} ({block.rows.length})</div>
       <div className="cellix-missed-rows-pills" data-testid="gst-recon-missed-rows-list">
         {block.rows.map((row, index) => {
           const canJump = Boolean(row.sheetName && row.row);

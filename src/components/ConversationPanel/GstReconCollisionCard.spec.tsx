@@ -19,21 +19,33 @@ describe('GstReconCollisionCard', () => {
     cleanup();
   });
 
-  it('renders the sheet name and two buttons instead of a typed-reply prompt', () => {
+  it('renders the sheet name and three buttons instead of a typed-reply prompt', () => {
     render(
-      <GstReconCollisionCard block={makeBlock()} onOverwrite={vi.fn()} onCreateNew={vi.fn()} />,
+      <GstReconCollisionCard
+        block={makeBlock()}
+        onOverwrite={vi.fn()}
+        onCreateNew={vi.fn()}
+        onReject={vi.fn()}
+      />,
     );
 
     expect(screen.getByText(/Missed vs GSTR-2B/)).toBeTruthy();
     expect(screen.getByTestId('gst-recon-collision-overwrite')).toBeTruthy();
     expect(screen.getByTestId('gst-recon-collision-create-new')).toBeTruthy();
+    expect(screen.getByTestId('gst-recon-collision-reject')).toBeTruthy();
   });
 
   it('clicking Overwrite invokes onOverwrite directly — no text is produced or parsed', () => {
     const onOverwrite = vi.fn();
     const onCreateNew = vi.fn();
+    const onReject = vi.fn();
     render(
-      <GstReconCollisionCard block={makeBlock()} onOverwrite={onOverwrite} onCreateNew={onCreateNew} />,
+      <GstReconCollisionCard
+        block={makeBlock()}
+        onOverwrite={onOverwrite}
+        onCreateNew={onCreateNew}
+        onReject={onReject}
+      />,
     );
 
     fireEvent.click(screen.getByTestId('gst-recon-collision-overwrite'));
@@ -41,27 +53,56 @@ describe('GstReconCollisionCard', () => {
     expect(onOverwrite).toHaveBeenCalledTimes(1);
     expect(onOverwrite).toHaveBeenCalledWith();
     expect(onCreateNew).not.toHaveBeenCalled();
+    expect(onReject).not.toHaveBeenCalled();
   });
 
   it('clicking Create new invokes onCreateNew directly — no text is produced or parsed', () => {
     const onOverwrite = vi.fn();
     const onCreateNew = vi.fn();
+    const onReject = vi.fn();
     render(
-      <GstReconCollisionCard block={makeBlock()} onOverwrite={onOverwrite} onCreateNew={onCreateNew} />,
+      <GstReconCollisionCard
+        block={makeBlock()}
+        onOverwrite={onOverwrite}
+        onCreateNew={onCreateNew}
+        onReject={onReject}
+      />,
     );
 
     fireEvent.click(screen.getByTestId('gst-recon-collision-create-new'));
 
     expect(onCreateNew).toHaveBeenCalledTimes(1);
     expect(onOverwrite).not.toHaveBeenCalled();
+    expect(onReject).not.toHaveBeenCalled();
   });
 
-  it('disables both buttons while a click is resolving', () => {
+  it('clicking Reject invokes onReject directly — discards without writing anything', () => {
+    const onOverwrite = vi.fn();
+    const onCreateNew = vi.fn();
+    const onReject = vi.fn();
+    render(
+      <GstReconCollisionCard
+        block={makeBlock()}
+        onOverwrite={onOverwrite}
+        onCreateNew={onCreateNew}
+        onReject={onReject}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('gst-recon-collision-reject'));
+
+    expect(onReject).toHaveBeenCalledTimes(1);
+    expect(onOverwrite).not.toHaveBeenCalled();
+    expect(onCreateNew).not.toHaveBeenCalled();
+  });
+
+  it('disables all three buttons while a click is resolving', () => {
     render(
       <GstReconCollisionCard
         block={makeBlock({ resolving: true })}
         onOverwrite={vi.fn()}
         onCreateNew={vi.fn()}
+        onReject={vi.fn()}
       />,
     );
 
@@ -70,6 +111,9 @@ describe('GstReconCollisionCard', () => {
     ).toBe(true);
     expect(
       (screen.getByTestId('gst-recon-collision-create-new') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId('gst-recon-collision-reject') as HTMLButtonElement).disabled,
     ).toBe(true);
   });
 });
