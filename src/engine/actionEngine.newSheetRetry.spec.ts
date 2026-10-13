@@ -70,6 +70,28 @@ describe('RichActionEngine — a just-created sheet not yet settled (TASKS.md #3
     expect(result.errors[0]).toMatch(/SET_CELL: The requested resource doesn't exist/);
   });
 
+  // TASKS.md #352 — live Sept 28 "Create and fill Lists": the title write was
+  // ordered ahead of the sheet's own create and failed on a fresh workbook.
+  it('creates the sheet before a write that was ordered ahead of its create', async () => {
+    stubExcel();
+    const existing = new Set<string>();
+    const { engine, spy } = engineWith(async (action) => {
+      const record = action as unknown as { name?: string; sheetName?: string };
+      if (action.type === 'ADD_SHEET') {
+        existing.add(String(record.name));
+        return { requestedName: record.name, actualName: record.name, reusedExisting: false };
+      }
+      if (!existing.has(String(record.sheetName))) throw itemNotFound();
+      return undefined;
+    });
+
+    const lists = { type: 'ADD_SHEET', name: 'Lists', sheetName: 'Lists' } as RichAction;
+    const result = await engine.applyActions([titleOn('Lists'), lists]);
+
+    expect(result.errors).toEqual([]);
+    expect(spy.mock.calls.map(([action]) => action.type)).toEqual(['ADD_SHEET', 'SET_CELL']);
+  });
+
   it('never retries an overwrite-guard block — it still stops the card unchanged', async () => {
     stubExcel();
     const block = new OverwriteGuardError({ message: 'Write blocked', targetRange: 'A1', sampleExistingValues: [] });

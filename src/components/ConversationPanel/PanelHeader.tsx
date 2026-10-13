@@ -32,6 +32,7 @@ import {
   groupConversationsByRecency,
 } from '@/utils/conversationHistoryGrouping';
 import { createTopupSession, CreditAccountSummary, TopupPackId } from '@/services/billingService';
+import { openExternalUrl } from '@/utils/openExternalUrl';
 import { getAccountSettingsUrl, getPricingPageUrl } from '@/lib/apiConfig';
 
 /** Mirrors cellix_backend's TOPUP_PACKS (credit/topup-packs.ts) — display-only, the real price/credit amounts are enforced server-side. */
@@ -317,7 +318,9 @@ export const PanelHeader: React.FC<PanelHeaderProps> = ({
     setTopupLoadingPack(packId);
     try {
       const { url } = await createTopupSession(packId);
-      window.open(url, '_blank', 'noopener,noreferrer');
+      // Not window.open: in the task pane webview it silently does nothing, so
+      // the checkout link was created and never shown (see openExternalUrl).
+      openExternalUrl(url);
       closeAll();
     } catch (error) {
       console.warn('[Cellix] Failed to start top-up checkout:', error);

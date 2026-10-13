@@ -64,14 +64,20 @@ vi.mock('@/services/frontendTelemetry', () => ({
   },
 }));
 
+// The panel is App's whole output; the props App hands it are kept so a test can call them.
+const panel = vi.hoisted(() => ({ props: null as null | Record<string, unknown> }));
 vi.mock('@/components/ConversationPanel/ConversationPanel', () => ({
-  default: () => <div data-testid="app-rendered" />,
+  default: (props: Record<string, unknown>) => {
+    panel.props = props;
+    return <div data-testid="app-rendered" />;
+  },
 }));
 
 import App from '@/taskpane/App';
 import { useConversation } from '@/hooks/useConversation';
 import { previewManager } from '@/services/previewManager';
 import { markChangeSetApplied } from '@/services/auditService';
+import { ActionEngine } from '@/utils/actionEngine';
 
 const useConversationMock = vi.mocked(useConversation);
 const previewManagerMock = vi.mocked(previewManager, true);
@@ -93,6 +99,7 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
       activeClarification: null,
       conversationId: null,
       sendMessage: vi.fn(),
+      importBankStatement: vi.fn(),
       answerQuestion: vi.fn(),
       answerClarification: vi.fn(),
       dismissClarification: vi.fn(),
@@ -118,6 +125,8 @@ function renderAppAndCaptureOptions(): UseConversationOptions {
       resumableRun: null,
       resumeRun: vi.fn(),
       dismissResumableRun: vi.fn(),
+      retryMissingSheets: vi.fn(),
+      markChangeSetReverted: vi.fn(),
     };
   });
 
@@ -185,5 +194,67 @@ describe('App — applyActionsWithAudit accept-path rollback (TASKS.md #44/#45)'
     });
 
     expect(options.isChangeSetApplied?.(CHANGE_SET_ID)).toBe(true);
+  });
+});
+
+/**
+ * TASKS.md #404 — a revert is recorded on the message once the workbook is back,
+ * so the card and the menu can say Reverted after the menu is closed. Recording
+ * it before the inverse has applied would hide a Revert that did not happen.
+ */
+describe('App — a revert is recorded only after it has been applied (TASKS.md #404)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  type RevertHandler = (changeSetId: string, inverseActions: unknown[]) => Promise<void>;
+  function renderAndGetRevert() {
+    renderAppAndCaptureOptions();
+    const onRevert = panel.props?.onRevertHistoryEntry as RevertHandler;
+    const results = useConversationMock.mock.results;
+    const markReverted = results[results.length - 1]?.value.markChangeSetReverted as ReturnType<typeof vi.fn>;
+    return { onRevert, markReverted };
+  }
+  const inverse = [{ type: 'FORMAT_RANGE', sheetName: 'S', row: 0, col: 0, format: { clearFill: true } }];
+
+  it('applies the inverse actions, then records the change as reverted', async () => {
+    const order: string[] = [];
+    vi.spyOn(ActionEngine, 'applyActions').mockImplementation(async () => {
+      order.push('apply');
+    });
+    const { onRevert, markReverted } = renderAndGetRevert();
+    markReverted.mockImplementation(() => order.push('record'));
+
+    await act(async () => {
+      await onRevert('cs_1', inverse);
+    });
+
+    expect(order).toEqual(['apply', 'record']);
+    expect(markReverted).toHaveBeenCalledWith('cs_1');
+  });
+
+  it('does not record it when applying the inverse fails', async () => {
+    vi.spyOn(ActionEngine, 'applyActions').mockRejectedValue(new Error('Spreadsheet update failed'));
+    const { onRevert, markReverted } = renderAndGetRevert();
+
+    await act(async () => {
+      await expect(onRevert('cs_1', inverse)).rejects.toThrow(/Spreadsheet update failed/);
+    });
+
+    expect(markReverted).not.toHaveBeenCalled();
+  });
+
+  it('records a change that was already reverted elsewhere, with nothing to apply', async () => {
+    const apply = vi.spyOn(ActionEngine, 'applyActions').mockResolvedValue(undefined);
+    const { onRevert, markReverted } = renderAndGetRevert();
+
+    await act(async () => {
+      await onRevert('cs_1', []);
+    });
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(markReverted).toHaveBeenCalledWith('cs_1');
   });
 });

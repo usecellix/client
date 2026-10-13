@@ -57,11 +57,13 @@ import {
   preflightOverwriteGuard,
   pruneSpuriousAddSheets,
 } from './overwriteGuard';
+import { hoistSheetCreates } from './sheetCreateOrder';
 import { selectActionRanges } from './selectRanges';
 import { handleDataValidation } from './handlers/validation.handler';
 import { handleHideGridlines } from './handlers/gridlines.handler';
 import { resolveWorksheet } from './sheetResolve';
 import { CellChange } from '@/types/changeSet';
+import { captureFormatSnapshot, FormatSnapshot, MAX_SNAPSHOT_TOTAL_CELLS, SnapshotBudget } from './formatSnapshot';
 
 /* global Excel */
 
@@ -110,6 +112,8 @@ export class RichActionEngine {
     createdConditionalFormatIds?: CreatedConditionalFormatId[];
     createdChartIds?: CreatedChartId[];
     sortedRangeChanges?: CellChange[];
+    /** What each FORMAT_RANGE / AUTOFIT_COLUMNS overwrote, read just before it ran — Revert's data. TASKS.md #400. */
+    formatSnapshots?: FormatSnapshot[];
     /** ADD_SHEET/CREATE_SHEET outcomes where the live sheet name diverged from what was requested. */
     sheetNameMismatches?: SheetCreationOutcome[];
   }> {
@@ -118,9 +122,13 @@ export class RichActionEngine {
     const createdConditionalFormatIds: CreatedConditionalFormatId[] = [];
     const createdChartIds: CreatedChartId[] = [];
     const sortedRangeChanges: CellChange[] = [];
+    const formatSnapshots: FormatSnapshot[] = [];
+    const snapshotBudget: SnapshotBudget = { cells: MAX_SNAPSHOT_TOTAL_CELLS };
     const sheetNameMismatches: SheetCreationOutcome[] = [];
+    // Creates first, so a write ordered ahead of its own sheet's ADD_SHEET
+    // does not hit ItemNotFound on a fresh workbook. TASKS.md #352.
     const prepared = annotateDestOverwriteForCreatedSheets(
-      pruneSpuriousAddSheets(actions),
+      hoistSheetCreates(pruneSpuriousAddSheets(actions)),
     );
 
     if (prepared.length === 0) {
@@ -136,7 +144,11 @@ export class RichActionEngine {
 
         for (const action of prepared) {
           try {
+            // Read what a formatting action is about to overwrite, so Revert can put it back.
+            // Kept only once the action has applied: a failed one changed nothing to restore.
+            const formatSnapshot = await captureFormatSnapshot(action, ctx, snapshotBudget);
             const result = await this.dispatchTolerantOfNewSheet(action, ctx, createdSheets);
+            if (formatSnapshot) formatSnapshots.push(formatSnapshot);
             if (
               result &&
               'actualName' in result &&
@@ -225,6 +237,7 @@ export class RichActionEngine {
       ...(createdConditionalFormatIds.length > 0 ? { createdConditionalFormatIds } : {}),
       ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
       ...(sortedRangeChanges.length > 0 ? { sortedRangeChanges } : {}),
+      ...(formatSnapshots.length > 0 ? { formatSnapshots } : {}),
       ...(sheetNameMismatches.length > 0 ? { sheetNameMismatches } : {}),
     };
   }

@@ -30,8 +30,10 @@ export interface ConversationHistoryPage {
  * coupled across modules.
  */
 async function historyFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  // Content-Type only with a body: Fastify rejects a bodyless DELETE that
+  // declares application/json with 400 FST_ERR_CTP_EMPTY_JSON_BODY.
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
     ...(init?.headers as Record<string, string> | undefined),
   };
   if (url.includes('.ngrok-free.app')) {

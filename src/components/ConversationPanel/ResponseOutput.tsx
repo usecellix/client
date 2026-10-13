@@ -2,7 +2,11 @@ import React, { useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { MatchResult, formatFullDateTime, formatRelativeTime } from '@/types/conversationTurn';
 import { navigateToCell } from '@/services/rangeFetchService';
-import { renderInlineBoldMarkdown, renderLightMarkdownPlain } from '@/utils/renderLightMarkdown';
+import {
+  renderInlineBoldMarkdown,
+  renderLightMarkdownPlain,
+  renderLightMarkdownWithRows,
+} from '@/utils/renderLightMarkdown';
 
 interface ResponseOutputProps {
   content: string;
@@ -21,6 +25,12 @@ interface ResponseOutputProps {
    * an action card) rather than directly under the response text.
    */
   showFooter?: boolean;
+  /**
+   * Set while an answer that names its rows is still being typed out. The
+   * text shown so far may not contain a "(row N)" yet, so the layout cannot be
+   * worked out from it; this says which one to use from the first character.
+   */
+  inlineRows?: boolean;
 }
 
 /** Copy + relative-time row — split out so it can be positioned after an
@@ -98,6 +108,38 @@ function FindPointersInline({ matches }: { matches: MatchResult[] }) {
   );
 }
 
+async function jumpTo(match: MatchResult): Promise<void> {
+  try {
+    await navigateToCell(match.sheetName, match.row, match.col, match.endCol);
+  } catch (error) {
+    // The sheet may have been renamed or deleted since the answer was given.
+    console.warn('[Cellix] Failed to navigate to match:', error);
+  }
+}
+
+/**
+ * An answer that names rows as "(row 445)" and came with a pointer for each:
+ * the row numbers in the text become the pointers, in place. This is the shape
+ * of an answer computed over a sheet's rows ("the 10 largest debits").
+ */
+export function namesItsRows(content: string, matches: MatchResult[]): boolean {
+  return matches.some((m) => m.rowNum !== undefined && content.includes(`(row ${m.rowNum})`));
+}
+
+function RowPointer({ match }: { match: MatchResult }) {
+  return (
+    <button
+      type="button"
+      className="cellix-row-pointer"
+      onClick={() => void jumpTo(match)}
+      title={`Show row ${match.rowNum} in ${match.sheetName}`}
+      aria-label={`Show row ${match.rowNum} in ${match.sheetName}`}
+    >
+      row {match.rowNum}
+    </button>
+  );
+}
+
 function stripTrailingPeriod(text: string): string {
   return text.replace(/\.\s*$/, '');
 }
@@ -112,9 +154,13 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
   includeFollowUps = false,
   timestamp,
   showFooter = true,
+  inlineRows: inlineRowsProp,
 }) => {
-  const hasMatches = Boolean(matches?.length);
+  const inlineRows = Boolean(matches?.length) && (inlineRowsProp ?? namesItsRows(content, matches ?? []));
+  // The older shape: a one-line find result followed by its list of cells.
+  const hasMatches = Boolean(matches?.length) && !inlineRows;
   const introText = hasMatches ? stripTrailingPeriod(content.trim()) : content;
+  const byRow = new Map((matches ?? []).filter((m) => m.rowNum !== undefined).map((m) => [m.rowNum as number, m]));
 
   return (
     <div className="cellix-response-output cellix-block-enter">
@@ -128,6 +174,11 @@ const ResponseOutput: React.FC<ResponseOutputProps> = ({
               {' '}
               <FindPointersInline matches={matches} />
             </span>
+          ) : inlineRows ? (
+            renderLightMarkdownWithRows(introText, (rowNumber, key) => {
+              const match = byRow.get(rowNumber);
+              return match ? <RowPointer key={key} match={match} /> : null;
+            })
           ) : (
             renderLightMarkdownPlain(introText)
           )}

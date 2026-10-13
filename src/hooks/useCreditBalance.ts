@@ -51,6 +51,24 @@ export function useCreditBalance(): UseCreditBalanceReturn {
     void refresh();
   }, [refresh]);
 
+  // A top-up is paid in another tab; re-reading when the pane regains focus
+  // is what shows the new balance (GET /billing/account reconciles paid
+  // top-ups). Throttled so focus churn doesn't turn into a request per click.
+  useEffect(() => {
+    let lastRefresh = Date.now();
+    const onReturn = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - lastRefresh < 5000) return;
+      lastRefresh = Date.now();
+      void refresh();
+    };
+    window.addEventListener('focus', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
+    return () => {
+      window.removeEventListener('focus', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
+    };
+  }, [refresh]);
+
   const applyCreditsEvent = useCallback((event: CreditsSseEvent) => {
     setAccount((prev) => ({
       billingEntityType: prev?.billingEntityType ?? 'user',

@@ -51,6 +51,15 @@ import {
   tryHandleGstReconChat,
 } from '@/services/gstReconChat';
 import { sheetExists } from '@/services/gstSheetReader';
+import {
+  buildBankStatementAnswer,
+  buildBankStatementSummary,
+  describeBankStatementImportFailure,
+  findFreeSheetName,
+  requestBankStatementImport,
+  retargetSheetActions,
+} from '@/services/bankStatementImportService';
+import { RawTable } from '@/types/rawTable';
 import { shouldPreviewActions } from '@/utils/previewPolicy';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { CellChange } from '@/types/changeSet';
@@ -92,6 +101,14 @@ import type {
 } from '@/utils/userFacingResponse';
 import { resolveActionBlockCopy } from '@/utils/userFacingResponse';
 import { toUserFacingApplyError } from '@/utils/toUserFacingApplyError';
+import {
+  actionTouchesSheet,
+  buildMissingSheetRetry,
+  describeMissingSheetFailure,
+  listWorksheetNames,
+  parseItemNotFoundFailures,
+  planMissingSheetRetry,
+} from '@/utils/missingSheetRetry';
 import { collectCascadeRejectIds, isWaveDependencySatisfied } from '@/utils/actionWaveGating';
 import { stripSheetPrefix } from '@/engine/addressUtils';
 import { guardAgainstOverwrite, isOverwriteGuardError } from '@/engine/overwriteGuard';
@@ -114,6 +131,16 @@ interface UseConversationReturn {
     promptContext?: string,
     options?: SendMessageOptions,
   ) => Promise<void>;
+  /**
+   * Imports a bank statement the task pane has decoded, as a turn of its own.
+   * `followUpPrompt` is a question typed alongside the file; it is asked once
+   * the import has been accepted. Resolves false when the import failed.
+   */
+  importBankStatement: (
+    rawTable: RawTable,
+    fileName: string,
+    options: { mode: AssistantMode; followUpPrompt?: string },
+  ) => Promise<boolean>;
   answerQuestion: (
     answer: string,
     sheetData: unknown[][],
@@ -181,6 +208,15 @@ interface UseConversationReturn {
   resumeRun: () => Promise<void>;
   /** Decline the offer; the run itself is left untouched. */
   dismissResumableRun: () => void;
+  /**
+   * Create the sheets a failed step needed and apply just the rest of that
+   * step (`turn.missingSheetRetry`). Resolves false when refused; rethrows an
+   * apply failure after surfacing it on the turn, like `acceptActions`.
+   * TASKS.md #346.
+   */
+  retryMissingSheets: (turnId: string) => Promise<boolean>;
+  /** Records on its message that an applied change was reverted. TASKS.md #404. */
+  markChangeSetReverted: (changeSetId: string) => void;
 }
 
 export interface UseConversationOptions {
@@ -232,6 +268,18 @@ export interface SendMessageOptions {
    * TASKS.md #196.
    */
   answerDisplayValue?: string;
+  /**
+   * Set when this turn imports an attached bank statement rather than asking
+   * the assistant anything. The decoded file goes to the deterministic import
+   * endpoint; the router and the model are not involved, so the turn costs no
+   * credits. `message` is only the line shown in the thread.
+   */
+  bankStatementImport?: { rawTable: RawTable; followUpPrompt?: string };
+  /**
+   * Draws this turn as a continuation of the given turn, with no user message
+   * of its own. See ConversationTurn.continuesTurnId.
+   */
+  continuesTurnId?: string;
 }
 
 interface PendingResponse {
@@ -260,6 +308,10 @@ interface PendingActions {
   stepwise?: boolean;
   /** GST-recon "missed rows" batches only — see ActionBlock.gstReconOutputSheetName. */
   gstReconOutputSheetName?: string;
+  /** Attachment imports only — see ActionBlock.importSheetName. */
+  importSheetName?: string;
+  /** Attachment imports only — see ActionBlock.followUp. */
+  followUp?: ActionBlock['followUp'];
 }
 
 export interface PreviewActionsMeta {
@@ -483,6 +535,8 @@ function createActionBlock(
     runId: pending.runId,
     stepwise: pending.stepwise,
     gstReconOutputSheetName: pending.gstReconOutputSheetName,
+    importSheetName: pending.importSheetName,
+    followUp: pending.followUp,
   };
 }
 
@@ -803,6 +857,24 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         ...session,
         updatedAt: new Date().toISOString(),
         turns: session.turns.map((turn) => (turn.id === turnId ? updater(turn) : turn)),
+      }));
+    },
+    [updateSession],
+  );
+
+  /** Records on the message that this change was reverted, so the card and the menu can say so. TASKS.md #404. */
+  const markChangeSetReverted = useCallback(
+    (changeSetId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId || !changeSetId) return;
+      const isIt = (b: TurnBlock) => b.type === 'actions' && b.changeSetId === changeSetId;
+      updateSession(sessionId, (session) => ({
+        ...session,
+        turns: session.turns.map((turn) =>
+          turn.blocks.some(isIt)
+            ? { ...turn, blocks: turn.blocks.map((b) => (isIt(b) ? { ...b, reverted: true } : b)) }
+            : turn,
+        ),
       }));
     },
     [updateSession],
@@ -1297,6 +1369,87 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       await applyGstReconOutcome(turnId, runtime, outcome);
     },
     [applyGstReconOutcome, updateTurn, workbookKey],
+  );
+
+  /** Whether the import turn that just ran staged a card. Read by `importBankStatement`. */
+  const importOutcomeRef = useRef(false);
+
+  /**
+   * Attachment import: decoded statement -> deterministic parse on the server
+   * -> answer + Accept/Reject card. Does not use the LLM conversation path.
+   * Root/ATTACHMENT_EXTRACTION_PLAN.md §6.5.
+   */
+  const dispatchBankStatementImport = useCallback(
+    async (turnId: string, rawTable: RawTable, followUp?: ActionBlock['followUp']) => {
+      const runtime = runtimeRef.current.get(turnId);
+      if (!runtime) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Reading the statement…', true, true),
+      }));
+
+      // The new sheet needs a name the workbook does not already use. A failed
+      // read here is not fatal: Accept checks the name again before it writes.
+      const existingSheetNames = await listWorksheetNames().catch(() => [] as string[]);
+      if (runtime.aborted) return;
+
+      const result = await requestBankStatementImport(
+        { rawTable, existingSheetNames },
+        abortControllerRef.current?.signal,
+      );
+      if (runtime.aborted) return;
+
+      const answer = buildBankStatementAnswer(result, followUp?.prompt);
+      const userFacingSummary = buildBankStatementSummary(result, followUp?.prompt);
+      const pendingActions: PendingActions = {
+        id: `actions_import_${Date.now()}`,
+        actions: result.actions,
+        explanation: userFacingSummary.headline,
+        userFacingSummary,
+        internalDetails: {
+          processingLabel: 'Bank statement import (rule-based, no AI)',
+          rawActionSummary: `${result.statement.transactionCount} rows into a new sheet`,
+        },
+        importSheetName: result.outputSheetName,
+        followUp,
+      };
+      runtime.pendingActions = pendingActions;
+
+      // History is what later prompts send to the model, so it gets one line
+      // saying an import happened, not the statement's balances and totals.
+      pushHistory({
+        role: 'assistant',
+        content:
+          `Read the attached bank statement "${result.statement.fileName}" ` +
+          `(${result.statement.transactionCount} transactions) and proposed it as sheet "${result.outputSheetName}".`,
+        timestamp: new Date().toISOString(),
+        type: 'answer',
+      });
+
+      revealFinalResponse(turnId, { type: 'answer', answer });
+
+      if (result.actions.length && shouldPreviewActions(result.actions, autoApplyActions)) {
+        await onPreviewActions?.(result.actions, userFacingSummary.headline, {});
+      }
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        phase: 'complete',
+        blocks: [
+          ...turn.blocks.filter((b) => !(b.type === 'actions' && b.proposalStatus === 'pending')),
+          createActionBlock(pendingActions, isChangeSetApplied),
+        ],
+      }));
+    },
+    [
+      autoApplyActions,
+      isChangeSetApplied,
+      onPreviewActions,
+      pushHistory,
+      revealFinalResponse,
+      updateTurn,
+    ],
   );
 
   /**
@@ -2190,16 +2343,30 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       runtimeRef.current.set(turnId, runtime);
       revealScheduledRef.current.delete(turnId);
 
+      const bankStatementImport = sendOptions?.bankStatementImport;
+      // An import's `trimmed` is only a display line ("Import bank statement:
+      // x.pdf"), so it must never be read as a command by the local lanes below.
       const localSheetPlan =
-        mode === 'action' ? tryLocalSheetActions(trimmed, workbookContext, mode) : null;
+        mode === 'action' && !bankStatementImport
+          ? tryLocalSheetActions(trimmed, workbookContext, mode)
+          : null;
+
+      // What the thread shows for this turn. For an import it is what the user
+      // typed with the file, not the internal "Import bank statement: x" line
+      // that goes into the history.
+      const shownMessage = bankStatementImport
+        ? bankStatementImport.followUpPrompt?.trim() || 'Import this bank statement'
+        : trimmed;
 
       const newTurn: ConversationTurn = {
         id: turnId,
-        userMessage: trimmed,
+        userMessage: shownMessage,
         timestamp,
-        tabLabel: truncateTabLabel(trimmed),
+        tabLabel: truncateTabLabel(shownMessage),
         phase: 'processing',
         blocks: [],
+        ...(bankStatementImport ? { attachmentNames: [bankStatementImport.rawTable.fileName] } : {}),
+        ...(sendOptions?.continuesTurnId ? { continuesTurnId: sendOptions.continuesTurnId } : {}),
       };
 
       pushHistory({
@@ -2222,7 +2389,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             : [...current.turns, newTurn];
         const nextTitle =
           existingIndex === -1 && current.turns.length === 0
-            ? truncateTabLabel(trimmed, 24)
+            ? truncateTabLabel(shownMessage, 24)
             : current.title;
         return {
           ...current,
@@ -2240,6 +2407,50 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       const sheetLayout = computeSheetLayout(sheetData);
       sheetLayoutRef.current = sheetLayout;
+
+      if (bankStatementImport) {
+        importOutcomeRef.current = false;
+        try {
+          await dispatchBankStatementImport(
+            turnId,
+            bankStatementImport.rawTable,
+            bankStatementImport.followUpPrompt
+              ? { prompt: bankStatementImport.followUpPrompt, mode }
+              : undefined,
+          );
+          importOutcomeRef.current = !runtime.aborted;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            updateTurn(turnId, (turn) => ({
+              ...turn,
+              phase: 'complete',
+              blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+            }));
+            return;
+          }
+          const messageText = describeBankStatementImportFailure(
+            error,
+            bankStatementImport.rawTable.fileName,
+          );
+          pushHistory({
+            role: 'assistant',
+            content: 'The attached bank statement could not be imported.',
+            timestamp: new Date().toISOString(),
+            type: 'answer',
+          });
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            phase: 'error',
+            error: messageText,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        } finally {
+          setIsWaitingForResponse(false);
+          abortControllerRef.current = null;
+          runtimeRef.current.delete(turnId);
+        }
+        return;
+      }
 
       if (localSheetPlan) {
         try {
@@ -2453,6 +2664,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
     },
     [
+      dispatchBankStatementImport,
       dispatchGstReconChat,
       dispatchBankReconChat,
       dispatchLocalSheetActions,
@@ -2467,6 +2679,49 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       updateSession,
       updateTurn,
     ],
+  );
+
+  /**
+   * Imports a decoded bank statement as its own turn. See UseConversationReturn.
+   */
+  const importBankStatement = useCallback(
+    async (
+      rawTable: RawTable,
+      fileName: string,
+      options: { mode: AssistantMode; followUpPrompt?: string },
+    ): Promise<boolean> => {
+      importOutcomeRef.current = false;
+      await sendMessage(`Import bank statement: ${fileName}`, [], undefined, undefined, {
+        mode: options.mode,
+        bankStatementImport: { rawTable, followUpPrompt: options.followUpPrompt },
+      });
+      return importOutcomeRef.current;
+    },
+    [sendMessage],
+  );
+
+  /**
+   * Asks the question that was typed alongside an attached statement, once its
+   * import has been accepted. It goes through the ordinary chat path with a
+   * fresh read of the workbook, in which the new sheet is now the active one,
+   * so it is answered exactly as if the user had typed it after importing.
+   * The thread shows it as part of the import's exchange, not as a new message.
+   */
+  const askAfterImport = useCallback(
+    async (prompt: string, mode: AssistantMode, importTurnId: string) => {
+      try {
+        const resolved = await getContextForSend();
+        await sendMessage(prompt, resolved.sheetData, resolved.workbookContext, resolved.promptContext, {
+          mode,
+          // Same exchange as the import: the question is already shown as that
+          // turn's message, so this one is drawn without repeating it.
+          continuesTurnId: importTurnId,
+        });
+      } catch (error) {
+        console.error('[Cellix] Could not ask the question that came with the import:', error);
+      }
+    },
+    [sendMessage],
   );
 
   const answerQuestion = useCallback(
@@ -2689,7 +2944,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
   );
 
   const acceptActions = useCallback(
-    async (turnId: string, blockId: string): Promise<boolean> => {
+    async (
+      turnId: string,
+      blockId: string,
+      /**
+       * Apply these instead of the card's own actions — only the missing-sheet
+       * retry (TASKS.md #346) passes this, with the part of the step that
+       * did not land. Everything after the apply is unchanged: the card is
+       * marked accepted and a stepwise build carries on to its next step.
+       */
+      actionsOverride?: SheetAction[],
+    ): Promise<boolean> => {
       if (applyingActionsRef.current) return false;
 
       const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
@@ -2753,6 +3018,43 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         }
       }
 
+      // Attachment imports only: the sheet name was free when this card was
+      // built. If a sheet has taken it since, the import moves to the next free
+      // name. It never writes into the sheet that now exists.
+      let retargetedActions: SheetAction[] | undefined;
+      if (block.importSheetName && !actionsOverride) {
+        try {
+          const builtFor = block.importSheetName;
+          const freeName = await findFreeSheetName(builtFor, sheetExists);
+          if (freeName !== builtFor) {
+            const moved = retargetSheetActions(block.actions, builtFor, freeName);
+            retargetedActions = moved;
+            const rename = (text: string) => text.split(`"${builtFor}"`).join(`"${freeName}"`);
+            updateTurn(turnId, (t) => ({
+              ...t,
+              blocks: t.blocks.map((b) =>
+                b.id === blockId && b.type === 'actions'
+                  ? {
+                      ...b,
+                      actions: moved,
+                      importSheetName: freeName,
+                      explanation: rename(b.explanation),
+                      userFacingSummary: b.userFacingSummary
+                        ? { ...b.userFacingSummary, headline: rename(b.userFacingSummary.headline) }
+                        : b.userFacingSummary,
+                    }
+                  : b,
+              ),
+            }));
+          }
+        } catch (checkError) {
+          // As with the GST check above: a failed pre-check must not block the
+          // write. The engine's overwrite guard still refuses occupied cells.
+          console.warn('[Cellix] Import pre-Accept sheet name check failed:', checkError);
+        }
+      }
+      const actionsToApply = actionsOverride ?? retargetedActions;
+
       let outcomeWarning: string | null = null;
       // A holder rather than a bare `let`: the assignment happens inside the
       // onOutcomeVerified callback, which TypeScript's control-flow analysis
@@ -2763,7 +3065,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       };
       try {
         if (onActions) {
-          await onActions(block.actions, block.explanation, {
+          // A pending preview applies its OWN full action list on accept, which
+          // would replay the writes that already landed. Drop it so the
+          // override is what gets applied.
+          if (actionsToApply) await onClearPreview?.();
+          await onActions(actionsToApply ?? block.actions, block.explanation, {
             changeSetId: block.changeSetId,
             changes: block.changes,
             // TASKS.md #150: the read-back's verdict comes back here so the UI
@@ -2788,6 +3094,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           // An earlier step's offers describe an earlier state of the workbook.
           repairSuggestion: undefined,
           spillBlockages: undefined,
+          missingSheetRetry: undefined,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'accepted' }
@@ -2836,15 +3143,43 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           await continueStepwiseRun(turnId, block.runId, 'accepted');
         }
 
+        // The import came with a question. The statement is in the workbook
+        // now, so ask it. Deferred until this Accept has fully finished.
+        if (block.followUp) {
+          const { prompt, mode: followUpMode } = block.followUp;
+          window.setTimeout(() => void askAfterImport(prompt, followUpMode, turnId), 0);
+        }
+
         return true;
       } catch (error) {
         const rawMessage =
           error instanceof Error ? error.message : 'Failed to apply changes';
-        const messageText = toUserFacingApplyError(rawMessage);
         console.error('[Cellix] Accept apply failed:', rawMessage);
+
+        // TASKS.md #346 — a step that failed only for want of a sheet is
+        // finished in place, not by re-running the request. Not re-offered
+        // when the retry itself is what failed: the offer would just repeat.
+        let retry: ConversationTurn['missingSheetRetry'];
+        if (!actionsOverride && parseItemNotFoundFailures(rawMessage)) {
+          try {
+            const plan = buildMissingSheetRetry(
+              block.actions,
+              await listWorksheetNames(),
+              rawMessage,
+            );
+            if (plan) retry = { blockId, sheets: plan.missingSheets };
+          } catch (listError) {
+            console.warn('[Cellix] Could not check which sheets are missing:', listError);
+          }
+        }
+        const messageText = retry
+          ? describeMissingSheetFailure(retry.sheets)
+          : toUserFacingApplyError(rawMessage);
+
         updateTurn(turnId, (t) => ({
           ...t,
           error: messageText,
+          missingSheetRetry: retry,
           blocks: t.blocks.map((b) =>
             b.id === blockId && b.type === 'actions'
               ? { ...b, proposalStatus: 'pending' }
@@ -2856,7 +3191,45 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         applyingActionsRef.current = false;
       }
     },
-    [continueStepwiseRun, onActions, onChangeSetApplied, updateTurn],
+    [askAfterImport, continueStepwiseRun, onActions, onChangeSetApplied, onClearPreview, updateTurn],
+  );
+
+  /**
+   * Finish a step whose Accept failed only because sheets it writes to do not
+   * exist — TASKS.md #346. Creates them and re-applies just the actions that
+   * touch them; the rest of the step already landed. Recomputed from the live
+   * workbook at click time, not from when the offer was made.
+   */
+  const retryMissingSheets = useCallback(
+    async (turnId: string): Promise<boolean> => {
+      const turn = getActiveSession()?.turns.find((t) => t.id === turnId);
+      const offer = turn?.missingSheetRetry;
+      const block = turn?.blocks.find(
+        (b): b is ActionBlock => b.id === offer?.blockId && b.type === 'actions',
+      );
+      if (!offer || !block) return false;
+
+      let plan: ReturnType<typeof planMissingSheetRetry> = null;
+      try {
+        plan = planMissingSheetRetry(block.actions, await listWorksheetNames());
+      } catch (listError) {
+        console.warn('[Cellix] Could not check which sheets are missing:', listError);
+      }
+
+      // No plan means the sheets exist now (created by hand in the meantime,
+      // or the list could not be read). The part of the step that failed
+      // still has to be applied — ADD_SHEET reuses a sheet that exists, so
+      // including a create is harmless and covers the unreadable case.
+      const actions = plan?.actions ?? [
+        ...offer.sheets.map((sheet): SheetAction => ({ type: 'ADD_SHEET', name: sheet, sheetName: sheet })),
+        ...block.actions.filter((action) => actionTouchesSheet(action, offer.sheets)),
+      ];
+
+      // The offer is cleared by acceptActions itself: on success with the rest
+      // of the turn's stale offers, on failure because a retry is not re-offered.
+      return acceptActions(turnId, block.id, actions);
+    },
+    [acceptActions, getActiveSession],
   );
 
   /**
@@ -3468,6 +3841,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     activeClarification,
     conversationId,
     sendMessage,
+    importBankStatement,
     answerQuestion,
     answerClarification,
     dismissClarification,
@@ -3493,5 +3867,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     resumableRun,
     resumeRun,
     dismissResumableRun,
+    retryMissingSheets,
+    markChangeSetReverted,
   };
 };

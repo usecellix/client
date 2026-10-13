@@ -9,6 +9,25 @@ describe('TurnErrorCard', () => {
 
   const blockage = { sheet: 'Main', anchor: 'A19', blockers: ['G19', 'I19', 'M19'] };
 
+  it('shows a multi-line message as a title with the reason and next step under it', () => {
+    const { container } = render(
+      <TurnErrorCard message={'Could not import statement.pdf\nNo bank statement was found in this file.\nCheck the file.'} />,
+    );
+    expect(container.querySelector('.cellix-error-card-title')?.textContent).toBe('Could not import statement.pdf');
+    expect(Array.from(container.querySelectorAll('.cellix-error-card-detail')).map((el) => el.textContent)).toEqual([
+      'No bank statement was found in this file.',
+      'Check the file.',
+    ]);
+  });
+
+  it('shows a single-line message exactly as written, with no title', () => {
+    const { container } = render(<TurnErrorCard message="Applied, but 1 formula cell(s) returned an error" />);
+    expect(container.querySelector('.cellix-error-card-title')).toBeNull();
+    expect(container.querySelector('.cellix-error-card-message')?.textContent).toBe(
+      'Applied, but 1 formula cell(s) returned an error',
+    );
+  });
+
   it('offers to clear exactly the blocking cells, and confirms once the list fills in', async () => {
     const clear = vi.fn().mockResolvedValue(true);
     render(
@@ -49,6 +68,20 @@ describe('TurnErrorCard', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Fix this formula' }));
     expect(onRepair).toHaveBeenCalledWith('fix B2');
+  });
+
+  // TASKS.md #346 — a step that failed for want of a sheet is finished in place.
+  it('offers to create the missing sheet and finish the step', () => {
+    const onRetry = vi.fn();
+    render(
+      <TurnErrorCard
+        message="This step writes to the sheet 'Main', which doesn't exist yet."
+        missingSheets={['Main']}
+        onRetryMissingSheets={onRetry}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: "Create 'Main' and finish this step" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('is plain text when there is nothing to offer', () => {

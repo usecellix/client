@@ -130,6 +130,28 @@ describe('localSheetActions', () => {
     expect(plan?.actions).toEqual([{ type: 'DELETE_SHEET', sheetName: 'Azhar' }]);
   });
 
+  // TASKS.md #371 — the composer's @-mention never contains the word
+  // "sheet"/"tab", so "delete the @[Cellix]" fell through the fast lane
+  // entirely and paid the full Tier 3 round-trip.
+  it('detects delete intent from an @[mention] alone, with no "sheet"/"tab" word', () => {
+    expect(detectDeleteSheetIntent('delete the @[Cellix]')).toBe(true);
+    expect(detectDeleteSheetIntent('remove @[Cellix] and @[Archive]')).toBe(true);
+  });
+
+  it('resolves "delete the @[mention]" with no "sheet" word via the fast lane', () => {
+    const plan = tryLocalDeleteSheetActions('delete the @[Cellix]', context, 'action');
+    expect(plan?.actions).toEqual([{ type: 'DELETE_SHEET', sheetName: 'Cellix' }]);
+  });
+
+  it('still declines when the mention is a location, not the delete object', () => {
+    expect(
+      tryLocalDeleteSheetActions('delete duplicates from @[Cellix]', context, 'action'),
+    ).toBeNull();
+    expect(
+      tryLocalDeleteSheetActions('delete rows in @[Cellix]', context, 'action'),
+    ).toBeNull();
+  });
+
   it('extracts a single sheet name', () => {
     expect(extractDeleteSheetNames('delete sheet Cellix', ['Invoices', 'Cellix'])).toEqual([
       'Cellix',

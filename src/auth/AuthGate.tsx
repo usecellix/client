@@ -79,7 +79,8 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
     try {
       // Claim already set the cookie — refetch until the session store sees it.
       for (let i = 0; i < 6; i++) {
-        const result = await refetch();
+        // refetch is typed `void` but resolves the session at runtime.
+        const result: unknown = await refetch();
         const user =
           result && typeof result === 'object' && 'data' in result
             ? (result as { data?: { user?: unknown } | null }).data?.user
