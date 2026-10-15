@@ -3,6 +3,7 @@
  */
 
 import { getApiBaseUrl } from '@/lib/apiConfig';
+import { RawTable } from '@/types/rawTable';
 import { SheetAction } from '@/types/sheet-actions';
 import { BankReconLayout } from '@/utils/bankReconIntent';
 import { UserFacingSummary } from '@/utils/userFacingResponse';
@@ -17,9 +18,14 @@ export function getBankRelayoutEndpoint(): string {
 
 export interface BankSheetPayload {
   sheet_name: string;
-  data: unknown[][];
+  /** Sheet contents. Omit when `raw_table` (an attached file) is sent instead. */
+  data?: unknown[][];
+  /** An attached CSV / Excel / PDF decoded in the task pane — read directly, never written to a sheet. */
+  raw_table?: RawTable;
   headers_row?: number;
   file_type?: 'XLSX' | 'CSV';
+  /** The sheet was written from an attached file — refused if the balance checks show it was read incompletely. */
+  strict?: boolean;
 }
 
 export interface BankReconcileRequest {
@@ -52,6 +58,10 @@ export interface BankReconRow {
   reason: string;
   reason_label: string;
   explanation: string;
+  /** From an attached file: there is no workbook cell to jump to. */
+  external?: boolean;
+  /** Place in the attached file, e.g. "p3 l12". */
+  source_ref?: string;
 }
 
 export interface BankReconBrs {
@@ -89,6 +99,14 @@ export interface BankReconcileResponse {
   layout_cache_id: string | null;
   period_applied: { label: string; start: string; end: string };
   carry_forward_items?: number;
+  bank_source?: {
+    kind: 'attachment' | 'sheet';
+    file_name: string;
+    file_type?: string;
+    transactions?: number;
+    verification?: string;
+    account_masked?: string | null;
+  };
   period_zero_message?: string;
   validation: {
     errors: Array<{ code: string; message: string }>;
@@ -107,7 +125,14 @@ function inr(n: number | null | undefined): string {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(n ?? 0);
 }
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/** "1 entry" / "2 entries", "1 match" / "2 matches", "1 row" / "2 rows". */
+function pluralWord(word: string): string {
+  if (/[^aeiou]y$/i.test(word)) return word.slice(0, -1) + 'ies';
+  if (/(s|x|ch|sh)$/i.test(word)) return word + 'es';
+  return word + 's';
+}
+
+const plural = (n: number, word: string) => `${n} ${n === 1 ? word : pluralWord(word)}`;
 
 export function buildBankReconAnswerText(
   result: BankReconcileResponse,
@@ -122,6 +147,10 @@ export function buildBankReconAnswerText(
     `**Bank reconciliation — ${period}** (${booksName} ↔ ${bankName})`,
     `Matched ${matched} of ${s.books_rows} ledger entries against ${s.bank_rows} statement rows.`,
   ];
+  // Said before the bullets, so the bullets that follow read as one uninterrupted list.
+  if (result.bank_source?.kind === 'attachment') {
+    lines.push(`Statement read directly from the attached file “${result.bank_source.file_name}” (${result.bank_source.transactions ?? '?'} transactions) — nothing was written to a sheet for it.`);
+  }
   if (s.books_only) {
     const top = Object.entries(s.books_reasons)
       .sort((a, b) => b[1] - a[1])

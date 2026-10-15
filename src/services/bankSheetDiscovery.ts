@@ -17,6 +17,8 @@ export interface BankSheetDiscovery {
   /** Several sheets look equally like the bank statement / the ledger. */
   ambiguousBank: string[];
   ambiguousBooks: string[];
+  /** Every sheet that looks like a transaction table (own output and prior-BRS sheets excluded). */
+  candidates: string[];
 }
 
 const HEADER_PATTERNS: Array<[string, RegExp]> = [
@@ -84,6 +86,13 @@ function scoreSheet(sheet: SheetTop): SheetScore {
   return { name: sheet.name, hasHeader: true, score };
 }
 
+/** Role of one specific sheet, for a sheet the user named with @[Sheet]. */
+export function classifySheetRole(sheet: SheetTop): 'bank' | 'books' | 'unknown' {
+  const s = scoreSheet(sheet);
+  if (!s.hasHeader) return 'unknown';
+  return s.score > 0 ? 'bank' : s.score < 0 ? 'books' : 'unknown';
+}
+
 /** Sheets this feature writes itself — never candidates for the statement or ledger on a re-run. */
 const OUTPUT_SHEET_RE = /^bank recon\b/i;
 
@@ -119,7 +128,13 @@ export function discoverBankSheets(sheets: SheetTop[]): BankSheetDiscovery {
     const rest = scored.filter((s) => s.name !== bank.best);
     if (rest.length === 1) books.best = rest[0].name;
   }
-  return { bank: bank.best, books: books.best, ambiguousBank: bank.ties, ambiguousBooks: books.ties };
+  return {
+    bank: bank.best,
+    books: books.best,
+    ambiguousBank: bank.ties,
+    ambiguousBooks: books.ties,
+    candidates: scored.map((s) => s.name),
+  };
 }
 
 /** First `rowCount` rows of every sheet — enough to find a header buried under account details. */

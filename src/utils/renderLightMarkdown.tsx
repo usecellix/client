@@ -118,6 +118,42 @@ export function renderInlineBoldMarkdown(text: string): React.ReactNode {
 
 const ROW_MARKER = /\(row (\d+)\)/g;
 
+/** A line that starts with a bullet ("• text"). Needs the space, so a half-typed "•" is still plain text. */
+const BULLET_LINE = /^\s*•\s+(.*)$/;
+
+/**
+ * A bullet is its own block: the mark sits in a narrow column and the text in a second one, so a bullet
+ * that wraps puts its continuation lines under the FIRST WORD, not back at the left edge under the mark.
+ */
+function renderBullet(content: React.ReactNode, key: string): React.ReactNode {
+  return (
+    <span key={key} className="cellix-md-bullet">
+      <span className="cellix-md-bullet-mark" aria-hidden="true">
+        •
+      </span>
+      <span className="cellix-md-bullet-text">{content}</span>
+    </span>
+  );
+}
+
+/**
+ * Renders the lines of one paragraph. A line break (`<br />`) goes only between two ordinary lines: a bullet
+ * is already a block of its own, so a break next to it would add an empty line.
+ */
+function renderLines(lines: string[], renderLine: (line: string, li: number) => React.ReactNode): React.ReactNode {
+  return lines.map((line, li) => {
+    const bullet = BULLET_LINE.exec(line);
+    if (bullet) return renderBullet(renderLine(bullet[1], li), `b${li}`);
+    const prevIsBullet = li > 0 && BULLET_LINE.test(lines[li - 1]);
+    return (
+      <React.Fragment key={li}>
+        {li > 0 && !prevIsBullet && <br />}
+        {renderLine(line, li)}
+      </React.Fragment>
+    );
+  });
+}
+
 /**
  * As `renderLightMarkdownPlain`, with every "(row N)" handed to `renderRow`,
  * which may return something to show in its place (a pointer to that row) or
@@ -130,7 +166,7 @@ export function renderLightMarkdownWithRows(
   const paragraphs = text.trim().split(/\n\n+/);
   return paragraphs.map((para, pi) => (
     <p key={pi} className="cellix-response-md-p">
-      {para.split('\n').map((line, li) => {
+      {renderLines(para.split('\n'), (line, li) => {
         const parts: React.ReactNode[] = [];
         let last = 0;
         for (const match of line.matchAll(ROW_MARKER)) {
@@ -142,12 +178,7 @@ export function renderLightMarkdownWithRows(
           last = at + match[0].length;
         }
         if (last < line.length) parts.push(<React.Fragment key="tail">{renderLineSegments(line.slice(last))}</React.Fragment>);
-        return (
-          <React.Fragment key={li}>
-            {li > 0 && <br />}
-            {parts}
-          </React.Fragment>
-        );
+        return <React.Fragment key={li}>{parts}</React.Fragment>;
       })}
     </p>
   ));
@@ -160,12 +191,7 @@ export function renderLightMarkdownPlain(text: string): React.ReactNode {
     const lines = para.split('\n');
     return (
       <p key={pi} className="cellix-response-md-p">
-        {lines.map((line, li) => (
-          <React.Fragment key={li}>
-            {li > 0 && <br />}
-            {renderLineSegments(line)}
-          </React.Fragment>
-        ))}
+        {renderLines(lines, (line) => renderLineSegments(line))}
       </p>
     );
   });

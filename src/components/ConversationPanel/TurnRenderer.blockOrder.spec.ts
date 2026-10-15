@@ -178,3 +178,31 @@ describe('orderBlocksForDisplay', () => {
     expect(ordered.map((b) => b.id)).toEqual(['q1', 'ans1', 'm1', 'a1']);
   });
 });
+
+describe('orderBlocksForDisplay — list placed above the reply text (bank recon)', () => {
+  const answer = (id: string): TurnBlock => ({ id, type: 'answer', content: 'Bank reconciliation — …', revealState: 'complete' }) as TurnBlock;
+  const listAbove = (id: string): GstReconMissedRowsBlock => ({ id, type: 'gst_recon_missed_rows', rows: [], placement: 'before_answer' });
+  const ids = (blocks: TurnBlock[]) => orderBlocksForDisplay(blocks).map((b) => b.id);
+
+  it('plain run: thinking → list → reply text → Accept card', () => {
+    expect(
+      ids([thinking('t', 'x'), answer('a'), actionCard('act', 1), listAbove('l')]),
+    ).toEqual(['t', 'l', 'a', 'act']);
+  });
+
+  it('after an answered question: question → list → reply text → Accept card (never above the question)', () => {
+    expect(
+      ids([
+        question('q', 'Use the file directly'),
+        thinking('t', 'x'),
+        answer('a'),
+        actionCard('act', 1),
+        listAbove('l'),
+      ]),
+    ).toEqual(['q', 't', 'l', 'a', 'act']);
+  });
+
+  it('GST keeps its order: reply text → list → Accept card (no placement set)', () => {
+    expect(ids([thinking('t', 'x'), answer('a'), actionCard('act', 1), missedRows('m')])).toEqual(['t', 'a', 'm', 'act']);
+  });
+});

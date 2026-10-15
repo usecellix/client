@@ -47,3 +47,16 @@ describe('discovery edge cases', () => {
     expect(findPriorBrsSheet([{ name: 'Bank Statement' }])).toBeNull();
   });
 });
+
+describe('sheet written by the attach-a-statement import', () => {
+  it('is recognised as the bank statement next to a Tally-style ledger', () => {
+    const imported = {
+      name: 'Bank Statement',
+      rows: [
+        ['Date', 'Value Date', 'Description', 'Ref No', 'Debit', 'Credit', 'Balance', 'Source', 'Flag'],
+        ['2026-09-02', '2026-09-02', 'NEFT-ABC', 'X1', 100, '', 900, 'csv', ''],
+      ],
+    };
+    expect(discoverBankSheets([ledger, imported])).toMatchObject({ bank: 'Bank Statement', books: 'Bank A/c' });
+  });
+});

@@ -38,6 +38,7 @@ import { loadChatSessions, saveChatSessions } from '@/utils/chatSessionStorage';
 import { SheetAction } from '@/types/sheet-actions';
 import { UserFacingSummary } from '@/utils/userFacingResponse';
 import { GstReconMissedRow } from '@/types/conversationTurn';
+import { RawTable } from '@/types/rawTable';
 
 /** Every books row (PR_ONLY) from the result, ready to render as a clickable jump-to-cell list. */
 function extractMissedRows(result: GstReconcileResponse): GstReconMissedRow[] {
@@ -59,6 +60,17 @@ export type GstReconChatOutcome =
       answer: string;
     }
   | {
+      /**
+       * Bank recon with an attached statement, user chose to add it to the workbook first: the caller
+       * runs the statement import (Accept card), then `followUpPrompt` (with `{sheet}` replaced by
+       * the created sheet's name) reconciles against that sheet.
+       */
+      kind: 'import_statement';
+      rawTable: RawTable;
+      followUpPrompt: string;
+      preferredSheetName: string;
+    }
+  | {
       kind: 'recon_ready';
       answer: string;
       actions: SheetAction[];
@@ -74,6 +86,8 @@ export type GstReconChatOutcome =
       processingLabel?: string;
       /** Heading for the clickable row list; defaults to "Missed rows". */
       missedRowsTitle?: string;
+      /** Show the list above the reply text instead of under it. */
+      missedRowsBeforeAnswer?: boolean;
     }
   | {
       /**
@@ -85,6 +99,10 @@ export type GstReconChatOutcome =
       answer: string;
       collisionId: string;
       sheetName: string;
+      /** The clickable list of unreconciled rows, shown alongside the collision choice (bank recon). */
+      missedRows?: GstReconMissedRow[];
+      missedRowsTitle?: string;
+      missedRowsBeforeAnswer?: boolean;
     }
   | {
       /**

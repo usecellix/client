@@ -41,6 +41,20 @@ export function detectBankReconIntent(message: string): BankReconIntent | null {
   return out;
 }
 
+/**
+ * A prompt typed WITH an attached statement. Employees phrase it any way ("reconcile this",
+ * "match my ledger with the file", "compare", "BRS"…), so with a file attached any reconcile-type
+ * verb is enough — no need to say "bank". GST wording is left to the GST flow.
+ */
+const ATTACHED_VERB =
+  /\b(reconcil\w*|recon|brs|match\w*|compare|comparison|cross[-\s]?check|tally|tie\s*(?:out|up)?|verify|check\s+(?:it\s+)?(?:against|with)|against|versus|vs)\b/i;
+
+export function isAttachedReconPrompt(message: string): boolean {
+  const text = message.trim();
+  if (!text || GST_MARKERS.test(text)) return false;
+  return ATTACHED_VERB.test(text);
+}
+
 /** True for a fresh recon request OR a "change the layout of Bank Recon…" follow-up. */
 export function isBankReconPrompt(message: string): boolean {
   return detectBankReconIntent(message) !== null || isBankReconRelayoutPrompt(message);

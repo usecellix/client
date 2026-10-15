@@ -43,6 +43,7 @@ function renderTurn(t: ConversationTurn) {
       onRegenerate={vi.fn()}
       onRunAsAction={vi.fn()}
       onResolveGstReconCollision={vi.fn()}
+      onRejectGstReconCollision={vi.fn()}
       onJumpToGstReconRow={vi.fn()}
     />,
   );

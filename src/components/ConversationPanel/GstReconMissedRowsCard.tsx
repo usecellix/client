@@ -3,7 +3,7 @@ import { GstReconMissedRowsBlock } from '@/types/conversationTurn';
 
 export interface GstReconMissedRowsCardProps {
   block: GstReconMissedRowsBlock;
-  onJumpToRow: (sheetName: string, row: number) => void;
+  onJumpToRow: (sheetName: string, row: number, fullRow?: boolean) => void;
 }
 
 /** Matches the phrasing already used in the chat summary's reason breakdown (gstReconService.ts). */
@@ -47,27 +47,33 @@ export const GstReconMissedRowsCard: React.FC<GstReconMissedRowsCardProps> = ({
       <div className="cellix-missed-rows-title">{block.title ?? 'Missed rows'} ({block.rows.length})</div>
       <div className="cellix-missed-rows-pills" data-testid="gst-recon-missed-rows-list">
         {block.rows.map((row, index) => {
-          const canJump = Boolean(row.sheetName && row.row);
-          const label = `${row.vendorName}${row.gstin ? ` (${row.gstin})` : ' (no GSTIN)'}`;
+          const canJump = Boolean(row.sheetName && row.row) && !row.inFile;
+          const label = row.pillLabel ?? `${row.vendorName}${row.gstin ? ` (${row.gstin})` : ' (no GSTIN)'}`;
           return (
             <span
               className="cellix-missed-row-entry"
               key={`${row.sheetName ?? 'unknown'}-${row.row ?? index}`}
             >
               <span className="cellix-missed-row-reason">{formatReason(row.reason)}:</span>
+              {row.inFile ? (
+                <span className="cellix-missed-row-infile" title={row.tooltip}>
+                  {label}
+                </span>
+              ) : (
               <button
                 type="button"
                 className="cellix-missed-row-pill"
                 disabled={!canJump}
-                onClick={() => canJump && onJumpToRow(row.sheetName as string, row.row as number)}
+                onClick={() => canJump && onJumpToRow(row.sheetName as string, row.row as number, row.selectFullRow)}
                 title={
                   canJump
-                    ? `Jump to ${row.sheetName}, row ${row.row}`
+                    ? row.tooltip ?? `Jump to ${row.sheetName}, row ${row.row}`
                     : 'No cell reference available for this row'
                 }
               >
                 {label}
               </button>
+              )}
             </span>
           );
         })}

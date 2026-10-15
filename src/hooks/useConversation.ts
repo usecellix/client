@@ -39,8 +39,12 @@ import { buildClientStatusMessage, isLikelyChitchat, isSimpleCreateTask } from '
 import { tryLocalSheetActions, LocalSheetActionPlan } from '@/utils/localSheetActions';
 import { previewLocalChangeSet } from '@/services/auditService';
 import { isGstReconPrompt } from '@/utils/gstReconIntent';
-import { isBankReconPrompt } from '@/utils/bankReconIntent';
-import { getBankReconPendingContext, tryHandleBankReconChat } from '@/services/bankReconChat';
+import { isAttachedReconPrompt, isBankReconPrompt } from '@/utils/bankReconIntent';
+import {
+  getBankReconPendingContext,
+  tryHandleBankReconChat,
+  tryHandleBankReconWithAttachment,
+} from '@/services/bankReconChat';
 import {
   discardGstReconSheetCollision,
   finalizeGstReconAudit,
@@ -81,6 +85,7 @@ import {
 import { ChatSession, createChatSession } from '@/types/chatSession';
 import {
   loadChatSessions,
+  loadChatSessionsClaimingLegacy,
   saveChatSessions,
 } from '@/utils/chatSessionStorage';
 import {
@@ -219,6 +224,9 @@ interface UseConversationReturn {
   markChangeSetReverted: (changeSetId: string) => void;
 }
 
+/** If the message a question card waits for never reports completion, show the card anyway after this long. */
+const QUESTION_REVEAL_FALLBACK_MS = 12_000;
+
 export interface UseConversationOptions {
   workbookKey?: string;
   /** Durable per-workbook identity (TASKS.md #22-23), distinct from workbookKey above. */
@@ -286,6 +294,8 @@ interface PendingResponse {
   type: 'answer' | 'question' | 'clarification';
   answer?: string;
   matches?: MatchResult[];
+  /** Keep the full text even with an Accept/Reject card on screen (see AnswerBlock.keepFull). */
+  keepFull?: boolean;
   question?: string;
   options?: string[];
 }
@@ -808,20 +818,47 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     setConversationId(session?.conversationId ?? null);
   }, []);
 
+  const persistNow = useCallback(() => {
+    if (!workbookKey) return;
+    if (persistTimerRef.current) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    // Nothing to write before the saved chats have been loaded: it would replace them with an empty list.
+    if (!hydratedRef.current) return;
+    const existing = loadChatSessions(workbookKey);
+    saveChatSessions(workbookKey, {
+      activeSessionId: activeSessionIdRef.current,
+      sessions: sessionsRef.current,
+      assistantMode: existing?.assistantMode,
+      gstPurchasePortalPreference: existing?.gstPurchasePortalPreference,
+    });
+  }, [workbookKey]);
+
   const schedulePersist = useCallback(() => {
     if (!workbookKey) return;
     if (persistTimerRef.current) {
       window.clearTimeout(persistTimerRef.current);
     }
-    persistTimerRef.current = window.setTimeout(() => {
-      const existing = loadChatSessions(workbookKey);
-      saveChatSessions(workbookKey, {
-        activeSessionId: activeSessionIdRef.current,
-        sessions: sessionsRef.current,
-        assistantMode: existing?.assistantMode,
-      });
-    }, 400);
-  }, [workbookKey]);
+    persistTimerRef.current = window.setTimeout(persistNow, 400);
+  }, [workbookKey, persistNow]);
+
+  // The save is delayed by a moment; a reload or closing the pane inside that moment (or a code change
+  // reloading the pane) used to throw the latest turn away. Write it straight away instead.
+  useEffect(() => {
+    const flush = () => persistNow();
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [persistNow]);
 
   const syncSessions = useCallback(
     (next: ChatSession[]) => {
@@ -1008,6 +1045,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                       content: response.answer ?? '',
                       revealState: 'typing',
                       matches: response.matches,
+                      ...(response.keepFull ? { keepFull: true } : {}),
                     } satisfies AnswerBlock,
                   ]
                 : response.type === 'question' || response.type === 'clarification'
@@ -1178,9 +1216,31 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
    * message_only/sheet_collision/question/recon_ready handling rather than a duplicated
    * copy that could drift out of sync.
    */
+  /**
+   * A question card can be held back (`revealState: 'hidden'`) until the message that explains it has
+   * finished typing — see the question branch of `applyGstReconOutcome`. Idempotent.
+   */
+  const revealHiddenQuestions = useCallback(
+    (turnId: string) => {
+      updateTurn(turnId, (turn) =>
+        turn.blocks.some((b) => b.type === 'question' && b.revealState === 'hidden')
+          ? {
+              ...turn,
+              blocks: turn.blocks.map((b) =>
+                b.type === 'question' && b.revealState === 'hidden' ? { ...b, revealState: 'visible' as const } : b,
+              ),
+            }
+          : turn,
+      );
+    },
+    [updateTurn],
+  );
+
   const applyGstReconOutcome = useCallback(
     async (turnId: string, runtime: TurnRuntime, outcome: GstReconChatOutcome) => {
       if (runtime.aborted) return;
+      // Handled by the bank-recon dispatchers (they own the statement import); never a recon result.
+      if (outcome.kind === 'import_statement') return;
 
       if (outcome.kind === 'message_only') {
         pushHistory({
@@ -1204,7 +1264,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           timestamp: new Date().toISOString(),
           type: 'answer',
         });
-        revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer });
+        revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer, keepFull: Boolean(outcome.missedRowsBeforeAnswer) });
         updateTurn(turnId, (turn) => ({
           ...turn,
           phase: 'awaiting_input',
@@ -1216,6 +1276,17 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               collisionId: outcome.collisionId,
               sheetName: outcome.sheetName,
             } satisfies GstReconCollisionBlock,
+            ...(outcome.missedRows && outcome.missedRows.length
+              ? [
+                  {
+                    id: `gst_recon_missed_rows_${turnId}`,
+                    type: 'gst_recon_missed_rows',
+                    rows: outcome.missedRows,
+                    title: outcome.missedRowsTitle,
+                    ...(outcome.missedRowsBeforeAnswer ? { placement: 'before_answer' as const } : {}),
+                  } satisfies GstReconMissedRowsBlock,
+                ]
+              : []),
           ],
         }));
         return;
@@ -1234,6 +1305,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           type: 'answer',
         });
         revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer });
+        // When the message says more than the question itself (e.g. what each option does), it is shown
+        // and read first; the card follows once it has finished typing (markAnswerComplete), with a timed
+        // fallback so a missed completion can never leave the question hidden for good.
+        const holdCard = outcome.answer.trim() !== outcome.question.trim();
         updateTurn(turnId, (turn) => ({
           ...turn,
           phase: 'awaiting_input',
@@ -1244,10 +1319,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               type: 'question',
               question: outcome.question,
               options: outcome.options,
-              revealState: 'visible',
+              revealState: holdCard ? 'hidden' : 'visible',
             } satisfies QuestionBlock,
           ],
         }));
+        if (holdCard) window.setTimeout(() => revealHiddenQuestions(turnId), QUESTION_REVEAL_FALLBACK_MS);
         return;
       }
 
@@ -1271,7 +1347,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         type: 'answer',
       });
 
-      revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer });
+      revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer, keepFull: Boolean(outcome.missedRowsBeforeAnswer) });
 
       if (outcome.actions.length && shouldPreviewActions(outcome.actions, autoApplyActions)) {
         await onPreviewActions?.(outcome.actions, outcome.explanation, {});
@@ -1290,6 +1366,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
                 type: 'gst_recon_missed_rows',
                 rows: outcome.missedRows,
                 title: outcome.missedRowsTitle,
+                ...(outcome.missedRowsBeforeAnswer ? { placement: 'before_answer' as const } : {}),
               }
             : null;
         return {
@@ -1309,6 +1386,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       onPreviewActions,
       pushHistory,
       revealFinalResponse,
+      revealHiddenQuestions,
       updateTurn,
     ],
   );
@@ -1380,7 +1458,12 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
    * Root/ATTACHMENT_EXTRACTION_PLAN.md §6.5.
    */
   const dispatchBankStatementImport = useCallback(
-    async (turnId: string, rawTable: RawTable, followUp?: ActionBlock['followUp']) => {
+    async (
+      turnId: string,
+      rawTable: RawTable,
+      followUp?: ActionBlock['followUp'],
+      preferredSheetName?: string,
+    ) => {
       const runtime = runtimeRef.current.get(turnId);
       if (!runtime) return;
 
@@ -1395,10 +1478,14 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       if (runtime.aborted) return;
 
       const result = await requestBankStatementImport(
-        { rawTable, existingSheetNames },
+        { rawTable, existingSheetNames, ...(preferredSheetName ? { preferredSheetName } : {}) },
         abortControllerRef.current?.signal,
       );
       if (runtime.aborted) return;
+
+      // `{sheet}` in the follow-up becomes the real name of the sheet this import creates (it may have
+      // been numbered if the name was taken), so the follow-up can point at exactly that sheet.
+      if (followUp) followUp = { ...followUp, prompt: followUp.prompt.replace('{sheet}', result.outputSheetName) };
 
       const answer = buildBankStatementAnswer(result, followUp?.prompt);
       const userFacingSummary = buildBankStatementSummary(result, followUp?.prompt);
@@ -1452,12 +1539,29 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     ],
   );
 
+  /** Bank-recon outcomes: the "create a sheet from the file" answer starts the import; the rest render as usual. */
+  const applyBankReconOutcome = useCallback(
+    async (turnId: string, runtime: TurnRuntime, outcome: GstReconChatOutcome, mode?: AssistantMode) => {
+      if (outcome.kind === 'import_statement') {
+        await dispatchBankStatementImport(
+          turnId,
+          outcome.rawTable,
+          { prompt: outcome.followUpPrompt, mode: mode ?? DEFAULT_ASSISTANT_MODE },
+          outcome.preferredSheetName,
+        );
+        return;
+      }
+      await applyGstReconOutcome(turnId, runtime, outcome);
+    },
+    [applyGstReconOutcome, dispatchBankStatementImport],
+  );
+
   /**
    * Chat-native bank reconciliation: find the bank statement + books ledger sheets, match on
    * the server, then reuse the GST outcome rendering (Accept/Reject, collision, question).
    */
   const dispatchBankReconChat = useCallback(
-    async (turnId: string, message: string) => {
+    async (turnId: string, message: string, mode?: AssistantMode) => {
       const runtime = runtimeRef.current.get(turnId);
       if (!runtime) return;
 
@@ -1498,9 +1602,38 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         return;
       }
 
-      await applyGstReconOutcome(turnId, runtime, outcome);
+      await applyBankReconOutcome(turnId, runtime, outcome, mode);
     },
-    [applyGstReconOutcome, updateTurn],
+    [applyBankReconOutcome, updateTurn],
+  );
+
+  /**
+   * An attached statement plus a reconcile prompt: reconcile the attached file straight against the
+   * employee's own ledger sheet. The file is never written to a sheet first.
+   */
+  const dispatchBankReconAttachment = useCallback(
+    async (turnId: string, rawTable: RawTable, message: string, mode?: AssistantMode) => {
+      const runtime = runtimeRef.current.get(turnId);
+      if (!runtime) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Reading the attached statement…', true, true),
+      }));
+      await delay(150);
+      if (runtime.aborted) return;
+
+      updateTurn(turnId, (turn) => ({
+        ...turn,
+        blocks: upsertStatus(turn.blocks, 'Matching it against your bank ledger…', true, true),
+      }));
+
+      const outcome = await tryHandleBankReconWithAttachment(message, rawTable, {
+        conversationId: conversationIdRef.current,
+      });
+      await applyBankReconOutcome(turnId, runtime, outcome, mode);
+    },
+    [applyBankReconOutcome, updateTurn],
   );
 
   const runVisualTimeline = useCallback(
@@ -2346,8 +2479,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       const bankStatementImport = sendOptions?.bankStatementImport;
       // An import's `trimmed` is only a display line ("Import bank statement:
       // x.pdf"), so it must never be read as a command by the local lanes below.
+      // While the bank reconciliation is waiting for an answer, the reply ("…: Create sheet …") is that
+      // answer, not a sheet command — the local lane must not turn it into one.
       const localSheetPlan =
-        mode === 'action' && !bankStatementImport
+        mode === 'action' && !bankStatementImport && !getBankReconPendingContext()
           ? tryLocalSheetActions(trimmed, workbookContext, mode)
           : null;
 
@@ -2411,13 +2546,20 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       if (bankStatementImport) {
         importOutcomeRef.current = false;
         try {
-          await dispatchBankStatementImport(
-            turnId,
-            bankStatementImport.rawTable,
-            bankStatementImport.followUpPrompt
-              ? { prompt: bankStatementImport.followUpPrompt, mode }
-              : undefined,
-          );
+          // "Reconcile this against my ledger" (any wording) with a file attached: reconcile the file
+          // directly instead of importing it into a sheet first.
+          const reconPrompt = bankStatementImport.followUpPrompt?.trim();
+          if (reconPrompt && isAttachedReconPrompt(reconPrompt)) {
+            await dispatchBankReconAttachment(turnId, bankStatementImport.rawTable, reconPrompt, mode);
+          } else {
+            await dispatchBankStatementImport(
+              turnId,
+              bankStatementImport.rawTable,
+              bankStatementImport.followUpPrompt
+                ? { prompt: bankStatementImport.followUpPrompt, mode }
+                : undefined,
+            );
+          }
           importOutcomeRef.current = !runtime.aborted;
         } catch (error: unknown) {
           if (error instanceof Error && error.name === 'AbortError') {
@@ -2483,7 +2625,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       // never claims a prompt that mentions GSTR / 2B / ITC.
       if (isBankReconPrompt(trimmed) || getBankReconPendingContext()) {
         try {
-          await dispatchBankReconChat(turnId, trimmed);
+          await dispatchBankReconChat(turnId, trimmed, mode);
         } catch (error: unknown) {
           const messageText =
             error instanceof Error
@@ -3470,8 +3612,10 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             : b,
         ),
       }));
+      // The message is fully shown: now the question card that was waiting for it.
+      revealHiddenQuestions(turnId);
     },
-    [updateTurn],
+    [updateTurn, revealHiddenQuestions],
   );
 
   const endConversation = useCallback(() => {
@@ -3746,8 +3890,11 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     if (hydratedRef.current || !workbookKey) return;
     hydratedRef.current = true;
 
-    const stored = loadChatSessions(workbookKey);
+    const stored = loadChatSessionsClaimingLegacy(workbookKey);
     if (!stored?.sessions.length) return;
+    // The saved chats are loaded a moment after the pane opens (the file name is resolved first). If a chat has
+    // already been started in that moment, keep it: the saved ones would otherwise replace it.
+    if (sessionsRef.current.length > 0) return;
 
     sessionsRef.current = stored.sessions;
     activeSessionIdRef.current = stored.activeSessionId;

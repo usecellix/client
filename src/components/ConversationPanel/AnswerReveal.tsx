@@ -15,7 +15,14 @@ interface AnswerRevealProps {
   showFooter?: boolean;
 }
 
-const TYPING_INTERVAL_MS = 24;
+/**
+ * THE typing speed — one setting for every answer in the app (reconciliations, GST, imports, ordinary
+ * replies). Each tick reveals TYPING_CHARS_PER_TICK characters every TYPING_INTERVAL_MS, i.e. about
+ * 200 characters a second, whatever the length of the reply. Change the speed here and nowhere else;
+ * no feature needs its own setting.
+ */
+export const TYPING_INTERVAL_MS = 24;
+export const TYPING_CHARS_PER_TICK = 5;
 
 /**
  * A "(row 445)" that is only partly typed: "(", "(row", "(row 44". Held back
@@ -60,7 +67,7 @@ const AnswerReveal: React.FC<AnswerRevealProps> = ({
     let index = 0;
 
     const timer = window.setInterval(() => {
-      index += 1;
+      index += TYPING_CHARS_PER_TICK;
       setDisplayed(content.slice(0, index));
       if (index >= content.length) {
         window.clearInterval(timer);

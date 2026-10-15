@@ -35,6 +35,12 @@ export interface AnswerBlock {
   content: string;
   revealState: 'hidden' | 'typing' | 'complete';
   matches?: MatchResult[];
+  /**
+   * Show the whole text even while an Accept/Reject card is on screen. By default the app cuts a reply to
+   * its first line when a card is present (the card repeats the gist); reconciliation results carry detail
+   * the card does not (what the 10 / 20 are made of), so they opt out.
+   */
+  keepFull?: boolean;
 }
 
 export interface QuestionBlock {
@@ -195,6 +201,14 @@ export interface GstReconMissedRow {
   /** The books sheet's real name and Excel row number — always the CA's own register, never the GST portal sheet. */
   sheetName: string | null;
   row: number | null;
+  /** Compact pill text; when set it replaces the default "<vendorName> (<gstin>)" label. */
+  pillLabel?: string;
+  /** Hover text with the full row details. */
+  tooltip?: string;
+  /** Select the whole sheet row when jumping, instead of a single cell. */
+  selectFullRow?: boolean;
+  /** The row lives in an attached file, not in a sheet: shown as plain text, never as a button. */
+  inFile?: boolean;
 }
 
 /**
@@ -209,6 +223,11 @@ export interface GstReconMissedRowsBlock {
   rows: GstReconMissedRow[];
   /** Heading override (bank recon reuses this card for its unreconciled items). */
   title?: string;
+  /**
+   * `before_answer`: show this list ABOVE the reply text (the list appears at once, the text types in
+   * beneath it). Unset keeps the default — reply first, list under it (GST recon).
+   */
+  placement?: 'before_answer';
 }
 
 export type TurnBlock =

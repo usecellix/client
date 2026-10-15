@@ -902,7 +902,7 @@ interface ConversationPanelProps {
     choice: 'overwrite' | 'new',
   ) => void;
   onRejectGstReconCollision: (turnId: string, blockId: string, collisionId: string) => void;
-  onJumpToGstReconRow: (sheetName: string, row: number) => void;
+  onJumpToGstReconRow: (sheetName: string, row: number, fullRow?: boolean) => void;
   onAnswerQuestion: (answer: string) => void;
   onClarificationAnswer: (answer: string) => void;
   onClarificationDismiss: () => void;

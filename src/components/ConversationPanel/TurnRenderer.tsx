@@ -175,7 +175,7 @@ interface TurnRendererProps {
   /** Reject button choice on a GST-recon sheet-name collision card. */
   onRejectGstReconCollision: (turnId: string, blockId: string, collisionId: string) => void;
   /** Jump to a specific books-sheet cell from the GST-recon missed-rows card. */
-  onJumpToGstReconRow: (sheetName: string, row: number) => void;
+  onJumpToGstReconRow: (sheetName: string, row: number, fullRow?: boolean) => void;
 }
 
 function PlanBlockView({
@@ -275,7 +275,7 @@ function BlockRenderer({
     choice: 'overwrite' | 'new',
   ) => void;
   onRejectGstReconCollision: (turnId: string, blockId: string, collisionId: string) => void;
-  onJumpToGstReconRow: (sheetName: string, row: number) => void;
+  onJumpToGstReconRow: (sheetName: string, row: number, fullRow?: boolean) => void;
 }) {
   if (block.type === 'thinking' && block.visible === false) return null;
   if (block.type === 'status' && block.visible === false) return null;
@@ -318,9 +318,8 @@ function BlockRenderer({
 
   if (block.type === 'answer') {
     const hasActions = turn.blocks.some((b) => b.type === 'actions');
-    const content = hasActions
-      ? shortenActionPreviewCopy(block.content) || block.content
-      : block.content;
+    const content =
+      hasActions && !block.keepFull ? shortenActionPreviewCopy(block.content) || block.content : block.content;
     return (
       <AnswerReveal
         content={content}
@@ -637,6 +636,7 @@ function UserMessageRow({
 }
 
 const ACTIONS_PRESENTATION_ORDER = 5;
+const BEFORE_ANSWER_PRESENTATION_ORDER = 2.5;
 const MISSED_ROWS_PRESENTATION_ORDER = ACTIONS_PRESENTATION_ORDER - 1;
 // A progress block (status/thinking/answer) that CONTINUES a turn after an ANSWERED
 // QUESTION anchor still narrates what happened next (e.g. "Compared 22 rows…") — it
@@ -666,7 +666,8 @@ function blockPresentationOrder(block: TurnBlock): number {
     // the LAST thing in a turn — the missed-rows list is reference material the CA
     // consults before deciding, so it renders just above them, not after.
     case 'gst_recon_missed_rows':
-      return MISSED_ROWS_PRESENTATION_ORDER;
+      // Bank recon asks for the list above the reply text: between the progress blocks (<= 2) and the answer (3).
+      return block.placement === 'before_answer' ? BEFORE_ANSWER_PRESENTATION_ORDER : MISSED_ROWS_PRESENTATION_ORDER;
     case 'actions':
     case 'gst_recon_collision':
       return ACTIONS_PRESENTATION_ORDER;
@@ -712,10 +713,24 @@ export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
   const anchors = [firstActionsAnchorIndex, firstAnsweredQuestionIndex].filter((i) => i !== -1);
   const firstAnchorIndex = anchors.length ? Math.min(...anchors) : -1;
 
+  // A list that wants to sit above the reply text. After an answered question the reply text ties with the
+  // question's own rank, so the list takes a sort position just before that reply (never above the question).
+  const firstReplyAfterAnchor = blocks.findIndex(
+    (b, i) => b.type === 'answer' && firstAnchorIndex !== -1 && i > firstAnchorIndex,
+  );
+  const isBeforeAnswerList = (b: TurnBlock) => b.type === 'gst_recon_missed_rows' && b.placement === 'before_answer';
+
   return blocks
     .map((block, index) => ({ block, index }))
     .sort((a, b) => {
+      const sortIndex = (entry: { block: TurnBlock; index: number }) =>
+        isBeforeAnswerList(entry.block) && firstReplyAfterAnchor !== -1 && entry.index > firstAnchorIndex
+          ? firstReplyAfterAnchor - 0.5
+          : entry.index;
       const rank = (entry: { block: TurnBlock; index: number }) => {
+        if (isBeforeAnswerList(entry.block) && firstReplyAfterAnchor !== -1 && entry.index > firstAnchorIndex) {
+          return CONTINUED_AFTER_QUESTION_PRESENTATION_ORDER;
+        }
         const isProgressBlock =
           entry.block.type === 'status' || entry.block.type === 'thinking' || entry.block.type === 'answer';
         const arrivesAfterAnAnchor =
@@ -736,7 +751,7 @@ export function orderBlocksForDisplay(blocks: TurnBlock[]): TurnBlock[] {
         return blockPresentationOrder(entry.block);
       };
       const order = rank(a) - rank(b);
-      return order !== 0 ? order : a.index - b.index;
+      return order !== 0 ? order : sortIndex(a) - sortIndex(b);
     })
     .map(({ block }) => block);
 }

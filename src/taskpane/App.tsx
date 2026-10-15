@@ -42,7 +42,9 @@ const App: React.FC = () => {
   const [isReadingWorkbook, setIsReadingWorkbook] = useState(false);
   const applyInProgressRef = useRef(false);
   const appliedChangeSetIdsRef = useRef<Set<string>>(new Set());
-  const [workbookKey, setWorkbookKey] = useState('workbook');
+  // Empty until the real workbook name is known. Chats are loaded and saved only under the real key — loading
+  // under a placeholder showed another copy's (older) history after every reload.
+  const [workbookKey, setWorkbookKey] = useState('');
   // Durable per-workbook identity (TASKS.md #22-23), minted/persisted via
   // Office.js document.settings — threaded into useConversation below so it
   // rides along on every conversation-creating request.
@@ -435,12 +437,13 @@ const App: React.FC = () => {
     [rejectActions, turns],
   );
 
-  const handleJumpToGstReconRow = useCallback(async (sheetName: string, row: number) => {
+  const handleJumpToGstReconRow = useCallback(async (sheetName: string, row: number, fullRow?: boolean) => {
     try {
       await jumpToWorkbookSource({
         documentType: 'workbook',
         documentId: sheetName,
-        rowOrLine: `${sheetName}!A${row}`,
+        // Bank recon rows select the whole sheet row ("16:16"); GST rows keep selecting the A cell.
+        rowOrLine: fullRow ? `${sheetName}!${row}:${row}` : `${sheetName}!A${row}`,
       });
     } catch (err) {
       // The sheet/row may have been renamed, deleted, or moved since the reconciliation

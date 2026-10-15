@@ -3545,6 +3545,32 @@
   background: linear-gradient(135deg, var(--cx-brand-100) 0%, var(--cx-brand-100) 100%);
 }
 
+/* A row that exists only in the attached file: plain muted text, deliberately not capsule-shaped. */
+.cellix-missed-row-infile {
+  color: var(--cx-gray-500);
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.4;
+  cursor: help;
+}
+
+/* "• text" lines in an answer: the mark and the text are two columns, so a wrapped bullet lines up under its own first word. */
+.cellix-md-bullet {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding-left: 2px;
+}
+
+.cellix-md-bullet-mark {
+  flex: 0 0 auto;
+}
+
+.cellix-md-bullet-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .cellix-missed-row-pill:disabled {
   color: var(--cx-gray-500);
   cursor: default;

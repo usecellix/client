@@ -47,6 +47,8 @@ export interface BankStatementImportRequest {
   rawTable: RawTable;
   existingSheetNames?: string[];
   activeSheetName?: string;
+  /** Name the new sheet (e.g. after the attached file). */
+  preferredSheetName?: string;
 }
 
 /** A refusal from the server, with a message written for the user. */

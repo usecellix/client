@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
-import AnswerReveal from '@/components/ConversationPanel/AnswerReveal';
+import AnswerReveal, { TYPING_CHARS_PER_TICK as STEP, TYPING_INTERVAL_MS } from '@/components/ConversationPanel/AnswerReveal';
 import { MatchResult } from '@/types/conversationTurn';
 
 vi.mock('@/services/rangeFetchService', () => ({ navigateToCell: vi.fn(async () => undefined) }));
@@ -12,13 +12,15 @@ const ANSWER = `**2 largest by Debit**\n${LINE_1}\n${LINE_2}\n\nWorked out from 
 
 const pointer = (rowNum: number): MatchResult => ({ label: `row ${rowNum}`, sheetName: 'Bank Statement', row: rowNum - 1, col: 0, rowNum, endCol: 8 });
 const POINTERS = [pointer(445), pointer(16)];
-const TICK = 24;
+const TICK = TYPING_INTERVAL_MS;
+/** Ticks needed to have typed `chars` characters at the single app-wide speed. */
+const ticksFor = (chars: number) => Math.ceil(chars / STEP);
 
 /** Advances the typing animation to just after `text` has been typed. */
 function typeUntil(text: string) {
   const upTo = ANSWER.indexOf(text) + text.length;
   act(() => {
-    vi.advanceTimersByTime(TICK * upTo);
+    vi.advanceTimersByTime(TICK * ticksFor(upTo));
   });
 }
 
@@ -53,21 +55,18 @@ describe('AnswerReveal — typing an answer that names its rows', () => {
     const { container } = render(<AnswerReveal content={ANSWER} revealState="typing" matches={POINTERS} />);
     const start = ANSWER.indexOf('(row 445)');
 
-    // Step through the marker one character at a time.
+    // Run up to just before the marker, then go tick by tick through it.
     act(() => {
-      vi.advanceTimersByTime(TICK * start);
+      vi.advanceTimersByTime(TICK * Math.floor(start / STEP));
     });
-    for (let typed = 1; typed < '(row 445)'.length; typed++) {
+    for (let tick = 0; tick < 6 && buttons().length === 0; tick++) {
+      expect(container.textContent).not.toMatch(/\(r?o?w?\s?\d*$/);
       act(() => {
         vi.advanceTimersByTime(TICK);
       });
-      expect(container.textContent).not.toMatch(/\(r?o?w?\s?\d*$/);
-      expect(buttons()).toEqual([]);
     }
-    act(() => {
-      vi.advanceTimersByTime(TICK);
-    });
     expect(buttons()).toEqual(['row 445']);
+    expect(container.textContent).not.toMatch(/\(r?o?w?\s?\d*$/);
   });
 
   it('keeps the same block when typing finishes, with nothing drawn a second time', () => {
@@ -99,18 +98,18 @@ describe('AnswerReveal — typing an answer that names its rows', () => {
     const { container, rerender } = render(<AnswerReveal content={text} revealState="typing" onComplete={first} />);
 
     act(() => {
-      vi.advanceTimersByTime(TICK * 12);
+      vi.advanceTimersByTime(TICK * 2);
     });
-    expect(container.textContent).toBe('The sheet ha');
+    expect(container.textContent).toBe(text.slice(0, 2 * STEP).trimEnd());
 
     // What a credits update or the end-of-stream event does: same answer, new callback.
     rerender(<AnswerReveal content={text} revealState="typing" onComplete={second} />);
-    expect(container.textContent).toBe('The sheet ha');
+    expect(container.textContent).toBe(text.slice(0, 2 * STEP).trimEnd());
 
     act(() => {
-      vi.advanceTimersByTime(TICK * 3);
+      vi.advanceTimersByTime(TICK);
     });
-    expect(container.textContent).toBe('The sheet has 8');
+    expect(container.textContent).toBe(text.slice(0, 3 * STEP).trimEnd());
 
     act(() => {
       vi.advanceTimersByTime(TICK * text.length);
@@ -126,9 +125,9 @@ describe('AnswerReveal — typing an answer that names its rows', () => {
     const whileTyping = container.querySelector('.cellix-response-output');
 
     act(() => {
-      vi.advanceTimersByTime(TICK * 8);
+      vi.advanceTimersByTime(TICK * 2);
     });
-    expect(container.textContent).toBe('The shee');
+    expect(container.textContent).toBe(text.slice(0, 2 * STEP).trimEnd());
     expect(container.querySelector('.cellix-answer-streaming')).not.toBeNull();
 
     act(() => {
@@ -146,7 +145,7 @@ describe('AnswerReveal — typing an answer that names its rows', () => {
     const { container, rerender } = render(<AnswerReveal content={text} revealState="typing" matches={[found]} />);
 
     act(() => {
-      vi.advanceTimersByTime(TICK * 10);
+      vi.advanceTimersByTime(TICK * 2);
     });
     expect(container.querySelector('.cellix-find-pointer')).toBeNull();
 
@@ -157,5 +156,33 @@ describe('AnswerReveal — typing an answer that names its rows', () => {
   it('shows nothing while hidden', () => {
     const { container } = render(<AnswerReveal content={ANSWER} revealState="hidden" matches={POINTERS} />);
     expect(container.innerHTML).toBe('');
+  });
+});
+
+describe('typing speed', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('is one speed for every reply: the same characters per second whether it is 60 or 700 characters long', () => {
+    const rate = (length: number) => {
+      const text = 'x'.repeat(length);
+      const { container, unmount } = render(<AnswerReveal content={text} revealState="typing" />);
+      act(() => {
+        vi.advanceTimersByTime(TICK * 10);
+      });
+      const typed = container.textContent!.length;
+      unmount();
+      return typed;
+    };
+    expect(rate(60)).toBe(10 * STEP);
+    expect(rate(700)).toBe(10 * STEP);
+    expect(rate(5000)).toBe(10 * STEP);
+  });
+
+  it('types a ~700-character reconciliation summary in about 3 seconds', () => {
+    expect((Math.ceil(700 / STEP) * TICK) / 1000).toBeLessThan(4);
   });
 });

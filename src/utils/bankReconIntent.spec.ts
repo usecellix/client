@@ -3,6 +3,7 @@ import {
   detectBankReconIntent,
   detectBankReconLayout,
   detectBankReconRelayoutTarget,
+  isAttachedReconPrompt,
   isBankReconPrompt,
   isBankReconRelayoutPrompt,
   isCasualBankRecon,
@@ -65,4 +66,28 @@ describe('timing-only view', () => {
     expect(wantsTimingItemsOnly('reconcile bank, outstanding cheques')).toBe(true);
     expect(wantsTimingItemsOnly('reconcile bank, single table')).toBe(false);
   });
+});
+
+describe('isAttachedReconPrompt (a file is attached)', () => {
+  it.each([
+    'reconcile bank ledger against this file',
+    'reconcile bank with this file',
+    'reconcile this',
+    'match my ledger with the attached statement',
+    'compare my books to this',
+    'tally this against my cash book',
+    'do the BRS for September',
+    'recon',
+    'check it against my bank ledger',
+    'Reconcile @[Bank Ledger] against the attached CSV',
+  ])('treats "%s" as reconcile', (msg) => {
+    expect(isAttachedReconPrompt(msg)).toBe(true);
+  });
+
+  it.each(['import this bank statement', 'read this statement into a sheet', 'what is the closing balance', '', 'reconcile with GSTR-2B', 'match purchase register with 2B'])(
+    'leaves "%s" to the import / GST flow',
+    (msg) => {
+      expect(isAttachedReconPrompt(msg)).toBe(false);
+    },
+  );
 });

@@ -47,6 +47,7 @@ function renderTurn(t: ConversationTurn) {
       onRunAsAction={vi.fn()}
       onRevertChangeSet={vi.fn().mockResolvedValue(undefined)}
       onResolveGstReconCollision={vi.fn()}
+      onRejectGstReconCollision={vi.fn()}
       onJumpToGstReconRow={vi.fn()}
     />,
   );

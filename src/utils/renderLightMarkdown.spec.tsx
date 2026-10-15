@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
-import { renderInlineBoldMarkdown, renderLightMarkdownPlain } from './renderLightMarkdown';
+import { renderInlineBoldMarkdown, renderLightMarkdownPlain, renderLightMarkdownWithRows } from './renderLightMarkdown';
 
 describe('renderLightMarkdown', () => {
   it('wraps a bare =FUNCTION(...) formula in inline code', () => {
@@ -43,5 +45,35 @@ describe('renderLightMarkdown', () => {
     );
     expect(container.querySelectorAll('p.cellix-response-md-p')).toHaveLength(2);
     expect(container.querySelector('code.cellix-md-code')?.textContent).toBe('=COUNTA(A:A)');
+  });
+});
+
+describe('renderLightMarkdown — bullets', () => {
+  const html = (node: React.ReactNode) => renderToStaticMarkup(<div>{node}</div>);
+
+  it('renders "• text" lines as two-column bullets so a wrapped bullet lines up under its first word', () => {
+    const out = html(renderLightMarkdownPlain('Intro line.\n• First point that is long.\n• Second point.\nClosing line.'));
+    expect(out.match(/cellix-md-bullet"/g)).toHaveLength(2);
+    expect(out).toContain('cellix-md-bullet-mark');
+    expect(out).toContain('cellix-md-bullet-text');
+    // the mark is a column of its own, not characters glued to the text
+    expect(out).not.toContain('• First');
+  });
+
+  it('adds no stray line break next to a bullet, but keeps breaks between ordinary lines', () => {
+    const out = html(renderLightMarkdownPlain('A\nB\n• one\n• two\nC'));
+    // only the A / B break remains; bullets are blocks, so none is needed around them
+    expect((out.match(/<br\/?>/g) ?? []).length).toBe(1);
+  });
+
+  it('a half-typed bullet mark stays plain text until the space after it arrives', () => {
+    expect(html(renderLightMarkdownPlain('•'))).not.toContain('cellix-md-bullet');
+    expect(html(renderLightMarkdownPlain('• x'))).toContain('cellix-md-bullet');
+  });
+
+  it('works in the variant that turns "(row N)" into pointers, too', () => {
+    const out = html(renderLightMarkdownWithRows('• see (row 7) now', (n, key) => <b key={key}>R{n}</b>));
+    expect(out).toContain('cellix-md-bullet');
+    expect(out).toContain('<b>R7</b>');
   });
 });
