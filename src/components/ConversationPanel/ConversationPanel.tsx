@@ -279,6 +279,9 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ onSuggestion, children }
           <p>Review GST data, match ledgers, validate invoices, or prepare audit-ready Excel work.</p>
         </div>
       </div>
+      <p className="cellix-empty-narrow-hint" role="note">
+        <span aria-hidden="true">←</span> Expand panel to continue
+      </p>
       {children}
       <div className="cellix-suggestion-carousel" aria-label="Suggested prompts">
         {SUGGESTIONS.map((suggestion) => (
