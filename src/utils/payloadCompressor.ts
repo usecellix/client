@@ -137,7 +137,7 @@ export function prepareStreamRequestPayload(prompt: string, sheetData: any[][]):
 } {
   const compressed = compressSheetData(sheetData);
 
-  if ((import.meta as any)?.env?.DEV) {
+  if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.debug('[Cellix] Prepared compressed sheet payload', {
       originalRowCount: compressed.originalRowCount,
@@ -303,7 +303,7 @@ export function prepareConversationRequestPayload(
       : undefined,
   );
 
-  if ((import.meta as any)?.env?.DEV) {
+  if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.debug('[Cellix] Prepared compressed conversation payload', {
       originalRowCount: compressed.originalRowCount,

@@ -4,6 +4,9 @@ export { AuthSplash } from './components/AuthSplash';
 export { LoginPage } from './components/LoginPage';
 export { SocialSignInButtons } from './components/SocialSignInButtons';
 export {
+  signInWithProvider,
+  getAuthCompleteUrl,
+  getAuthDialogUrl,
   signOutUser,
   openEmailLoginPage,
   waitForEmailLogin,

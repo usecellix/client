@@ -13,13 +13,13 @@ function normalizeBaseUrl(raw: string): string {
 }
 
 export function getApiBaseUrl(): string {
-  const envValue = (import.meta as any)?.env?.VITE_API_BASE_URL as string | undefined;
+  const envValue = import.meta.env.VITE_API_BASE_URL;
 
   if (typeof envValue === 'string') {
     return normalizeBaseUrl(envValue);
   }
 
-  if ((import.meta as any)?.env?.DEV) {
+  if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.warn(
       `[Cellix] VITE_API_BASE_URL is not set. Falling back to ${DEFAULT_API_BASE_URL}. ` +
@@ -44,7 +44,7 @@ const DEFAULT_UPGRADE_URL = 'https://www.usecellix.com';
  * TASKS.md #204.
  */
 export function getUpgradeUrl(): string {
-  const envValue = (import.meta as any)?.env?.VITE_UPGRADE_URL as string | undefined;
+  const envValue = import.meta.env.VITE_UPGRADE_URL;
   const trimmed = typeof envValue === 'string' ? envValue.trim() : '';
   return trimmed || DEFAULT_UPGRADE_URL;
 }
@@ -166,40 +166,38 @@ export function getBillingTopupEndpoint(): string {
   return `${getApiBaseUrl()}/billing/checkout/topup`;
 }
 
-// Office's displayDialogAsync refuses non-HTTPS dialog URLs, so this must be
-// HTTPS even in dev — Landing-page/vite.config.ts serves HTTPS locally using
-// the same office-addin-dev-certs cert this add-in's own dev server uses.
-const DEFAULT_MARKETING_SITE_URL = 'https://localhost:5173';
-
 /**
  * The marketing site (CELLIX-landing-page) — where the task pane's
- * "Upgrade the plan" action AND the email/password sign-in flow
- * (getEmailLoginUrl) send the user, since both are marketing-site-driven
- * (pricing/checkout, and /login for the paired-tab sign-in handshake).
- * Matches the backend's own CHECKOUT_SUCCESS_URL/CHECKOUT_CANCEL_URL default
- * dev port.
+ * "Upgrade the plan" action AND the email/password / Google sign-in flow
+ * (getEmailLoginUrl) send the user.
  *
- * A missing VITE_MARKETING_SITE_URL in a PRODUCTION build must fail loudly,
- * not fall back to localhost: that fallback silently sent a real AppSource
- * reviewer's browser to their own machine when this var was never set in
- * Vercel's project settings (the .env.production file that documents the
- * var is gitignored and local-only — committing it would not have helped;
- * Vercel still needs the var set in its own dashboard). A thrown error here
- * fails the build/first render instead of shipping a silent dead end.
+ * No hardcoded fallback — this must always come from VITE_MARKETING_SITE_URL
+ * (client/.env for dev, client/.env.production for production/Vercel), so a
+ * misconfigured build fails loudly on the login/upgrade buttons instead of
+ * silently sending the user to whichever URL happened to be baked into the
+ * source (previously a dev build could silently fall through to the
+ * production URL if the dev server started before .env was edited/created,
+ * which is exactly the bug this replaces — see git history for context).
+ * Callers (SocialSignInButtons.tsx's handleEmailLogin/handleSignIn) already
+ * catch and surface this as a visible error, so throwing here is safe.
+ *
+ * Office's displayDialogAsync refuses non-HTTPS dialog URLs, so in dev this
+ * must be set to an HTTPS origin (Landing-page/vite.config.ts serves HTTPS
+ * locally using the same office-addin-dev-certs cert this add-in's own dev
+ * server uses) — e.g. VITE_MARKETING_SITE_URL=https://localhost:5173.
  */
 export function getMarketingSiteUrl(): string {
-  const envValue = (import.meta as any)?.env?.VITE_MARKETING_SITE_URL as string | undefined;
+  // Must be the literal `import.meta.env.X` form: Vite only injects env into a
+  // module when it sees that exact text, and `import.meta?.env` hides it.
+  const envValue = import.meta.env.VITE_MARKETING_SITE_URL;
   if (typeof envValue === 'string' && envValue.trim()) {
     return envValue.trim().replace(/\/+$/, '');
   }
-  if (!(import.meta as any)?.env?.DEV) {
-    throw new Error(
-      '[Cellix] VITE_MARKETING_SITE_URL is not set in this production build. Set it in the ' +
-        'Vercel project\'s Environment Variables (Production scope) to https://www.usecellix.com ' +
-        '— without it, sign-in and upgrade links point at localhost for every real user.',
-    );
-  }
-  return DEFAULT_MARKETING_SITE_URL;
+  throw new Error(
+    'VITE_MARKETING_SITE_URL is not set. Add it to client/.env (dev) or ' +
+      "client/.env.production (production) — e.g. 'https://localhost:5173' " +
+      "for local dev or your deployed marketing site's URL for production.",
+  );
 }
 
 /** Opens the marketing site's pricing page — the entry point for upgrading/changing plans. */
