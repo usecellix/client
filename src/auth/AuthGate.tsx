@@ -7,14 +7,6 @@ interface AuthGateProps {
   children: React.ReactNode;
 }
 
-/**
- * While signed out, how often to re-check the session in the background —
- * a fallback only; the window-focus listener below is what actually catches
- * "user switched back to Excel" instantly. Kept slow so an idle login screen
- * doesn't hammer the backend or spam the network/proxy log.
- */
-const SIGNED_OUT_POLL_MS = 15000;
-
 /** Minimum time to show the "Signing you in…" splash after email login claim. */
 const ENTER_APP_MIN_MS = 1000;
 
@@ -50,26 +42,23 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
     return () => window.clearTimeout(timer);
   }, [isPending]);
 
-  // Email/password sign-in now happens in a separate browser tab (the Office
-  // dialog proved unreliable for this), so the task pane can't be told
-  // directly when it finishes. Instead, re-check the session the moment the
-  // user comes back to Excel (focus), with a background poll as a fallback
-  // in case the Excel host doesn't reliably fire focus events. Neither
-  // triggers the splash screen — see hasResolvedOnce above — so this is
-  // silent unless it actually finds a new session.
+  // The session is checked once on load (useSession). Email/password sign-in
+  // happens in a browser tab, but waitForEmailLogin (useAuth.ts) claims the
+  // session and calls handleEmailLoginComplete itself, so no background
+  // polling is needed here. Only re-check when the user returns to Excel —
+  // event-driven, not on a timer.
   React.useEffect(() => {
     if (session?.user || enteringApp) return;
 
-    const onFocus = () => void refetch();
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onFocus);
-
-    const interval = window.setInterval(() => void refetch(), SIGNED_OUT_POLL_MS);
+    const onReturn = () => {
+      if (document.visibilityState === 'visible') void refetch();
+    };
+    window.addEventListener('focus', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
 
     return () => {
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onFocus);
-      window.clearInterval(interval);
+      window.removeEventListener('focus', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
     };
   }, [session, refetch, enteringApp]);
 
