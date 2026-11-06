@@ -173,6 +173,9 @@ async function loadTablesSafe(
   }
 }
 
+/** Rows of per-cell number formats read for the column profiler (P1.5). */
+const PROFILE_FORMAT_ROW_CAP = 1000;
+
 /**
  * Column-level bold/italic/fontColor/fillColor + numberFormat, read from ONE
  * representative row per sheet — the first real data row, not the header row
@@ -309,6 +312,28 @@ async function extractSheetContext(
     );
   } catch {
     numberFormats = values.map((row) => Array(row.length).fill(''));
+  }
+
+  // P1.5: per-cell formats for the first rows, so the column profiler can see
+  // Dr/Cr kept in the number format. Best-effort — a failure leaves the matrix as is.
+  try {
+    const formatRows = Math.min(usedRange.rowCount, PROFILE_FORMAT_ROW_CAP);
+    if (formatRows > 0) {
+      const block = sheet.getRangeByIndexes(
+        usedRange.rowIndex ?? 0,
+        usedRange.columnIndex ?? 0,
+        formatRows,
+        usedRange.columnCount,
+      );
+      block.load('numberFormat');
+      await ctx.sync();
+      const matrix = asStringMatrix(block.numberFormat as unknown[][]);
+      matrix.forEach((row, rowIdx) => {
+        if (rowIdx !== headerRowIndex && numberFormats[rowIdx]) numberFormats[rowIdx] = row;
+      });
+    }
+  } catch {
+    /* keep header-row-only formats */
   }
 
   const columnFormats = await extractColumnFormats(

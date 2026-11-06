@@ -54,7 +54,7 @@ async function resolveOrCreateSheet(
  * targetColumn resolution) is unchanged. Falls back to the requested range if the
  * used range is unavailable (empty sheet) or already smaller.
  */
-async function extendRangeToUsedRows(
+export async function extendRangeToUsedRows(
   sheet: Excel.Worksheet,
   rangeAddress: string,
   ctx: Excel.RequestContext,

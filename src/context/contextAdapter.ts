@@ -39,6 +39,35 @@ function buildHeadTailSample(
   );
 }
 
+/** Distinct non-General number formats in a column's data cells, most common first (≤8). */
+export function countColumnFormats(
+  numberFormats: string[][],
+  headerRowIndex: number,
+  colIdx: number,
+): Array<{ format: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (let r = headerRowIndex + 1; r < numberFormats.length; r += 1) {
+    const f = String(numberFormats[r]?.[colIdx] ?? '').trim();
+    if (!f || f === 'General' || f === '@') continue;
+    counts.set(f, (counts.get(f) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([format, count]) => ({ format, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+}
+
+/** Sheet row indexes (0-based) of the formula cells in a column's data rows, capped at 500. */
+export function listFormulaRows(formulas: string[][] | undefined, headerRowIndex: number, colIdx: number): number[] {
+  const rows: number[] = [];
+  if (!formulas) return rows;
+  for (let r = headerRowIndex + 1; r < formulas.length && rows.length < 500; r += 1) {
+    const f = formulas[r]?.[colIdx];
+    if (typeof f === 'string' && f.startsWith('=')) rows.push(r);
+  }
+  return rows;
+}
+
 function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
   const headerRowIndex = sheet.headerRowIndex ?? 0;
   const headers =
@@ -65,9 +94,14 @@ function sheetToSnapshot(sheet: SheetContext): SheetSnapshot {
         columnFormat?.fontColor !== undefined ||
         columnFormat?.fillColor !== undefined;
 
+      const formatCounts = countColumnFormats(sheet.numberFormats, headerRowIndex, colIdx);
+      const formulaRows = listFormulaRows(sheet.formulas, headerRowIndex, colIdx);
+
       return {
         index: colIdx,
         header,
+        ...(formatCounts.length ? { formatCounts } : {}),
+        ...(formulaRows.length ? { formulaRows } : {}),
         sampleValues: nonEmpty.slice(0, 5) as (string | number | null)[],
         detectedType: detectColumnType(nonEmpty, fmt),
         numberFormat:

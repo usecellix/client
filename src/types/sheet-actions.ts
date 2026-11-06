@@ -158,12 +158,24 @@ export type RangeFilterOperator =
   | 'lengthEquals'
   | 'lengthNotEquals'
   | 'matchesRegex'
-  | 'notMatchesRegex';
+  | 'notMatchesRegex'
+  | 'isBlank'
+  | 'isNotBlank'
+  | 'isTextNumber'
+  | 'isInvalidGstin'
+  | 'olderThan'
+  | 'isDuplicate';
 
 export interface RangeFilterSpec {
   column: string;
   operator: RangeFilterOperator;
   value: string | number;
+  /** isDuplicate: columns that together form the key (defaults to `column`). */
+  keyColumns?: string[];
+  /** isDuplicate: which row of a duplicate group to keep - the others match. Default 'first'. */
+  keep?: 'first' | 'last';
+  /** olderThan: reference date (ISO yyyy-mm-dd); defaults to today. */
+  asOn?: string;
 }
 
 export interface BatchSetOperation {

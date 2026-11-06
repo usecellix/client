@@ -1,3 +1,4 @@
+import { captureRowSnapshot, type RowSnapshot } from './rowSnapshot';
 import { RichAction } from '@/action.types';
 import {
   handleAddRow,
@@ -114,6 +115,8 @@ export class RichActionEngine {
     sortedRangeChanges?: CellChange[];
     /** What each FORMAT_RANGE / AUTOFIT_COLUMNS overwrote, read just before it ran — Revert's data. TASKS.md #400. */
     formatSnapshots?: FormatSnapshot[];
+    /** What DELETE_MATCHING_ROWS / SET_MATCHING_ROWS removed or overwrote - in-session undo only (P1.6). Never sent to the server. */
+    rowSnapshots?: RowSnapshot[];
     /** ADD_SHEET/CREATE_SHEET outcomes where the live sheet name diverged from what was requested. */
     sheetNameMismatches?: SheetCreationOutcome[];
   }> {
@@ -123,6 +126,7 @@ export class RichActionEngine {
     const createdChartIds: CreatedChartId[] = [];
     const sortedRangeChanges: CellChange[] = [];
     const formatSnapshots: FormatSnapshot[] = [];
+    const rowSnapshots: RowSnapshot[] = [];
     const snapshotBudget: SnapshotBudget = { cells: MAX_SNAPSHOT_TOTAL_CELLS };
     const sheetNameMismatches: SheetCreationOutcome[] = [];
     // Creates first, so a write ordered ahead of its own sheet's ADD_SHEET
@@ -147,8 +151,11 @@ export class RichActionEngine {
             // Read what a formatting action is about to overwrite, so Revert can put it back.
             // Kept only once the action has applied: a failed one changed nothing to restore.
             const formatSnapshot = await captureFormatSnapshot(action, ctx, snapshotBudget);
+            // P1.6: what a row-level delete/overwrite is about to destroy, held in memory for undo.
+            const rowSnapshot = await captureRowSnapshot(action, ctx);
             const result = await this.dispatchTolerantOfNewSheet(action, ctx, createdSheets);
             if (formatSnapshot) formatSnapshots.push(formatSnapshot);
+            if (rowSnapshot) rowSnapshots.push(rowSnapshot);
             if (
               result &&
               'actualName' in result &&
@@ -238,6 +245,7 @@ export class RichActionEngine {
       ...(createdChartIds.length > 0 ? { createdChartIds } : {}),
       ...(sortedRangeChanges.length > 0 ? { sortedRangeChanges } : {}),
       ...(formatSnapshots.length > 0 ? { formatSnapshots } : {}),
+      ...(rowSnapshots.length > 0 ? { rowSnapshots } : {}),
       ...(sheetNameMismatches.length > 0 ? { sheetNameMismatches } : {}),
     };
   }

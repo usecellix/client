@@ -1,3 +1,4 @@
+import type { RowSnapshot } from '@/engine/rowSnapshot';
 import { partitionActions } from '../engine/actionNormalizer';
 import { richActionEngine, CreatedConditionalFormatId, CreatedChartId } from '../engine/actionEngine';
 import type { FormatSnapshot } from '../engine/formatSnapshot';
@@ -8,25 +9,12 @@ import {
   pruneSpuriousAddSheets,
 } from '../engine/overwriteGuard';
 import { selectActionRanges } from '../engine/selectRanges';
-import { SheetAction, SheetActionType } from '../types/sheet-actions';
+import { SheetAction } from '../types/sheet-actions';
 import { CellChange } from '../types/changeSet';
 import { sanitizeActions, SanitizeResult } from './actionGuard';
 import { probeSheetGuardStatesSafe } from '../engine/sheetGuardState';
 
 /* global Excel */
-
-type PreviewRange = {
-  row: number;
-  col: number;
-  rowCount: number;
-  colCount: number;
-  values: unknown[][];
-  formulas: unknown[][];
-  fillColor: string | null;
-  // Office.js widens this to the enum plus its string-literal aliases; mirror that
-  // so a captured pattern can be written straight back on revert.
-  fillPattern: Excel.RangeFill['pattern'];
-};
 
 
 /**
@@ -49,7 +37,6 @@ async function guardActions(actions: SheetAction[]): Promise<SanitizeResult> {
 }
 
 export class ActionEngine {
-  private static previewRanges: PreviewRange[] = [];
 
   static async applyActions(actions: SheetAction[]): Promise<void> {
     const result = await this.applyActionsWithReport(actions);
@@ -72,11 +59,14 @@ export class ActionEngine {
     sortedRangeChanges?: CellChange[];
     /** What each formatting action overwrote — Revert's data. TASKS.md #400. */
     formatSnapshots?: FormatSnapshot[];
+    /** In-session undo data for row-level actions (P1.6). Memory only - never sent to the server. */
+    rowSnapshots?: RowSnapshot[];
     /** ADD_SHEET/CREATE_SHEET outcomes where the live sheet name diverged from what was requested. */
     sheetNameMismatches?: SheetCreationOutcome[];
   }> {
     const errors: string[] = [];
     let applied = 0;
+    let rowSnapshots: RowSnapshot[] | undefined;
     let createdConditionalFormatIds: CreatedConditionalFormatId[] | undefined;
     let createdChartIds: CreatedChartId[] | undefined;
     let sortedRangeChanges: CellChange[] | undefined;
@@ -112,10 +102,6 @@ export class ActionEngine {
         throw new Error(errors[0] ?? 'No actions to apply.');
       }
 
-      if (this.previewRanges.length) {
-        await this.commitPreview();
-      }
-
       const richResult = await richActionEngine.applyActions(rich);
       applied += richResult.applied;
       errors.push(...richResult.errors);
@@ -123,6 +109,7 @@ export class ActionEngine {
       createdChartIds = richResult.createdChartIds;
       sortedRangeChanges = richResult.sortedRangeChanges;
       formatSnapshots = richResult.formatSnapshots;
+      rowSnapshots = richResult.rowSnapshots;
       sheetNameMismatches = richResult.sheetNameMismatches;
       if (richResult.errors.some((e) => e.includes('Write blocked:'))) {
         throw new Error(richResult.errors.find((e) => e.includes('Write blocked:')) ?? richResult.errors[0]);
@@ -146,6 +133,7 @@ export class ActionEngine {
       ...(createdChartIds ? { createdChartIds } : {}),
       ...(sortedRangeChanges ? { sortedRangeChanges } : {}),
       ...(formatSnapshots ? { formatSnapshots } : {}),
+      ...(rowSnapshots ? { rowSnapshots } : {}),
       ...(sheetNameMismatches ? { sheetNameMismatches } : {}),
     };
   }
@@ -156,267 +144,6 @@ export class ActionEngine {
     await Excel.run(async (ctx) => {
       await selectActionRanges(actions, ctx);
     });
-  }
-
-  static async previewActions(actions: SheetAction[]): Promise<void> {
-    try {
-      const safeActions = (await guardActions(actions)).actions;
-      if (!safeActions.length) return;
-
-      await this.clearPreview();
-
-      await Excel.run(async (context) => {
-        const worksheet = context.workbook.worksheets.getActiveWorksheet();
-        const previews: PreviewRange[] = [];
-
-        for (const action of safeActions) {
-          try {
-            const target = await this.getPreviewTarget(worksheet, action, context);
-            if (!target) continue;
-
-            target.range.load(['values', 'formulas', 'format/fill/color', 'format/fill/pattern']);
-            await context.sync();
-
-            previews.push({
-              row: target.row,
-              col: target.col,
-              rowCount: target.rowCount,
-              colCount: target.colCount,
-              values: target.range.values,
-              formulas: target.range.formulas,
-              fillColor: target.range.format.fill.color ?? null,
-              fillPattern: target.range.format.fill.pattern ?? 'None',
-            });
-
-            this.applyPreviewAction(target.range, action, target.colCount);
-          } catch (error) {
-            console.warn('[Cellix] Failed to preview action:', action, error);
-          }
-        }
-
-        this.previewRanges = previews;
-        await context.sync();
-      });
-    } catch (error) {
-      console.warn('[Cellix] Failed to preview actions:', error);
-    }
-  }
-
-  static async clearPreview(): Promise<void> {
-    if (!this.previewRanges.length) return;
-
-    const previews = [...this.previewRanges];
-    this.previewRanges = [];
-
-    try {
-      await Excel.run(async (context) => {
-        const worksheet = context.workbook.worksheets.getActiveWorksheet();
-
-        for (const preview of previews) {
-          const range = worksheet.getRangeByIndexes(
-            preview.row,
-            preview.col,
-            preview.rowCount,
-            preview.colCount,
-          );
-          range.values = preview.values as string[][];
-          range.formulas = preview.formulas as string[][];
-          this.restoreFill(range, preview.fillPattern, preview.fillColor);
-        }
-
-        await context.sync();
-      });
-    } catch (error) {
-      console.warn('[Cellix] Failed to clear action preview:', error);
-    }
-  }
-
-  static async commitPreview(): Promise<void> {
-    if (!this.previewRanges.length) return;
-
-    const previews = [...this.previewRanges];
-    this.previewRanges = [];
-
-    try {
-      await Excel.run(async (context) => {
-        const worksheet = context.workbook.worksheets.getActiveWorksheet();
-
-        for (const preview of previews) {
-          const range = worksheet.getRangeByIndexes(
-            preview.row,
-            preview.col,
-            preview.rowCount,
-            preview.colCount,
-          );
-          this.restoreFill(range, preview.fillPattern, preview.fillColor);
-        }
-
-        await context.sync();
-      });
-    } catch (error) {
-      console.warn('[Cellix] Failed to commit action preview:', error);
-    }
-  }
-
-  private static getRange(worksheet: Excel.Worksheet, action: SheetAction): Excel.Range {
-    const row = action.row ?? 0;
-    const col = action.col ?? 0;
-    const rowCount = action.rowCount ?? 1;
-    const colCount = action.colCount ?? 1;
-    return worksheet.getRangeByIndexes(row, col, rowCount, colCount);
-  }
-
-  private static async getPreviewTarget(
-    worksheet: Excel.Worksheet,
-    action: SheetAction,
-    context: Excel.RequestContext,
-  ): Promise<{ range: Excel.Range; row: number; col: number; rowCount: number; colCount: number } | null> {
-    const cellTypes: SheetActionType[] = ['SET_CELL', 'CLEAR_CELL', 'SET_FORMULA', 'HIGHLIGHT_CELL'];
-    if (cellTypes.includes(action.type) && action.row !== undefined && action.col !== undefined) {
-      return {
-        range: worksheet.getRangeByIndexes(action.row, action.col, 1, 1),
-        row: action.row,
-        col: action.col,
-        rowCount: 1,
-        colCount: 1,
-      };
-    }
-
-    if (action.type === 'FORMAT_RANGE' && action.row !== undefined && action.col !== undefined) {
-      return {
-        range: this.getRange(worksheet, action),
-        row: action.row,
-        col: action.col,
-        rowCount: action.rowCount ?? 1,
-        colCount: action.colCount ?? 1,
-      };
-    }
-
-    if (action.type === 'ADD_ROW') {
-      const row = await this.getAppendRowIndex(worksheet, context);
-      const colCount = Math.max(action.data?.length ?? 1, await this.getUsedColumnCount(worksheet, context));
-      return { range: worksheet.getRangeByIndexes(row, 0, 1, colCount), row, col: 0, rowCount: 1, colCount };
-    }
-
-    if (action.type === 'DELETE_ROW' && action.row !== undefined) {
-      const colCount = await this.getUsedColumnCount(worksheet, context);
-      return {
-        range: worksheet.getRangeByIndexes(action.row, 0, 1, colCount),
-        row: action.row,
-        col: 0,
-        rowCount: 1,
-        colCount,
-      };
-    }
-
-    return null;
-  }
-
-  private static applyPreviewAction(range: Excel.Range, action: SheetAction, colCount: number): void {
-    switch (action.type) {
-      case 'SET_CELL':
-        range.values = [[action.value ?? '']];
-        return;
-      case 'CLEAR_CELL':
-        range.values = [['']];
-        return;
-      case 'SET_FORMULA':
-        range.formulas = [[action.formula ?? '']];
-        return;
-      case 'ADD_ROW': {
-        const data = action.data ?? [];
-        range.values = [Array.from({ length: colCount }, (_, index) => data[index] ?? '')];
-        return;
-      }
-      case 'HIGHLIGHT_CELL':
-        if (action.color) this.applyFillColor(range, action.color);
-        return;
-      case 'FORMAT_RANGE':
-        if (action.format?.fillColor) this.applyFillColor(range, action.format.fillColor);
-        return;
-      case 'DELETE_ROW':
-        return;
-      default:
-        return;
-    }
-  }
-
-  private static async getAppendRowIndex(
-    worksheet: Excel.Worksheet,
-    context: Excel.RequestContext,
-  ): Promise<number> {
-    const bounds = await this.getRealUsedBounds(worksheet, context);
-    return bounds.nextRow;
-  }
-
-  private static async getUsedColumnCount(
-    worksheet: Excel.Worksheet,
-    context: Excel.RequestContext,
-  ): Promise<number> {
-    const bounds = await this.getRealUsedBounds(worksheet, context);
-    return bounds.columnCount;
-  }
-
-  private static async getRealUsedBounds(
-    worksheet: Excel.Worksheet,
-    context: Excel.RequestContext,
-  ): Promise<{ nextRow: number; columnCount: number }> {
-    const usedRange = worksheet.getUsedRange();
-    if (!usedRange) return { nextRow: 0, columnCount: 1 };
-
-    usedRange.load(['values', 'rowIndex', 'columnIndex', 'rowCount', 'columnCount']);
-    await context.sync();
-
-    const values = usedRange.values ?? [];
-    const baseRow = usedRange.rowIndex ?? 0;
-    let lastRelativeRow = -1;
-    let lastRelativeColumn = -1;
-
-    values.forEach((row, rowIndex) => {
-      row.forEach((cell, columnIndex) => {
-        if (!this.isBlankCell(cell)) {
-          lastRelativeRow = Math.max(lastRelativeRow, rowIndex);
-          lastRelativeColumn = Math.max(lastRelativeColumn, columnIndex);
-        }
-      });
-    });
-
-    const columnCount = Math.max(lastRelativeColumn + 1, 1);
-    const firstRowHasContent = (values[0] ?? []).some((cell) => !this.isBlankCell(cell));
-
-    if (lastRelativeRow < 0) {
-      return { nextRow: firstRowHasContent ? baseRow + 1 : baseRow, columnCount };
-    }
-
-    let nextRow = baseRow + lastRelativeRow + 1;
-    if (firstRowHasContent) {
-      nextRow = Math.max(nextRow, baseRow + 1);
-    }
-
-    return { nextRow, columnCount };
-  }
-
-  private static isBlankCell(value: unknown): boolean {
-    return value === null || value === undefined || String(value).trim() === '';
-  }
-
-  private static applyFillColor(range: Excel.Range, color: string): void {
-    range.format.fill.pattern = 'Solid';
-    range.format.fill.color = color;
-  }
-
-  private static restoreFill(
-    range: Excel.Range,
-    pattern: Excel.RangeFill['pattern'],
-    color: string | null,
-  ): void {
-    range.format.fill.pattern = pattern;
-    // A cell with no fill reports a null colour; clear() is how that is restored.
-    if (color === null) {
-      range.format.fill.clear();
-      return;
-    }
-    range.format.fill.color = color;
   }
 
   static validateAction(action: SheetAction): boolean {

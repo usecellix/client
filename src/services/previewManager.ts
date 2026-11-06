@@ -1,3 +1,4 @@
+import type { RowSnapshot } from '@/engine/rowSnapshot';
 import { SheetAction, SheetActionType } from '@/types/sheet-actions';
 import { CellChange } from '@/types/changeSet';
 import { ActionEngine } from '@/utils/actionEngine';
@@ -147,6 +148,7 @@ export class PreviewManager {
         createdChartIds?: CreatedChartId[];
         sortedRangeChanges?: CellChange[];
         formatSnapshots?: FormatSnapshot[];
+        rowSnapshots?: RowSnapshot[];
         sheetNameMismatches?: SheetCreationOutcome[];
       }
     | void
@@ -169,6 +171,7 @@ export class PreviewManager {
       let createdChartIds: CreatedChartId[] | undefined;
       let sortedRangeChanges: CellChange[] | undefined;
       let formatSnapshots: FormatSnapshot[] | undefined;
+      let rowSnapshots: RowSnapshot[] | undefined;
       let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       if (toApply.length > 0) {
         // applyActionsWithReport (not the void applyActions) — TASKS.md #40/#15 need
@@ -183,6 +186,7 @@ export class PreviewManager {
         createdChartIds = result.createdChartIds;
         sortedRangeChanges = result.sortedRangeChanges;
         formatSnapshots = result.formatSnapshots;
+        rowSnapshots = result.rowSnapshots;
         sheetNameMismatches = result.sheetNameMismatches;
       }
       this.reset();
@@ -190,8 +194,9 @@ export class PreviewManager {
         createdChartIds ||
         sortedRangeChanges ||
         formatSnapshots ||
+        rowSnapshots ||
         sheetNameMismatches
-        ? { createdConditionalFormatIds, createdChartIds, sortedRangeChanges, formatSnapshots, sheetNameMismatches }
+        ? { createdConditionalFormatIds, createdChartIds, sortedRangeChanges, formatSnapshots, rowSnapshots, sheetNameMismatches }
         : undefined;
     } catch (error) {
       // Keep pending + applied flags so a retry does not double-write.

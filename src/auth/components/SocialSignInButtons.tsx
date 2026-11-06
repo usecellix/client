@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { signInWithProvider, openEmailLoginPage, waitForEmailLogin } from '@/auth/useAuth';
+import { openEmailLoginPage, waitForEmailLogin } from '@/auth/useAuth';
 
 interface SocialSignInButtonsProps {
   disabled?: boolean;
@@ -11,16 +11,13 @@ interface SocialSignInButtonsProps {
 }
 
 /**
- * Google: REINTRODUCED AT USER REQUEST as an in-Excel Office dialog
- * (signInWithProvider, see useAuth.ts) instead of the external-browser
- * pairing-token flow. That dialog is known to fail for real Google logins
- * (cross-origin cookie the dialog can never see — Office error 12006,
- * AppSource certification Product ID b5d15e34-0e2e-4680-8791-6316c46b28d7,
- * Oct 7 2026) — see signInWithProvider's docblock before re-touching this.
- *
- * Email/password still uses the external-browser pairing-token flow
- * (openEmailLoginPage + waitForEmailLogin), which does not have that
- * problem and is left unchanged.
+ * Google and email/password both use the external-browser pairing-token flow
+ * (openEmailLoginPage + waitForEmailLogin + POST /excel-login/claim). The
+ * Office-dialog Google flow (signInWithProvider in useAuth.ts) fails for real
+ * users — the session cookie lands on the marketing site's origin, which the
+ * dialog can never read (Office error 12006; AppSource certification Product
+ * ID b5d15e34-0e2e-4680-8791-6316c46b28d7, Oct 7 2026) — so it is no longer
+ * used here.
  */
 export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
   disabled,
@@ -28,7 +25,6 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
   onEmailLoginOpened,
   onEmailLoginComplete,
 }) => {
-  const [pending, setPending] = React.useState(false);
   const [emailPending, setEmailPending] = React.useState(false);
   const cancelWaitRef = React.useRef<(() => void) | null>(null);
 
@@ -36,21 +32,13 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
     return () => cancelWaitRef.current?.();
   }, []);
 
-  const handleSignIn = async () => {
-    setPending(true);
+  // Google AND email/password both go through the external-browser
+  // pairing-token flow. The Office-dialog Google flow (signInWithProvider)
+  // cannot see the session cookie set on the marketing site's origin, so it
+  // reported failure/"cancelled" even after a successful Google login.
+  const handleBrowserLogin = (provider?: 'google') => {
     try {
-      await signInWithProvider('google');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to sign in with Google';
-      onError?.(message);
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const handleEmailLogin = () => {
-    try {
-      const token = openEmailLoginPage();
+      const token = openEmailLoginPage(provider);
       setEmailPending(true);
       onEmailLoginOpened?.();
 
@@ -73,7 +61,7 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
     }
   };
 
-  const busy = pending || emailPending || disabled;
+  const busy = emailPending || disabled;
 
   return (
     <div className="flex w-fit flex-col gap-3">
@@ -82,17 +70,17 @@ export const SocialSignInButtons: React.FC<SocialSignInButtonsProps> = ({
         variant="outline"
         className="auth-login__google-btn h-10 w-auto justify-center gap-2 bg-white text-[#3c4043] hover:bg-[#f8f9fa]"
         disabled={busy}
-        onClick={() => void handleSignIn()}
+        onClick={() => handleBrowserLogin('google')}
       >
         <GoogleIcon />
-        {pending ? 'Redirecting…' : 'Continue with Google'}
+        {emailPending ? 'Waiting for browser…' : 'Continue with Google'}
       </Button>
 
       <button
         type="button"
         className="auth-login__email-link"
         disabled={busy}
-        onClick={handleEmailLogin}
+        onClick={() => handleBrowserLogin()}
       >
         Log in with email and password
       </button>

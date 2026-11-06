@@ -1,3 +1,4 @@
+import { withoutSessionUndoable } from '@/engine/rowSnapshot';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { buildWorkbookContext } from '@/services/sheetContextBuilder';
 import {
@@ -64,7 +65,6 @@ import {
   retargetSheetActions,
 } from '@/services/bankStatementImportService';
 import { RawTable } from '@/types/rawTable';
-import { shouldPreviewActions } from '@/utils/previewPolicy';
 import { ClarificationPayload } from '@/types/cellix.types';
 import { CellChange } from '@/types/changeSet';
 import { AssistantMode, DEFAULT_ASSISTANT_MODE } from '@/types/mode';
@@ -243,7 +243,6 @@ export interface UseConversationOptions {
   ) => void | Promise<void>;
   onClearPreview?: () => void | Promise<void>;
   onChangeSetApplied?: (changeSetId: string) => void;
-  autoApplyActions?: boolean;
   previewEnabled?: boolean;
   isChangeSetApplied?: (changeSetId?: string) => boolean;
   /** Emitted once per completed debit (CREDIT_SYSTEM_SCHEMA.md §6) — lets the
@@ -697,7 +696,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
     onPreviewActions,
     onClearPreview,
     onChangeSetApplied,
-    autoApplyActions = false,
     previewEnabled = true,
     isChangeSetApplied,
     onCredits,
@@ -1130,7 +1128,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       if (previewResult) {
         pendingActions.changeSetId = previewResult.changeSetId;
-        pendingActions.irreversibleActionTypes = previewResult.irreversibleActionTypes;
+        pendingActions.irreversibleActionTypes = withoutSessionUndoable(previewResult.irreversibleActionTypes);
         pendingActions.changes = previewResult.changes;
       }
 
@@ -1139,9 +1137,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       const isActionMode = mode === 'action';
 
       if (isActionMode) {
-        if (shouldPreviewActions(plan.actions, autoApplyActions)) {
-          await onPreviewActions?.(plan.actions, plan.explanation, {});
-        }
+        // Model-proposed writes are always previewed; they only reach the sheet
+        // through previewManager.accept() (user clicks Accept).
+        await onPreviewActions?.(plan.actions, plan.explanation, {});
         updateTurn(turnId, (turn) => {
           const withoutOldPending = turn.blocks.filter(
             (b) => !(b.type === 'actions' && b.proposalStatus === 'pending'),
@@ -1159,7 +1157,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
     },
     [
-      autoApplyActions,
       isChangeSetApplied,
       onActions,
       onClearPreview,
@@ -1349,7 +1346,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       revealFinalResponse(turnId, { type: 'answer', answer: outcome.answer, keepFull: Boolean(outcome.missedRowsBeforeAnswer) });
 
-      if (outcome.actions.length && shouldPreviewActions(outcome.actions, autoApplyActions)) {
+      if (outcome.actions.length) {
         await onPreviewActions?.(outcome.actions, outcome.explanation, {});
       }
 
@@ -1381,7 +1378,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       });
     },
     [
-      autoApplyActions,
       isChangeSetApplied,
       onPreviewActions,
       pushHistory,
@@ -1516,7 +1512,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       revealFinalResponse(turnId, { type: 'answer', answer });
 
-      if (result.actions.length && shouldPreviewActions(result.actions, autoApplyActions)) {
+      if (result.actions.length) {
         await onPreviewActions?.(result.actions, userFacingSummary.headline, {});
       }
 
@@ -1530,7 +1526,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }));
     },
     [
-      autoApplyActions,
       isChangeSetApplied,
       onPreviewActions,
       pushHistory,
@@ -2208,7 +2203,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // Ask / Plan modes are read-only: never preview, apply, or audit
             // write actions even if the backend emits them.
             const isActionMode = (runtime?.mode ?? DEFAULT_ASSISTANT_MODE) === 'action';
-            const usePreview = shouldPreviewActions(sanitized.actions, autoApplyActions);
 
             const basePendingId = `actions_${Date.now()}`;
 
@@ -2216,7 +2210,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             let changesForPreview = event.data.changes;
             let blockedGuardMessage: string | null = null;
 
-            if (isActionMode && usePreview && sanitized.actions.length > 0) {
+            if (isActionMode && sanitized.actions.length > 0) {
               const preflight = await preflightOverwriteBlockedActions(
                 sanitized.actions,
                 event.data.changes ?? [],
@@ -2239,7 +2233,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               stepIndex: event.data.stepIndex,
               stepTotal: event.data.stepTotal,
               stepLabel: event.data.stepLabel,
-              irreversibleActionTypes: event.data.irreversibleActionTypes,
+              irreversibleActionTypes: withoutSessionUndoable(event.data.irreversibleActionTypes),
               runId: event.data.runId,
               stepwise: event.data.stepwise,
             };
@@ -2263,7 +2257,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
             // Accept, once their dependency is satisfied.
             if (
               isActionMode &&
-              usePreview &&
               pendingActions.actions.length > 0 &&
               !pendingActions.dependsOnChangeSetId
             ) {
@@ -2276,7 +2269,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               });
             }
 
-            if (isActionMode && usePreview) {
+            if (isActionMode) {
               updateTurn(turnId, (turn) => {
                 // Stack multiple Accept packages for large multi-wave work — don't replace prior pending.
                 const existingIds = new Set(
@@ -2322,24 +2315,6 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
               });
             }
 
-            if (isActionMode && !usePreview && onActions) {
-              await onClearPreview?.();
-              await onActions(sanitized.actions, previewCopy.headline, {
-                changeSetId: event.data.changeSetId,
-                changes: event.data.changes,
-                userFacingSummary: event.data.userFacingSummary,
-                internalDetails: event.data.internalDetails,
-              });
-              setActiveClarification(null);
-              updateTurn(turnId, (turn) => ({
-                ...turn,
-                blocks: turn.blocks.map((b) =>
-                  b.id === basePendingId && b.type === 'actions'
-                    ? { ...b, proposalStatus: 'accepted' }
-                    : b,
-                ),
-              }));
-            }
             continue;
           }
 
@@ -2385,15 +2360,25 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
           }
 
           if (event.type === 'conversation_end' || event.type === 'done') {
-            if (streamBuffer && !runtimeRef.current.get(turnId)?.pendingResponse) {
+            // A progressive Tier-3 run can end with `actions` + `conversation_end`
+            // and NO `answer`/`wave_ready`. Nothing else opens `responseGate`,
+            // so the turn stayed in 'processing', the Accept card stayed hidden
+            // (isTurnPresentationComplete → false) and only Stop revealed it.
+            // The stream is ending, so release the gate (empty answer, same as
+            // the `wave_ready` path) unless the run was aborted/errored.
+            const rt = runtimeRef.current.get(turnId);
+            if (rt && !rt.pendingResponse && !rt.aborted) {
               signalResponse(turnId, { type: 'answer', answer: streamBuffer });
             }
           }
         }
       }
 
-      if (streamBuffer && !runtimeRef.current.get(turnId)?.pendingResponse) {
-        signalResponse(turnId, { type: 'answer', answer: streamBuffer });
+      {
+        const rt = runtimeRef.current.get(turnId);
+        if (rt && !rt.pendingResponse && !rt.aborted) {
+          signalResponse(turnId, { type: 'answer', answer: streamBuffer });
+        }
       }
       } finally {
         clearInterval(stallTimer);
@@ -2409,10 +2394,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       }
     },
     [
-      autoApplyActions,
       isChangeSetApplied,
-      onActions,
-      onClearPreview,
       onCredits,
       onPreviewActions,
       pushHistory,

@@ -353,7 +353,13 @@ export function toRichAction(action: SheetAction): RichAction | null {
                 | 'lengthEquals'
                 | 'lengthNotEquals'
                 | 'matchesRegex'
-                | 'notMatchesRegex';
+                | 'notMatchesRegex'
+                | 'isBlank'
+                | 'isNotBlank'
+                | 'isTextNumber'
+                | 'isInvalidGstin'
+                | 'olderThan'
+                | 'isDuplicate';
               value: string | number;
             })
           : undefined;
@@ -490,7 +496,13 @@ export function toRichAction(action: SheetAction): RichAction | null {
                 | 'lengthEquals'
                 | 'lengthNotEquals'
                 | 'matchesRegex'
-                | 'notMatchesRegex';
+                | 'notMatchesRegex'
+                | 'isBlank'
+                | 'isNotBlank'
+                | 'isTextNumber'
+                | 'isInvalidGstin'
+                | 'olderThan'
+                | 'isDuplicate';
               value: string | number;
             })
           : undefined;
@@ -547,7 +559,13 @@ export function toRichAction(action: SheetAction): RichAction | null {
                 | 'lengthEquals'
                 | 'lengthNotEquals'
                 | 'matchesRegex'
-                | 'notMatchesRegex';
+                | 'notMatchesRegex'
+                | 'isBlank'
+                | 'isNotBlank'
+                | 'isTextNumber'
+                | 'isInvalidGstin'
+                | 'olderThan'
+                | 'isDuplicate';
               value: string | number;
             })
           : undefined;

@@ -1,3 +1,4 @@
+import { sessionUndoStore } from '@/engine/rowSnapshot';
 import {
   getAuditApplyEndpoint,
   getAuditExportEndpoint,
@@ -146,6 +147,14 @@ export async function previewLocalChangeSet(
 export async function revertChangeSet(
   changeSetId: string,
 ): Promise<{ changeSet: ChangeSetSummary; inverseActions: SheetAction[] }> {
+  // P1.6: row deletes / bulk sets are undone from the in-session snapshot, never via the
+  // server (which never held the data). The caller's onRevert sees the store entry and restores.
+  if (sessionUndoStore.has(changeSetId)) {
+    if (!sessionUndoStore.isRestorable(changeSetId)) {
+      throw new Error('Audit API 422: this change cannot be undone - its previous contents could not be read.');
+    }
+    return { changeSet: { changeSetId } as ChangeSetSummary, inverseActions: [] };
+  }
   return auditFetch(getAuditRevertEndpoint(changeSetId), {
     method: 'POST',
     body: '{}',

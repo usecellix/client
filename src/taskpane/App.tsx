@@ -1,3 +1,4 @@
+import { sessionUndoStore, type RowSnapshot } from '@/engine/rowSnapshot';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationPanel from '@/components/ConversationPanel/ConversationPanel';
 import { CompareResult } from '@/components/SheetCompareView/SheetCompareView';
@@ -78,6 +79,7 @@ const App: React.FC = () => {
       let createdChartIds: CreatedChartId[] | undefined;
       let sortedRangeChanges: CellChange[] | undefined;
       let formatSnapshots: FormatSnapshot[] | undefined;
+      let rowSnapshots: RowSnapshot[] | undefined;
       let sheetNameMismatches: SheetCreationOutcome[] | undefined;
       try {
         if (previewManager.active) {
@@ -86,6 +88,7 @@ const App: React.FC = () => {
           createdChartIds = result?.createdChartIds;
           sortedRangeChanges = result?.sortedRangeChanges;
           formatSnapshots = result?.formatSnapshots;
+          rowSnapshots = result?.rowSnapshots;
           sheetNameMismatches = result?.sheetNameMismatches;
         } else if (meta?.changeSetId && appliedChangeSetIdsRef.current.has(meta.changeSetId)) {
           // Already applied earlier — do not re-run INSERT_COLUMN / writes.
@@ -105,10 +108,13 @@ const App: React.FC = () => {
           createdChartIds = result.createdChartIds;
           sortedRangeChanges = result.sortedRangeChanges;
           formatSnapshots = result.formatSnapshots;
+          rowSnapshots = result.rowSnapshots;
           sheetNameMismatches = result.sheetNameMismatches;
         }
 
         if (meta?.changeSetId) {
+          // P1.6: in-session undo data for row deletes / bulk sets. Memory only.
+          sessionUndoStore.register(meta.changeSetId, rowSnapshots);
           appliedChangeSetIdsRef.current.add(meta.changeSetId);
           try {
             await markChangeSetApplied(
@@ -329,7 +335,6 @@ const App: React.FC = () => {
     onActions: applyActionsWithAudit,
     onPreviewActions: previewActions,
     onClearPreview: clearActionPreview,
-    autoApplyActions: !previewEnabled,
     previewEnabled,
     isChangeSetApplied,
     onCredits: applyCreditsEvent,
@@ -554,7 +559,10 @@ const App: React.FC = () => {
 
   const handleRevertHistoryEntry = useCallback(
     async (changeSetId: string, inverseActions: SheetAction[]) => {
-      if (inverseActions.length > 0) {
+      if (sessionUndoStore.has(changeSetId)) {
+        // P1.6: restore from the in-session snapshot (rows come back at their original positions).
+        await sessionUndoStore.restore(changeSetId);
+      } else if (inverseActions.length > 0) {
         await ActionEngine.applyActions(inverseActions);
       }
       // Only once the workbook is back: a failed apply throws above and leaves it offered.
