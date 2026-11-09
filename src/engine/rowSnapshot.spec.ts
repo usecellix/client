@@ -95,7 +95,7 @@ describe('P1.6 row snapshot helpers', () => {
   it('strips the session-undoable types from an irreversible list', () => {
     expect(withoutSessionUndoable(['DELETE_MATCHING_ROWS', 'FREEZE_PANES', 'SET_MATCHING_ROWS'])).toEqual(['FREEZE_PANES']);
     expect(withoutSessionUndoable(undefined)).toEqual([]);
-    expect([...SESSION_UNDOABLE_ACTION_TYPES]).toEqual(['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS']);
+    expect([...SESSION_UNDOABLE_ACTION_TYPES]).toEqual(['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS', 'DEFINE_NAMED_RANGE']);
   });
 });
 
@@ -195,5 +195,35 @@ describe('P1.6 session store', () => {
       .filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//') && !line.trim().startsWith('/*'))
       .join(' ');
     expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB|fetch\(|XMLHttpRequest|console\./);
+  });
+});
+
+describe('P3.15 named-range undo', () => {
+  function namesCtx(existing: Array<{ name: string; formula: string }>) {
+    const log: string[] = [];
+    const items = existing.map((n) => ({ ...n, delete: () => log.push(`delete ${n.name}`) }));
+    return {
+      log,
+      ctx: {
+        workbook: { names: { items, load: () => undefined, add: (n: string, f: string) => log.push(`add ${n}=${f}`) } },
+        sync: async () => undefined,
+      },
+    };
+  }
+  const snap = (previousFormula: string | null): RowSnapshot => ({
+    kind: 'named-range', sheetName: '', restorable: true, colStart: 0, colCount: 0, rows: [], formats: [],
+    rangeName: 'Amounts', previousFormula,
+  });
+
+  it('a name that did not exist before is deleted on undo', async () => {
+    const { ctx, log } = namesCtx([{ name: 'Amounts', formula: '=T_Days!$D$2:$D$6' }]);
+    await restoreRowSnapshot(snap(null), ctx as never);
+    expect(log).toEqual(['delete Amounts']);
+  });
+
+  it('a name that existed is put back to its old range', async () => {
+    const { ctx, log } = namesCtx([{ name: 'Amounts', formula: '=T_Days!$D$2:$D$6' }]);
+    await restoreRowSnapshot(snap('=Sheet1!$A$1:$A$3'), ctx as never);
+    expect(log).toEqual(['delete Amounts', 'add Amounts==Sheet1!$A$1:$A$3']);
   });
 });

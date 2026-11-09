@@ -33,7 +33,7 @@ export const MAX_SNAPSHOT_ROWS = 2_000;
 export const MAX_SNAPSHOT_ROW_CELLS = 60_000;
 
 /** Action types whose undo is served by this module. Mirrored in Server reversibility-catalog.ts (parity spec). */
-export const SESSION_UNDOABLE_ACTION_TYPES = ['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS'] as const;
+export const SESSION_UNDOABLE_ACTION_TYPES = ['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS', 'DEFINE_NAMED_RANGE'] as const;
 
 export function withoutSessionUndoable(types: string[] | undefined): string[] {
   const list = types ?? [];
@@ -49,7 +49,10 @@ export interface RowSnapshotRow {
 }
 
 export interface RowSnapshot {
-  kind: 'deleted-rows' | 'set-cells';
+  kind: 'deleted-rows' | 'set-cells' | 'named-range';
+  /** named-range only (P3.15): the name, and its formula before the action (null = did not exist). */
+  rangeName?: string;
+  previousFormula?: string | null;
   sheetName: string;
   restorable: boolean;
   reason?: string;
@@ -101,6 +104,7 @@ export async function captureRowSnapshot(
   action: RichAction,
   ctx: Excel.RequestContext,
 ): Promise<RowSnapshot | null> {
+  if (action.type === 'DEFINE_NAMED_RANGE') return captureNamedRange(action, ctx);
   if (action.type !== 'DELETE_MATCHING_ROWS' && action.type !== 'SET_MATCHING_ROWS') return null;
   const kind: RowSnapshot['kind'] = action.type === 'DELETE_MATCHING_ROWS' ? 'deleted-rows' : 'set-cells';
   try {
@@ -113,6 +117,23 @@ export async function captureRowSnapshot(
       action.sheetName,
       `previous contents could not be read: ${error instanceof Error ? error.message : String(error)}`.slice(0, 200),
     );
+  }
+}
+
+/** P3.15 — remember whether the name existed (and what it pointed at) so undo can put it back. */
+async function captureNamedRange(
+  action: Extract<RichAction, { type: 'DEFINE_NAMED_RANGE' }>,
+  ctx: Excel.RequestContext,
+): Promise<RowSnapshot> {
+  const base = { kind: 'named-range' as const, sheetName: '', colStart: 0, colCount: 0, rows: [], formats: [] };
+  try {
+    const names = ctx.workbook.names;
+    names.load('items/name,items/formula');
+    await ctx.sync();
+    const existing = names.items.find((n) => n.name.toLowerCase() === action.name.toLowerCase());
+    return { ...base, restorable: true, rangeName: action.name, previousFormula: existing ? String(existing.formula) : null };
+  } catch (error) {
+    return { ...base, restorable: false, rangeName: action.name, reason: `name could not be read: ${error instanceof Error ? error.message : String(error)}`.slice(0, 200) };
   }
 }
 
@@ -264,6 +285,16 @@ export interface RestoreReport {
 export async function restoreRowSnapshot(snapshot: RowSnapshot, ctx: Excel.RequestContext): Promise<RestoreReport> {
   if (!snapshot.restorable) {
     throw new Error(snapshot.reason ? `Cannot undo: ${snapshot.reason}` : 'Cannot undo this change.');
+  }
+  if (snapshot.kind === 'named-range') {
+    const names = ctx.workbook.names;
+    names.load('items/name');
+    await ctx.sync();
+    const current = names.items.find((n) => n.name.toLowerCase() === String(snapshot.rangeName).toLowerCase());
+    if (current) current.delete();
+    if (snapshot.previousFormula) names.add(String(snapshot.rangeName), snapshot.previousFormula);
+    await ctx.sync();
+    return { rowsRestored: 0, cellsRestored: 0, formatRunsSkipped: 0 };
   }
   const sheet = resolveWorksheet(ctx, snapshot.sheetName);
   const rows = [...snapshot.rows].sort((a, b) => a.index - b.index);

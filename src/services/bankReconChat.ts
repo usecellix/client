@@ -5,6 +5,7 @@
  * docked question, clickable row list) without a second code path.
  */
 
+import { detectRecipeIntent, listBankRecipes, matchRecipe, rememberBankReconRun, saveBankRecipe } from './bankRecipes';
 import {
   BankReconLayout,
   detectBankReconIntent,
@@ -214,6 +215,37 @@ export async function tryHandleBankReconChat(
 ): Promise<GstReconChatOutcome | null> {
   if (isBankReconRelayoutPrompt(message)) return handleRelayout(message);
 
+  // P4.5 — recipe save / replay (header names only, matched by name, any column order).
+  const recipeIntent = detectRecipeIntent(message);
+  if (recipeIntent?.kind === 'save') {
+    const saved = saveBankRecipe(recipeIntent.name);
+    return {
+      kind: 'message_only',
+      answer: saved
+        ? `Saved recipe **${saved.name}** — bank statement columns: ${saved.bankHeaders.join(', ')}; ledger columns: ${saved.booksHeaders.join(', ')}. Only the column names are saved, no data. Next month: *Replay recipe ${saved.name} for <month>*.`
+        : 'Run a bank reconciliation first, then ask me to save it as a recipe.',
+    };
+  }
+  if (recipeIntent?.kind === 'replay') {
+    const recipes = listBankRecipes();
+    const recipe =
+      recipes.find((r) => recipeIntent.name && recipeIntent.name.toLowerCase().includes(r.name.toLowerCase())) ??
+      recipes[recipes.length - 1];
+    if (!recipe) return { kind: 'message_only', answer: 'No saved recipe yet. Run a bank reconciliation and ask *Save this as a recipe*.' };
+    const tops = await readSheetTops();
+    const match = matchRecipe(recipe, tops);
+    if (!match.bank || !match.books) {
+      return {
+        kind: 'message_only',
+        answer: `Recipe **${recipe.name}** can't run on this workbook — missing ${match.missing.join(', ')}. Nothing was changed. Rename the column (any order is fine) and ask again.`,
+      };
+    }
+    return tryHandleBankReconChat(`Reconcile bank statement with bank ledger ${message}`, options, {
+      chosen: { bank: match.bank, books: match.books },
+      period: resolveGstPeriod(message),
+    });
+  }
+
   if (pendingAttachmentChoice) {
     const choice = pendingAttachmentChoice;
     const lower = message.toLowerCase();
@@ -367,6 +399,7 @@ export async function tryHandleBankReconChat(
       conversation_id: options?.conversationId ?? undefined,
     });
 
+    rememberBankReconRun(bankGrid.values as unknown[][], booksGrid.values as unknown[][], layout);
     return buildReconOutcome(result, { booksName, bankName, layout, sheetNames: tops.map((t) => t.name) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -675,12 +675,14 @@ export async function tryHandleGstReconChat(
 
   if (intent.type === 'GSTR3B_VS_GSTR2B') {
     pendingContext = null;
+    // P3.8: a table-wise comparison of the active sheet is handled by the server lane.
+    if (/\btable[-\s]?wise\b|\btablewise\b|\bper table\b/i.test(message)) return null;
     return {
       kind: 'message_only',
       answer:
         'GSTR-3B vs GSTR-2B is a **summary** comparison (ITC claimed vs available). ' +
         'For now, use chat purchase/2B recon for invoice matching. ' +
-        'To compare 3B totals, provide IGST/CGST/SGST figures from both returns in a follow-up, or paste both as sheets and ask for invoice-level PR vs 2B recon.',
+        'To compare 3B with 2B table-wise, put the Table 4 lines on a sheet with columns Table · 3B IGST · 3B CGST · 3B SGST · 2B IGST · 2B CGST · 2B SGST and ask *Compare GSTR-3B with GSTR-2B table-wise*.',
     };
   }
 
@@ -945,8 +947,9 @@ export async function tryHandleGstReconChat(
             }
           : null,
       settings: {
-        amount_tolerance_abs: 1,
-        amount_tolerance_pct: 0.5,
+        // P2.3: "…with ₹100 tolerance" / "tolerance of 100" overrides the ₹1 default.
+        amount_tolerance_abs: toleranceFromMessage(message) ?? 1,
+        amount_tolerance_pct: toleranceFromMessage(message) !== null ? 0 : 0.5,
         invoice_fuzzy_threshold: 85,
         date_tolerance_days: 3,
         detect_rcm: !casual && !isSales,
@@ -1026,4 +1029,12 @@ export async function tryHandleGstReconChat(
       answer: `I couldn't complete the reconciliation:\n\n${msg}`,
     };
   }
+}
+
+/** "with ₹100 tolerance", "tolerance of Rs 50", "tolerance 1" → rupees; null when not stated. */
+export function toleranceFromMessage(message: string): number | null {
+  const m =
+    /\btolerance\s*(?:of|=|:)?\s*(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)/i.exec(message) ??
+    /(?:₹|rs\.?|inr)\s*(\d+(?:\.\d+)?)\s*tolerance\b/i.exec(message);
+  return m ? Number(m[1]) : null;
 }

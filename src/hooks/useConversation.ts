@@ -1,3 +1,4 @@
+import { detectInspection, inspectionWrites, runInspection } from '@/inspection/inspectionLanes';
 import { withoutSessionUndoable } from '@/engine/rowSnapshot';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { buildWorkbookContext } from '@/services/sheetContextBuilder';
@@ -2603,6 +2604,49 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
         return;
       }
 
+      // Client-side inspection lanes (Office.js reads: formulas, names, hidden objects) —
+      // P2.4 scan, P3.5 hard-coded, P3.6 broken refs, P3.13/P4.6 #N/A, P3.17 LET,
+      // P3.22 explain workbook, P3.24 user templates. Fixes still go preview → Accept.
+      const inspectionKind =
+        !getBankReconPendingContext() ? detectInspection(trimmed) : null;
+      if (inspectionKind && (!inspectionWrites(inspectionKind) || mode === 'action')) {
+        try {
+          const inspection = await runInspection(inspectionKind, trimmed);
+          if (runtime.aborted) return;
+          if (inspection.actions?.length && mode === 'action') {
+            await dispatchLocalSheetActions(
+              turnId,
+              { actions: inspection.actions, explanation: inspection.answer },
+              mode,
+              trimmed,
+              workbookContext,
+              conversationIdRef.current ?? session.id,
+            );
+          } else {
+            pushHistory({
+              role: 'assistant',
+              content: inspection.answer,
+              timestamp: new Date().toISOString(),
+              type: 'answer',
+            });
+            revealFinalResponse(turnId, { type: 'answer', answer: inspection.answer });
+          }
+        } catch (error: unknown) {
+          const messageText = error instanceof Error ? error.message : 'Could not read the workbook';
+          updateTurn(turnId, (turn) => ({
+            ...turn,
+            phase: 'error',
+            error: messageText,
+            blocks: finalizeSteps(withoutStatus(turn.blocks), turn.userMessage),
+          }));
+        } finally {
+          setIsWaitingForResponse(false);
+          abortControllerRef.current = null;
+          runtimeRef.current.delete(turnId);
+        }
+        return;
+      }
+
       // Chat-native bank reconciliation (BRS) — checked before GST; the intent detector
       // never claims a prompt that mentions GSTR / 2B / ITC.
       if (isBankReconPrompt(trimmed) || getBankReconPendingContext()) {
@@ -2646,7 +2690,9 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
 
       // Chat-native GST reconciliation (no form) — discover sheets, match, Accept/Reject.
       // Also continue multi-turn context collection when a prior GST recon is awaiting GSTIN/period.
-      if (isGstReconPrompt(trimmed) || getGstReconPendingContext()) {
+      // P3.8: "Compare GSTR-3B with GSTR-2B table-wise" runs on the active sheet in a server lane.
+      const isTableWise3b = /\b3b\b/i.test(trimmed) && /\btable[-\s]?wise\b|\btablewise\b/i.test(trimmed);
+      if ((isGstReconPrompt(trimmed) && !isTableWise3b) || getGstReconPendingContext()) {
         try {
           await dispatchGstReconChat(turnId, trimmed);
         } catch (error: unknown) {
@@ -2792,6 +2838,7 @@ export const useConversation = (options: UseConversationOptions = {}): UseConver
       dispatchGstReconChat,
       dispatchBankReconChat,
       dispatchLocalSheetActions,
+      revealFinalResponse,
       ensureActiveSession,
       getActiveSession,
       getUserFacingErrorMessage,

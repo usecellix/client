@@ -1,3 +1,4 @@
+import { recordApplied, recordReverted } from '@/services/localAuditLog';
 import { sessionUndoStore, type RowSnapshot } from '@/engine/rowSnapshot';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationPanel from '@/components/ConversationPanel/ConversationPanel';
@@ -138,6 +139,8 @@ const App: React.FC = () => {
 
         // Spec 09 item 1: change-set apply invalidates the pending workbook prebuild.
         markPendingWorkbookContextStale();
+        // P3.10: local audit trail of every accepted action (no cell values).
+        recordApplied(meta?.changeSetId, explanation, actions);
 
         // TASKS.md #150 — outcome verification. Everything above this line
         // checked INTENT (were the actions well-formed, did the engine report
@@ -567,6 +570,7 @@ const App: React.FC = () => {
       }
       // Only once the workbook is back: a failed apply throws above and leaves it offered.
       markChangeSetReverted(changeSetId);
+      recordReverted(changeSetId);
     },
     [markChangeSetReverted],
   );

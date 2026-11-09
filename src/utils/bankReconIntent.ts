@@ -57,7 +57,12 @@ export function isAttachedReconPrompt(message: string): boolean {
 
 /** True for a fresh recon request OR a "change the layout of Bank Recon…" follow-up. */
 export function isBankReconPrompt(message: string): boolean {
-  return detectBankReconIntent(message) !== null || isBankReconRelayoutPrompt(message);
+  return (
+    detectBankReconIntent(message) !== null ||
+    isBankReconRelayoutPrompt(message) ||
+    // P4.5 recipe save / replay
+    (/\brecipe\b/i.test(message) && /\b(save|replay|re-?run|run)\b/i.test(message))
+  );
 }
 
 export function isBankReconRelayoutPrompt(message: string): boolean {

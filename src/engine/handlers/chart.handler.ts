@@ -102,6 +102,9 @@ async function useTextFirstColumnAsCategories(
   }
 }
 
+/** 1,23,45,678 style for positive axis values (≥ 1 crore and ≥ 1 lakh sections). */
+export const INDIAN_AXIS_FORMAT = '[>=10000000]##\\,##\\,##\\,##0;[>=100000]##\\,##\\,##0;##,##0';
+
 export async function handleCreateChart(
   action: CreateChartAction,
   ctx: Excel.RequestContext,
@@ -166,6 +169,13 @@ export async function handleCreateChart(
   chart.setPosition(start, end);
 
   await applyChartColorScheme(chart, ctx, action.colorScheme);
+
+  // P3.20 — Indian lakh/crore grouping on the value axis (display only; data unchanged).
+  try {
+    chart.axes.valueAxis.numberFormat = INDIAN_AXIS_FORMAT;
+  } catch {
+    /* chart types without a value axis (pie/doughnut) — nothing to format */
+  }
 
   // Capture Office.js-assigned name for follow-up UPDATE_CHART
   if (action.chartId?.trim()) {
