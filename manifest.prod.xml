@@ -11,7 +11,7 @@
        forever — changing it registers as a brand-new add-in to Excel/AppSource rather
        than an update to whatever users already have installed. -->
   <Id>01b90833-7da8-4125-bcd4-9f7e0d9acad8</Id>
-  <Version>1.0.1.0</Version>
+  <Version>1.0.2.0</Version>
   <ProviderName>Cellix</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Cellix"/>
@@ -22,6 +22,8 @@
 
   <AppDomains>
     <AppDomain>https://app.usecellix.com</AppDomain>
+    <AppDomain>https://www.usecellix.com</AppDomain>
+    <AppDomain>https://usecellix.com</AppDomain>
     <AppDomain>https://accounts.google.com</AppDomain>
     <AppDomain>https://login.microsoftonline.com</AppDomain>
   </AppDomains>
